@@ -11,9 +11,10 @@ private struct AcceptedCandidateCheckFailure: Error, LocalizedError {
 /// delivery operation is constructed.
 func runAcceptedCandidateRecordChecks() throws {
     let files = FileManager.default
-    let temporaryPath = files.temporaryDirectory.path.hasPrefix("/var/")
-        ? "/private" + files.temporaryDirectory.path : files.temporaryDirectory.path
-    let root = URL(fileURLWithPath: temporaryPath, isDirectory: true).standardizedFileURL
+    // The host's nested temporary scratch can be /var, a symlink on macOS.
+    // Keep this disposable fixture under the canonical shared harness root so
+    // the production no-symlink policy exercises only the two planted links.
+    let root = URL(fileURLWithPath: "/Users/Shared", isDirectory: true)
         .appendingPathComponent("iris-accepted-candidate-\(UUID().uuidString)", isDirectory: true)
     defer { try? files.removeItem(at: root) }
 
@@ -143,7 +144,105 @@ func runAcceptedCandidateRecordChecks() throws {
     guard case .symlink = store.loadAcceptedCandidate(symlinkID) else {
         throw AcceptedCandidateCheckFailure(message: "symlink candidate was not distinct")
     }
+
+    // A symlinked base must not redirect either the candidate read or the
+    // store lock into an outside fixture.
+    let baseSymlinkRoot = root.appendingPathComponent("base-symlink-fixture", isDirectory: true)
+    let baseTarget = baseSymlinkRoot.appendingPathComponent("outside-base", isDirectory: true)
+    let baseAlias = baseSymlinkRoot.appendingPathComponent("receipts", isDirectory: true)
+    try files.createDirectory(at: baseTarget, withIntermediateDirectories: true)
+    let baseRecord = try recordCopy(record, candidateID: UUID())
+    let baseTargetStore = AppDeliveryReceiptStore(baseDirectory: baseTarget)
+    try baseTargetStore.saveAcceptedCandidate(baseRecord)
+    let baseSnapshot = try snapshotRegularFiles(at: baseTarget)
+    try files.createSymbolicLink(at: baseAlias, withDestinationURL: baseTarget)
+    let baseSymlinkStore = AppDeliveryReceiptStore(baseDirectory: baseAlias)
+    guard case .corrupt = baseSymlinkStore.loadAcceptedCandidate(baseRecord.candidateID) else {
+        throw AcceptedCandidateCheckFailure(message: "symlinked base redirected an accepted-candidate read")
+    }
+    do {
+        try baseSymlinkStore.saveAcceptedCandidate(try recordCopy(record, candidateID: UUID()))
+        throw AcceptedCandidateCheckFailure(message: "symlinked base redirected an accepted-candidate write")
+    } catch let error as AcceptedCandidateCheckFailure {
+        throw error
+    } catch {
+        // Unsafe storage is a write failure, never an absent record.
+    }
+    guard case .storageFailure = baseSymlinkStore.revalidateAcceptedCandidate(
+        baseRecord.candidateID, project: project, receipt: receipt
+    ) else {
+        throw AcceptedCandidateCheckFailure(message: "symlinked base acquired the redirected store lock")
+    }
+    guard try snapshotRegularFiles(at: baseTarget) == baseSnapshot else {
+        throw AcceptedCandidateCheckFailure(message: "symlinked base changed the outside fixture")
+    }
+    print("PASS accepted-candidate base symlink refuses read, write and lock redirection")
+
+    // A symlinked accepted-candidates parent must be refused after the safe
+    // base lock is acquired and before a candidate leaf is opened or written.
+    let parentSymlinkRoot = root.appendingPathComponent("parent-symlink-fixture", isDirectory: true)
+    let parentBase = parentSymlinkRoot.appendingPathComponent("receipts", isDirectory: true)
+    let parentOutside = parentSymlinkRoot.appendingPathComponent("outside-candidates", isDirectory: true)
+    try files.createDirectory(at: parentBase, withIntermediateDirectories: true)
+    try files.createDirectory(at: parentOutside, withIntermediateDirectories: true)
+    let parentRecord = try recordCopy(record, candidateID: UUID())
+    let parentData = try JSONEncoder().encode(parentRecord)
+    try parentData.write(to: parentOutside.appendingPathComponent(parentRecord.candidateID.uuidString + ".json"), options: .atomic)
+    let parentStore = AppDeliveryReceiptStore(baseDirectory: parentBase)
+    try files.createSymbolicLink(at: parentStore.acceptedCandidatesDirectory, withDestinationURL: parentOutside)
+    let parentSnapshot = try snapshotRegularFiles(at: parentOutside)
+    guard case .corrupt = parentStore.loadAcceptedCandidate(parentRecord.candidateID) else {
+        throw AcceptedCandidateCheckFailure(message: "symlinked candidate parent redirected an accepted-candidate read")
+    }
+    do {
+        try parentStore.saveAcceptedCandidate(try recordCopy(record, candidateID: UUID()))
+        throw AcceptedCandidateCheckFailure(message: "symlinked candidate parent redirected an accepted-candidate write")
+    } catch let error as AcceptedCandidateCheckFailure {
+        throw error
+    } catch {
+        // Unsafe storage is a write failure, never an absent record.
+    }
+    guard case .corrupt = parentStore.revalidateAcceptedCandidate(
+        parentRecord.candidateID, project: project, receipt: receipt
+    ) else {
+        throw AcceptedCandidateCheckFailure(message: "symlinked candidate parent was not reported as corrupt storage")
+    }
+    guard try snapshotRegularFiles(at: parentOutside) == parentSnapshot else {
+        throw AcceptedCandidateCheckFailure(message: "symlinked candidate parent changed the outside fixture")
+    }
+    print("PASS accepted-candidate parent symlink refuses read and write redirection")
     print("PASS accepted candidate round-trip, exact revalidation, stale identities, bounded/corrupt/symlink states")
+}
+
+private func recordCopy(_ source: AcceptedCandidateRecord, candidateID: UUID) throws -> AcceptedCandidateRecord {
+    try AcceptedCandidateRecord(
+        candidateID: candidateID, projectSlug: source.projectSlug,
+        bundleIdentifier: source.bundleIdentifier,
+        registeredProjectPath: source.registeredProjectPath,
+        registeredApplicationPath: source.registeredApplicationPath,
+        artifactPath: source.artifactPath, sourceIdentity: source.sourceIdentity,
+        artifactDigest: source.artifactDigest,
+        verificationEvidenceID: source.verificationEvidenceID,
+        reviewEvidenceID: source.reviewEvidenceID,
+        uiAcceptedRunID: source.uiAcceptedRunID,
+        uiAcceptedReceiptID: source.uiAcceptedReceiptID
+    )
+}
+
+private func snapshotRegularFiles(at root: URL) throws -> [String: Data] {
+    let files = FileManager.default
+    let relativePaths = try files.subpathsOfDirectory(atPath: root.path)
+    var snapshot: [String: Data] = [:]
+    for relativePath in relativePaths {
+        let path = root.appendingPathComponent(relativePath)
+        var metadata = stat()
+        guard lstat(path.path, &metadata) == 0 else {
+            throw AcceptedCandidateCheckFailure(message: "outside fixture could not be inspected")
+        }
+        guard (metadata.st_mode & S_IFMT) == S_IFREG else { continue }
+        snapshot[relativePath] = try Data(contentsOf: path)
+    }
+    return snapshot
 }
 
 private func makeBundle(_ path: URL, identifier: String, payload: String) throws {

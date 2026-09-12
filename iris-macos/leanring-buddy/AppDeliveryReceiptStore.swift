@@ -1195,11 +1195,16 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         let data = try JSONEncoder.acceptedCandidateEncoder.encode(record)
         guard data.count <= Self.maximumRecordBytes else { throw StoreError.invalidReceipt }
         try withExclusiveStoreLock {
+            guard pathHasNoSymlinkComponents(baseDirectory.path, allowMissing: false),
+                  pathHasNoSymlinkComponents(acceptedCandidatesDirectory.path, allowMissing: true) else {
+                throw StoreError.writeFailed
+            }
             try FileManager.default.createDirectory(at: acceptedCandidatesDirectory,
                 withIntermediateDirectories: true)
             var candidateDirectoryMetadata = stat()
             guard lstat(acceptedCandidatesDirectory.path, &candidateDirectoryMetadata) == 0,
-                  (candidateDirectoryMetadata.st_mode & S_IFMT) == S_IFDIR else {
+                  (candidateDirectoryMetadata.st_mode & S_IFMT) == S_IFDIR,
+                  pathHasNoSymlinkComponents(acceptedCandidatesDirectory.path, allowMissing: false) else {
                 throw StoreError.writeFailed
             }
             try publish(data, at: acceptedCandidateURL(for: record.candidateID), refusingExisting: true)
@@ -1325,6 +1330,10 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
     }
 
     private func loadAcceptedCandidateUnlocked(_ identifier: UUID) -> AcceptedCandidateLoadState {
+        guard pathHasNoSymlinkComponents(baseDirectory.path, allowMissing: true),
+              pathHasNoSymlinkComponents(acceptedCandidatesDirectory.path, allowMissing: true) else {
+            return .corrupt
+        }
         let destination = acceptedCandidateURL(for: identifier)
         var metadata = stat()
         guard lstat(destination.path, &metadata) == 0 else {
@@ -1355,12 +1364,21 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
     }
 
     private func withExclusiveStoreLock<T>(_ operation: () throws -> T) throws -> T {
+        guard pathHasNoSymlinkComponents(baseDirectory.path, allowMissing: true) else {
+            throw StoreError.writeFailed
+        }
         do {
             try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
         } catch {
             throw StoreError.writeFailed
         }
+        guard pathHasNoSymlinkComponents(baseDirectory.path, allowMissing: false) else {
+            throw StoreError.writeFailed
+        }
         let lockURL = baseDirectory.appendingPathComponent(".lock")
+        guard pathHasNoSymlinkComponents(lockURL.path, allowMissing: true) else {
+            throw StoreError.writeFailed
+        }
         let descriptor = open(lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW, mode_t(0o600))
         guard descriptor >= 0 else { throw StoreError.writeFailed }
         defer { close(descriptor) }

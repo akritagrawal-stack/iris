@@ -33,9 +33,9 @@ function renderRoute(app) {
   routeBox.className = "route-box";
   const isAvailable = route.status === "verified" && route.destination;
   const unavailableCopy = {
-    iphone: "The iPhone beta download is not available yet.",
-    android: "The Android package is not available yet.",
-    computer: "No verified computer route is available yet.",
+    iphone: "No iPhone download is listed here.",
+    android: "No Android download is listed here.",
+    computer: "No computer download is listed here.",
   };
   routeBox.append(textElement("p", isAvailable ? "Ready to continue" : unavailableCopy[state.device], "route-state"));
   if (isAvailable) {

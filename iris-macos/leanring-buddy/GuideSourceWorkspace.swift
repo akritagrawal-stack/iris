@@ -251,7 +251,15 @@ nonisolated protocol GuideSourceWorkspaceRecording: Sendable {
     func save(_ record: GuideSourceWorkspaceRecord) throws
 }
 
-nonisolated final class GuideSourceWorkspaceStore: GuideSourceWorkspaceRecording, @unchecked Sendable {
+/// Reading is kept as a separate capability so the existing staging fakes only
+/// need to implement the write-ahead recovery contract. Production stores
+/// implement both capabilities; a binding without a readable ready record is
+/// never admitted to execution.
+nonisolated protocol GuideSourceWorkspaceRecordReading: Sendable {
+    func record(for runID: UUID) -> GuideSourceWorkspaceRecord?
+}
+
+nonisolated final class GuideSourceWorkspaceStore: GuideSourceWorkspaceRecording, GuideSourceWorkspaceRecordReading, @unchecked Sendable {
     private let directory: URL
     private let lock = NSLock()
 
@@ -575,6 +583,85 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
         } catch is CancellationError {
             throw GuideSourceWorkspacePreparationError.cancelled
         }
+    }
+
+    /// Re-probes every identity that makes a prepared workspace safe to use.
+    /// Persisted bindings are only hints: a changed checkout, replaced staged
+    /// directory, guide revision, or missing ready record invalidates them.
+    func revalidate(_ binding: GuideSourceWorkspaceBinding) async -> Result<GuideSourceWorkspaceBinding, GuideSourceWorkspacePreparationError> {
+        do {
+            guard binding.guideID.isEmpty == false,
+                  binding.guideRevision >= 0,
+                  binding.projectID.isEmpty == false,
+                  binding.originalPath.hasPrefix("/"),
+                  binding.stagedPath.hasPrefix("/"),
+                  binding.expectedOrigin == binding.original.origin else {
+                throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("workspace binding metadata is inconsistent")
+            }
+            let originalRequest = GuideSourceWorkspaceRequest(
+                runID: binding.runID, guideID: binding.guideID, guideRevision: binding.guideRevision,
+                projectID: binding.projectID, sourcePath: binding.originalPath,
+                expectedOrigin: "https://\(binding.expectedOrigin.host)/\(binding.expectedOrigin.path)",
+                expectedCommit: binding.expectedCommit,
+                ownedProjectsRoot: URL(fileURLWithPath: binding.stagedPath).deletingLastPathComponent()
+            )
+            let original = try await inspectIdentity(originalRequest)
+            guard original == binding.original else {
+                throw GuideSourceWorkspacePreparationError.sourceRevisionMismatch(
+                    expected: binding.original.head, observed: original.head
+                )
+            }
+            let stagedURL = URL(fileURLWithPath: binding.stagedPath, isDirectory: true).standardizedFileURL
+            guard stagedURL.path == stagedURL.resolvingSymlinksInPath().standardizedFileURL.path,
+                  FileManager.default.fileExists(atPath: stagedURL.path) else {
+                throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("staged workspace directory is unavailable")
+            }
+            if binding.isIsolated {
+                guard let recordReader = store as? any GuideSourceWorkspaceRecordReading,
+                      let record = recordReader.record(for: binding.runID),
+                      record.state == .ready,
+                      record.guideID == binding.guideID,
+                      record.guideRevision == binding.guideRevision,
+                      record.projectID == binding.projectID,
+                      record.originalPath == binding.originalPath,
+                      record.stagedPath == binding.stagedPath,
+                      record.expectedCommit == binding.expectedCommit,
+                      record.ownershipMarker == binding.ownershipMarker else {
+                    throw GuideSourceWorkspacePreparationError.destinationNotOwned
+                }
+            } else {
+                guard binding.ownershipMarker == "existing-user-checkout" else {
+                    throw GuideSourceWorkspacePreparationError.destinationNotOwned
+                }
+            }
+            let stagedRequest = GuideSourceWorkspaceRequest(
+                runID: binding.runID, guideID: binding.guideID, guideRevision: binding.guideRevision,
+                projectID: binding.projectID, sourcePath: binding.stagedPath,
+                expectedOrigin: "https://\(binding.expectedOrigin.host)/\(binding.expectedOrigin.path)",
+                expectedCommit: binding.expectedCommit,
+                ownedProjectsRoot: URL(fileURLWithPath: binding.stagedPath).deletingLastPathComponent()
+            )
+            let staged = try await inspectIdentity(stagedRequest)
+            guard staged == binding.staged,
+                  staged.head == binding.expectedCommit,
+                  !staged.isDirty else {
+                throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("staged workspace identity changed")
+            }
+            return .success(binding)
+        } catch let error as GuideSourceWorkspacePreparationError {
+            return .failure(error)
+        } catch is CancellationError {
+            return .failure(.cancelled)
+        } catch {
+            return .failure(.stagedWorkspaceVerificationFailed(error.localizedDescription))
+        }
+    }
+
+    /// Name used by callers that want the admission operation to read like a
+    /// guard immediately before a command or retry.
+    func validateBinding(_ binding: GuideSourceWorkspaceBinding) async -> Bool {
+        if case .success = await revalidate(binding) { return true }
+        return false
     }
 
     private func prepareImpl(

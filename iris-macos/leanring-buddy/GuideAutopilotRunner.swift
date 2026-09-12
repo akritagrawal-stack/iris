@@ -85,6 +85,10 @@ struct GuideAutopilotGuideContext {
     var sourceOwner: String? = nil
     var sourceRepo: String? = nil
     var sourceCommit: String? = nil
+    /// Source-only project identity. Defaults to the guide slug for existing
+    /// callers, while setup routes can carry an explicit registry-independent
+    /// project ID without pretending it is an installed app.
+    var projectID: String? = nil
 }
 
 /// Fresh, read-only Git facts collected after a source-pin command refused.
@@ -666,6 +670,11 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
     /// disposable metadata. Production uses the fixed probe above; tests do
     /// not run commands against the reader's repository.
     private let sourceMetadataReader: @Sendable (String) async -> GuideAutopilotSourceCheckoutMetadata
+    /// A prepared workspace is an explicit capability. The binding and its
+    /// validator are installed by the controller after the reader's setup
+    /// choice, and every command boundary revalidates them.
+    private var preparedWorkspaceBinding: GuideSourceWorkspaceBinding?
+    private var preparedWorkspaceValidator: (@Sendable (GuideSourceWorkspaceBinding) async -> Bool)?
 
     // MARK: - Budget counters
 
@@ -782,6 +791,14 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         }
     }
 
+    func bindPreparedWorkspace(
+        _ binding: GuideSourceWorkspaceBinding,
+        validator: @escaping @Sendable (GuideSourceWorkspaceBinding) async -> Bool
+    ) {
+        preparedWorkspaceBinding = binding
+        preparedWorkspaceValidator = validator
+    }
+
     // MARK: - Session lifecycle
 
     func startSession() async -> Bool {
@@ -882,12 +899,15 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         guard !sessionEndWasRequested, !longRunningAbortIsInProgress else {
             return .stopped
         }
-        // Workspace metadata is a strict execution requirement. Until the
-        // integrator supplies a validated structural binding, every route
-        // (ordinary, retry, repair and long-running) must stop here rather
-        // than silently using HOME or the shell's current directory.
+        // Workspace metadata is a strict execution requirement. Resolve and
+        // revalidate it before any action, and move the shell directly to the
+        // returned directory. No command text is rewritten.
+        var resolvedWorkspaceDirectory: String?
         if let workspace = step.workspace {
-            return refusePreparedWorkspace(workspace, command: step.command ?? "")
+            guard let directory = await resolvePreparedWorkspace(workspace) else {
+                return refusePreparedWorkspace(workspace, command: step.command ?? "")
+            }
+            resolvedWorkspaceDirectory = directory
         }
         guard let command = step.command else { return .succeeded }
 
@@ -935,7 +955,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         // Put the shell where the step says it runs, before it runs. A step
         // that declares nothing is left exactly where the shell already is —
         // that is every already-published guide, and it must not change.
-        if let folder = step.workingDirectory {
+        if let folder = resolvedWorkspaceDirectory ?? step.workingDirectory {
             switch await moveInto(folder, using: shellSession) {
             case .succeeded:
                 break
@@ -952,7 +972,8 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
 
         transcript.append(.commandFromTheGuide(text: command))
         let outcome = await runGuideCommand(
-            command, inWorkingDirectory: step.workingDirectory ?? shellSession.currentWorkingDirectory
+            command, inWorkingDirectory: resolvedWorkspaceDirectory
+                ?? step.workingDirectory ?? shellSession.currentWorkingDirectory
         )
         switch outcome {
         case .succeeded:
@@ -1000,7 +1021,8 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             }
             return await runFailureLadder(
                 step: step, command: command,
-                exitStatus: exitStatus, workingDirectory: workingDirectory
+                exitStatus: exitStatus, workingDirectory: workingDirectory,
+                preparedWorkspaceDirectory: resolvedWorkspaceDirectory
             )
         }
     }
@@ -1135,16 +1157,19 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         step: IrisGuideStep,
         command: String,
         exitStatus: Int32,
-        workingDirectory: String
+        workingDirectory: String,
+        preparedWorkspaceDirectory: String?
     ) async -> GuideAutopilotStepResult {
-        if let workspace = step.workspace {
+        if let workspace = step.workspace,
+           await resolvePreparedWorkspace(workspace) == nil {
             return refusePreparedWorkspace(workspace, command: command)
         }
         // Ahead of the ladder, and ahead of spending anything: a step that died
         // because a tool is missing, when the guide installs that tool itself,
         // is repaired from the guide rather than from a model.
         if let repairedFromTheGuide = await installTheMissingToolTheGuideInstallsItself(
-            step: step, command: command, exitStatus: exitStatus
+            step: step, command: command, exitStatus: exitStatus,
+            preparedWorkspaceDirectory: preparedWorkspaceDirectory
         ) {
             if repairedFromTheGuide == .succeeded {
                 consecutiveStepsTheLadderSpentOnWithoutGettingThemRunning = 0
@@ -1155,7 +1180,8 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         let modelCallsBeforeThisStepsLadder = modelCallsUsedThisGuide
         let result = await climbTheFixLadder(
             step: step, command: command,
-            exitStatus: exitStatus, workingDirectory: workingDirectory
+            exitStatus: exitStatus, workingDirectory: workingDirectory,
+            preparedWorkspaceDirectory: preparedWorkspaceDirectory
         )
         let theLadderSpentSomethingOnThisStep = modelCallsUsedThisGuide > modelCallsBeforeThisStepsLadder
         if result == .succeeded {
@@ -1197,7 +1223,8 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
     private func installTheMissingToolTheGuideInstallsItself(
         step: IrisGuideStep,
         command: String,
-        exitStatus: Int32
+        exitStatus: Int32,
+        preparedWorkspaceDirectory: String?
     ) async -> GuideAutopilotStepResult? {
         guard exitStatus == Self.exitStatusForAProgramThatIsNotInstalled,
               !theReaderAskedToStopThisStep,
@@ -1210,6 +1237,11 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
                 + "installing it. Iris is running that step now."
         ))
         transcript.append(.commandFromTheGuide(text: installCommand))
+        if let preparedWorkspaceDirectory {
+            guard case .succeeded = await moveInto(preparedWorkspaceDirectory, using: shellSession) else {
+                return .surfacedToReader
+            }
+        }
         switch await runGuideCommand(
             installCommand, inWorkingDirectory: shellSession.currentWorkingDirectory
         ) {
@@ -1242,7 +1274,8 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         transcript.append(.commandFromTheGuide(text: command))
         switch await runGuideCommand(
             command,
-            inWorkingDirectory: step.workingDirectory ?? shellSession.currentWorkingDirectory
+            inWorkingDirectory: preparedWorkspaceDirectory
+                ?? step.workingDirectory ?? shellSession.currentWorkingDirectory
         ) {
         case .succeeded: return .succeeded
         case .stopped: return .stopped
@@ -1281,7 +1314,8 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         step: IrisGuideStep,
         command: String,
         exitStatus: Int32,
-        workingDirectory: String
+        workingDirectory: String,
+        preparedWorkspaceDirectory: String?
     ) async -> GuideAutopilotStepResult {
         var priorAttempts: [String] = []
 
@@ -1349,7 +1383,9 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             case .runACommand(let fixCommand, let whatItDoes):
                 let applied = await applyFixCommand(
                     fixCommand, whatItDoes: whatItDoes,
-                    attempt: rung + 1, searchedTheWeb: fix.cameFromWebSearch
+                    attempt: rung + 1, searchedTheWeb: fix.cameFromWebSearch,
+                    workingDirectory: preparedWorkspaceDirectory ?? shellSession.currentWorkingDirectory,
+                    workspace: step.workspace
                 )
                 switch applied {
                 case .stopped:
@@ -1372,9 +1408,15 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
                     guard fix.retryTheOriginalCommandAfterwards,
                           !theReaderAskedToStopThisStep else { continue }
                     transcript.append(.commandFromTheGuide(text: command))
+                    if let preparedWorkspaceDirectory {
+                        guard case .succeeded = await moveInto(preparedWorkspaceDirectory, using: shellSession) else {
+                            continue
+                        }
+                    }
                     let retry = await runGuideCommand(
                         command,
-                        inWorkingDirectory: step.workingDirectory ?? shellSession.currentWorkingDirectory
+                        inWorkingDirectory: preparedWorkspaceDirectory
+                            ?? step.workingDirectory ?? shellSession.currentWorkingDirectory
                     )
                     switch retry {
                     case .succeeded: return .succeeded
@@ -1407,16 +1449,28 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         _ fixCommand: String,
         whatItDoes: String,
         attempt: Int,
-        searchedTheWeb: Bool
+        searchedTheWeb: Bool,
+        workingDirectory: String,
+        workspace: IrisGuideStepWorkspace?
     ) async -> FixApplication {
         transcript.append(.commandFromAFix(
             text: fixCommand, attempt: attempt,
             searchedTheWeb: searchedTheWeb, whatItDoes: whatItDoes
         ))
+        if let workspace {
+            guard await resolvePreparedWorkspace(workspace) == workingDirectory else {
+                return .skippedByReader
+            }
+        }
         // A repair runs in the shell as the step left it, which is the step's
         // declared folder. A model-proposed `cp ./x .` is judged against that
         // folder for the same reason a guide's is.
-        let folder = shellSession.currentWorkingDirectory
+        let folder = workingDirectory
+        if folder != shellSession.currentWorkingDirectory {
+            guard case .succeeded = await moveInto(folder, using: shellSession) else {
+                return .skippedByReader
+            }
+        }
         switch GuideAutopilotRiskAssessment.assess(fixCommand, inWorkingDirectory: folder) {
         case .runsWithoutAsking:
             guard let approved = GuideAutopilotRiskAssessment.approve(
@@ -1545,6 +1599,32 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         let diagnosis = Self.preparedWorkspaceRequiredDiagnosis(workspace)
         transcript.append(.explanation(text: diagnosis))
         return surface(diagnosis: diagnosis, command: command)
+    }
+
+    private func resolvePreparedWorkspace(
+        _ workspace: IrisGuideStepWorkspace
+    ) async -> String? {
+        guard workspace.kind == .preparedProject,
+              let binding = preparedWorkspaceBinding,
+              binding.guideID == guideContext.slug,
+              binding.guideRevision == guideContext.version,
+              binding.projectID == (guideContext.projectID ?? guideContext.slug),
+              let validator = preparedWorkspaceValidator,
+              await validator(binding) else {
+            return nil
+        }
+        if let owner = guideContext.sourceOwner,
+           let repo = guideContext.sourceRepo,
+           GuideSourceWorkspaceOrigin.parse("https://\(owner)/\(repo)") != binding.expectedOrigin {
+            return nil
+        }
+        if let commit = guideContext.sourceCommit, commit != binding.expectedCommit {
+            return nil
+        }
+        guard let directory = try? binding.workingDirectory(forRelativePath: workspace.relativePath) else {
+            return nil
+        }
+        return directory.path
     }
 
     private static func systemFolderDiagnosis(_ folder: String) -> String {
@@ -1725,9 +1805,6 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         stepGeneration: Int,
         command: String
     ) async -> GuideAutopilotStepResult {
-        if let workspace = step.workspace {
-            return refusePreparedWorkspace(workspace, command: command)
-        }
         // A dev server keeps the side session's command lane occupied even
         // though `executeStepCommand` returns as soon as the process starts.
         // Check before any await so a second long-running step cannot slip in
@@ -1739,7 +1816,15 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         }
         // The side session is about to be moved into the step's folder, so
         // that is the folder this command will run in — assess it there.
-        let folder = step.workingDirectory ?? longRunningSession.currentWorkingDirectory
+        let folder: String
+        if let workspace = step.workspace {
+            guard let preparedFolder = await resolvePreparedWorkspace(workspace) else {
+                return refusePreparedWorkspace(workspace, command: command)
+            }
+            folder = preparedFolder
+        } else {
+            folder = step.workingDirectory ?? longRunningSession.currentWorkingDirectory
+        }
         guard let approved = GuideAutopilotRiskAssessment.approve(
             command, inWorkingDirectory: folder
         ) else {
@@ -1774,7 +1859,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         // `cd` steps, so a dev server is the case where an undeclared folder
         // hurt most: `pnpm dev` in the home folder, every time. It gets the
         // same move the main session gets.
-        if let folder = step.workingDirectory {
+        if step.workingDirectory != nil || step.workspace != nil {
             switch await moveInto(folder, using: longRunningSession) {
             case .succeeded:
                 break

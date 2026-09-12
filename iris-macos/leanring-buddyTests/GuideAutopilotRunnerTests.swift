@@ -99,10 +99,11 @@ struct GuideAutopilotRunnerTests {
         sourceOwner: String? = nil,
         sourceRepo: String? = nil,
         sourceCommit: String? = nil,
+        workspaceBinding: GuideSourceWorkspaceBinding? = nil,
         sourceMetadataReader: @escaping @Sendable (String) async -> GuideAutopilotSourceCheckoutMetadata = { _ in .unknown }
     ) -> GuideAutopilotRunner {
         let proposer = proposer ?? FakeFixProposer()
-        return GuideAutopilotRunner(
+        let runner = GuideAutopilotRunner(
             shellSession: shell,
             longRunningSession: longRunning ?? FakeShellSession(outcomes: [.succeeded(workingDirectory: "/x")]),
             fixProposer: proposer,
@@ -121,6 +122,10 @@ struct GuideAutopilotRunnerTests {
             pacing: .instant,
             sourceMetadataReader: sourceMetadataReader
         )
+        if let workspaceBinding {
+            runner.bindPreparedWorkspace(workspaceBinding) { _ in true }
+        }
+        return runner
     }
 
     private static func step(
@@ -200,6 +205,37 @@ struct GuideAutopilotRunnerTests {
         #expect(diagnosis.contains("prepared project workspace"))
         #expect(diagnosis.contains("did not run"))
         #expect(diagnosis.contains("apps/mobile"))
+    }
+
+    @Test func aBoundWorkspaceResolvesItsDirectoryBeforeRunningTheCommand() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("iris-bound-workspace-\(UUID().uuidString)", isDirectory: true)
+        let nested = root.appendingPathComponent("apps/mobile", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let origin = GuideSourceWorkspaceOrigin(host: "github.com", path: "example/project")
+        let identity = GuideSourceWorkspaceIdentity(
+            canonicalPath: root.path, origin: origin, head: String(repeating: "a", count: 40),
+            expectedCommitIsPresent: true, porcelain: "", commonGitDirectory: root.path,
+            workingTreeFingerprint: "clean"
+        )
+        let binding = GuideSourceWorkspaceBinding(
+            runID: UUID(), guideID: "whimprflow", guideRevision: 3, projectID: "whimprflow",
+            original: identity, staged: identity, originalPath: root.path, stagedPath: root.path,
+            expectedOrigin: origin, expectedCommit: identity.head, ownershipMarker: "existing-user-checkout",
+            commonGitDirectory: root.path, linkedWorktreeGitDirectory: root.path, isIsolated: false
+        )
+        let shell = FakeShellSession(outcomes: [.succeeded(workingDirectory: nested.path)])
+        let workspace = try IrisGuideStepWorkspace(kind: .preparedProject, relativePath: "apps/mobile")
+        let runner = Self.runner(shell: shell, workspaceBinding: binding)
+
+        let result = await runner.executeStepCommand(
+            step: Self.step(command: "bun run build", workspace: workspace), stepIndex: 0, totalSteps: 1
+        )
+
+        #expect(result == .succeeded)
+        #expect(shell.commandsRun.first == "cd \(nested.resolvingSymlinksInPath().path)")
+        #expect(shell.commandsRun.last == "bun run build")
     }
 
     @Test func theRedButtonCancelsBothTheMainAndTheLongRunningSession() async {

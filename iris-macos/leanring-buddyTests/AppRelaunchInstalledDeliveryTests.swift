@@ -123,6 +123,57 @@ import Testing
         return (try? String(contentsOfFile: markerPath, encoding: .utf8))
     }
 
+    /// A process can die after the installed swap has committed but before the
+    /// receipt's prepared -> installed publication. Startup reconciliation must
+    /// recognize that exact on-disk state, recover the receipt, and make the
+    /// completed delivery undoable instead of leaving it stranded as pending.
+    @Test func startupReconcilesAReceiptInterruptedAfterTheInstalledSwap() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iris-delivery-reconcile-(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let installedPath = root.appendingPathComponent("Applications/Demo.app").path
+        let freshBuildPath = root.appendingPathComponent("clone/build/Demo.app").path
+        let snapshotPath = root.appendingPathComponent("backups/Demo.app").path
+        let receiptDirectory = root.appendingPathComponent("receipts")
+        Self.makeFakeBundle(at: installedPath, marker: "installed-v1")
+        Self.makeFakeBundle(at: freshBuildPath, marker: "fresh-v2")
+
+        let store = AppDeliveryReceiptStore(baseDirectory: receiptDirectory)
+        let installedIdentity = try #require(AppDeliveryReceipt.bundleIdentity(atPath: installedPath))
+        let replacementIdentity = try #require(AppDeliveryReceipt.bundleIdentity(atPath: freshBuildPath))
+        let sourceIdentity = AppDeliveryReceipt.SourceIdentity(
+            appSlug: "demo", appName: "Demo", clonePath: root.appendingPathComponent("clone").path,
+            branchName: "codex/demo", commit: String(repeating: "a", count: 40),
+            baseCommit: String(repeating: "b", count: 40), baseRef: "main", changeId: "change-1"
+        )
+        let receipt = AppDeliveryReceipt(
+            bundleIdentifier: "com.fixture.demo", installedPath: installedPath,
+            sourceArtifactPath: freshBuildPath, backupPath: snapshotPath,
+            sourceIdentity: sourceIdentity, installedBundleIdentity: installedIdentity,
+            replacementBundleIdentity: replacementIdentity, backupBundleIdentity: installedIdentity
+        )
+        try store.savePrepared(receipt)
+
+        let swap = AppRelaunchService.atomicallyReplaceBundle(
+            installedPath: installedPath, withBundleAt: freshBuildPath, snapshotTo: snapshotPath
+        )
+        #expect(swap.isSuccess)
+        #expect(Self.markerOfBundle(at: installedPath) == "fresh-v2")
+        #expect(Self.markerOfBundle(at: snapshotPath) == "installed-v1")
+        #expect(store.load(receipt.identifier) == .valid(receipt))
+
+        let promoted = try store.reconcilePreparedInstallations()
+        #expect(promoted == 1)
+        guard case .valid(let recovered) = store.load(receipt.identifier) else {
+            Issue.record("the interrupted delivery receipt was not recovered")
+            return
+        }
+        #expect(recovered.phase == .installed)
+        #expect(recovered.hasCompleteUndoMetadata)
+        #expect(try store.reconcilePreparedInstallations() == 0)
+    }
+
     /// The core the whole delivery rests on, exercised for real: snapshot the
     /// installed bundle, swap the fresh one into its exact path, and prove the
     /// installed path now holds the FRESH build while the snapshot holds the OLD

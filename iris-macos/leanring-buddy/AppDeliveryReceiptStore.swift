@@ -1652,6 +1652,60 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         }
     }
 
+    /// Finish the one durable state transition that can be interrupted by a
+    /// process crash. Installed delivery publishes a `.prepared` receipt before
+    /// swapping the app, then changes it to `.installed` after the swap. If
+    /// Iris dies between those writes, the app on disk is already the new app
+    /// but Saved Versions would otherwise keep showing a prepared record that
+    /// cannot be used for Undo after restart.
+    ///
+    /// This is deliberately conservative: a prepared receipt is promoted only
+    /// when it has complete identity metadata and the installed and backup
+    /// payloads still match the exact recorded replacement and prior app. A
+    /// failed or partial swap therefore remains prepared and is never guessed
+    /// into history. The operation is idempotent and never changes app files.
+    @discardableResult
+    func reconcilePreparedInstallations() throws -> Int {
+        try withExclusiveStoreLock {
+            var promoted = 0
+            for receipt in try retentionReceipts() where receipt.phase == .prepared {
+                guard let source = receipt.sourceIdentity, source.isValid,
+                      let installed = receipt.installedBundleIdentity, installed.isValid,
+                      let replacement = receipt.replacementBundleIdentity, replacement.isValid,
+                      let backup = receipt.backupBundleIdentity, backup.isValid,
+                      installed.contentDigest != nil,
+                      replacement.contentDigest != nil,
+                      backup.contentDigest != nil,
+                      installed == backup,
+                      installed.bundleIdentifier == receipt.bundleIdentifier,
+                      replacement.bundleIdentifier == receipt.bundleIdentifier,
+                      pathHasNoSymlinkComponents(receipt.installedPath, allowMissing: false),
+                      pathHasNoSymlinkComponents(receipt.backupPath, allowMissing: false),
+                      AppDeliveryReceipt.bundleIdentity(atPath: receipt.installedPath) == replacement,
+                      AppDeliveryReceipt.bundleIdentity(atPath: receipt.backupPath) == backup else {
+                    continue
+                }
+
+                let next = AppDeliveryReceipt(
+                    identifier: receipt.identifier,
+                    bundleIdentifier: receipt.bundleIdentifier,
+                    installedPath: receipt.installedPath,
+                    sourceArtifactPath: receipt.sourceArtifactPath,
+                    backupPath: receipt.backupPath,
+                    startedAt: receipt.startedAt,
+                    phase: .installed,
+                    sourceIdentity: source,
+                    installedBundleIdentity: installed,
+                    replacementBundleIdentity: replacement,
+                    backupBundleIdentity: backup
+                )
+                try publish(try encoded(next), at: url(for: next.identifier), refusingExisting: false)
+                promoted += 1
+            }
+            return promoted
+        }
+    }
+
     private func encoded(_ receipt: AppDeliveryReceipt) throws -> Data {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(receipt)

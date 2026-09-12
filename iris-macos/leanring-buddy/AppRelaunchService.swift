@@ -119,6 +119,16 @@ final class AppRelaunchService {
         self.packagingDeadline = packagingDeadline
         self.gracefulQuitTimeout = gracefulQuitTimeout
         self.deliveryReceiptStore = deliveryReceiptStore
+        do {
+            let promoted = try deliveryReceiptStore.reconcilePreparedInstallations()
+            if promoted > 0 {
+                NSLog("Iris reconciled %d completed installed delivery receipt(s) after startup", promoted)
+            }
+        } catch {
+            // A corrupt or unreadable receipt store must remain visible for
+            // review; startup must not guess or touch app files to repair it.
+            NSLog("Iris could not reconcile prepared delivery receipts: %@", String(describing: error))
+        }
     }
 
     // MARK: - Working out what a clone actually is

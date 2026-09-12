@@ -117,3 +117,18 @@ re-exercised after this repair, so that remains an observation limitation, not
 a successful version-history UI acceptance. The earlier saved-versions
 open/cancel observation remains evidence only for the existing cleanup screen;
 it does not establish that the new retention preview is wired to that UI.
+
+## Version-history preview build at 3:05 PM Pacific
+
+The fresh-preview gate was then built and launched through the same Xcode GUI
+scheme. The live artifact remained
+`/Users/akrit/Library/Developer/Xcode/DerivedData/leanring-buddy-dajsagjrurlvaigplzqblrdboant/Build/Products/Test/Iris Test.app`;
+its `Iris Test.debug.dylib` SHA-256 is
+`8ccf741f04ae155e94ebaa33bd2023c1985f23cc3df9c34c915bbe4d6111373e`.
+
+This build gates “Review cleanup…” behind a new async read-only preview for
+the selected registered Test app. The destructive confirmation is shown only
+when the preview finds eligible obsolete backups, and its text reports the
+fresh count plus logical and allocated bytes. The app UI route itself has not
+yet been clicked through after this wiring, so this is a build-and-launch fact,
+not a completed preview/confirmation acceptance.

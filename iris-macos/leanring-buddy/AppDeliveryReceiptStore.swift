@@ -658,7 +658,7 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
               protectedPaths.allSatisfy({ pathHasNoSymlinkComponents($0, allowMissing: false) }) else {
             throw RetentionError.invalidPolicy
         }
-        return try withExclusiveStoreLock {
+        guard let preview = try withExistingStoreSharedLock({
             let inventory = try backupRetentionInventory(
                 backupRoot: backupRoot,
                 recoveryStore: recoveryStore,
@@ -705,7 +705,14 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                 previewEligibleBackupPaths: eligible,
                 receiptCount: inventory.receiptCount
             )
+        }) else {
+            return BackupRetentionInventory(
+                logicalBytes: 0, allocatedBytes: 0,
+                protectedLogicalBytes: 0, previewEligibleLogicalBytes: 0,
+                protectedBackupPaths: [], previewEligibleBackupPaths: [], receiptCount: 0
+            )
         }
+        return preview
     }
 
     /// Remove only obsolete, receipt-owned restored backups. This is an owner
@@ -1730,6 +1737,39 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         guard descriptor >= 0 else { throw StoreError.writeFailed }
         defer { close(descriptor) }
         guard flock(descriptor, LOCK_EX) == 0 else { throw StoreError.writeFailed }
+        return try operation()
+    }
+
+    /// Read-only counterpart to the writer lock. It never creates a missing
+    /// receipt directory or lock file, which keeps a preview non-mutating.
+    private func withExistingStoreSharedLock<T>(_ operation: () throws -> T) throws -> T? {
+        guard pathHasNoSymlinkComponents(baseDirectory.path, allowMissing: true) else {
+            throw RetentionError.unsafePath
+        }
+        var baseMetadata = stat()
+        guard lstat(baseDirectory.path, &baseMetadata) == 0 else {
+            if errno == ENOENT { return nil }
+            throw RetentionError.unreadableInventory
+        }
+        guard (baseMetadata.st_mode & S_IFMT) == S_IFDIR else {
+            throw RetentionError.unsafePath
+        }
+        let lockURL = baseDirectory.appendingPathComponent(".lock")
+        guard pathHasNoSymlinkComponents(lockURL.path, allowMissing: true) else {
+            throw RetentionError.unsafePath
+        }
+        var lockMetadata = stat()
+        guard lstat(lockURL.path, &lockMetadata) == 0 else {
+            if errno == ENOENT { return nil }
+            throw RetentionError.unreadableInventory
+        }
+        guard (lockMetadata.st_mode & S_IFMT) == S_IFREG else {
+            throw RetentionError.unsafePath
+        }
+        let descriptor = open(lockURL.path, O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw RetentionError.unreadableInventory }
+        defer { close(descriptor) }
+        guard flock(descriptor, LOCK_SH) == 0 else { throw RetentionError.unreadableInventory }
         return try operation()
     }
 

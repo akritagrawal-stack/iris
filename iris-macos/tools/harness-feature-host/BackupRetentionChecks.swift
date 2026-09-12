@@ -59,6 +59,7 @@ struct BackupRetentionChecks {
         defer { try? FileManager.default.removeItem(at: fixtureParent) }
 
         var groups = 0
+        try checkAbsentStorePreviewDoesNotCreateLock(root: root); groups += 1
         try checkExactCapAndNoCleanup(root: root); groups += 1
         try checkProtectedReferencesAndPreview(root: root); groups += 1
         try checkCorruptSymlinkAndRecordBounds(root: root); groups += 1
@@ -67,6 +68,25 @@ struct BackupRetentionChecks {
         try checkSuccessiveInstalledDeliveriesRemain(root: root); groups += 1
         try checkCleanupAliasAndPolicyGuards(root: root); groups += 1
         print("BACKUP RETENTION CHECKS PASS: \(groups) groups")
+    }
+
+    private static func checkAbsentStorePreviewDoesNotCreateLock(root: URL) throws {
+        let fixture = try fixture(root: root, name: "absent-preview")
+        let identifier = "com.fixture.retention.absent"
+        try makeBundle(at: fixture.installed, identifier: identifier, payload: "current")
+        try makeBundle(at: fixture.replacement, identifier: identifier, payload: "candidate")
+        try require(!FileManager.default.fileExists(atPath: fixture.receiptRoot.path),
+                    "absent preview fixture unexpectedly had a receipt directory")
+        _ = try IrisTestAppDelivery.previewObsoleteBackups(
+            project: cleanupProject(fixture: fixture, identifier: identifier),
+            backupDirectory: fixture.backupRoot,
+            receiptStore: fixture.store,
+            recoveryStore: fixture.recoveryStore
+        )
+        try require(!FileManager.default.fileExists(atPath: fixture.receiptRoot.path)
+            && !FileManager.default.fileExists(atPath: fixture.receiptRoot.appendingPathComponent(".lock").path),
+            "absent-store preview created the receipt directory or lock")
+        print("PASS absent-store retention preview is non-mutating")
     }
 
     private static func checkTestCleanupPreflightAndProtection(root: URL) throws {

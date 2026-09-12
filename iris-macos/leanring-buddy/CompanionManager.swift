@@ -2197,24 +2197,66 @@ final class CompanionManager: ObservableObject {
     /// readable, but does not claim that any will be deleted: the cleanup
     /// engine re-checks recovery references, identity, paths, and retention
     /// rules under its exclusive store lock immediately before deletion.
-    func previewSavedTestBackups(for project: IrisTestProjectRegistry.Project) -> String {
+    @MainActor
+    func previewSavedTestBackups(
+        for project: IrisTestProjectRegistry.Project
+    ) async -> IrisTestAppDelivery.TestBackupCleanupPreview {
         guard IrisTestEnvironment.isEnabled,
               IrisTestProjectRegistry.project(slug: project.slug) == project else {
-            return "This Test app is no longer registered. No files are eligible."
+            return .init(
+                summary: "This Test app is no longer registered. No files are eligible.",
+                eligibleBackupCount: 0, eligibleLogicalBytes: 0, eligibleAllocatedBytes: 0
+            )
         }
-        let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
-        let restored = savedAppVersionsReceiptStore.entries().compactMap { entry -> AppDeliveryReceipt? in
-            guard case .valid(let receipt) = entry,
-                  receipt.phase == .restored,
-                  receipt.bundleIdentifier == project.bundleIdentifier,
-                  receipt.startedAt < cutoff,
-                  savedAppVersionsReceiptStore.backupIsAvailable(for: receipt) else { return nil }
-            return receipt
+        let outcome = await IrisTestAppDelivery.previewObsoleteBackups(
+            project: project, service: appRelaunchService
+        )
+        switch outcome {
+        case .previewed(let inventory):
+            let allocatedBytes = inventory.previewEligibleBackupPaths.reduce(
+                into: UInt64(0)
+            ) { total, path in
+                guard let measured = AppDeliveryReceipt.allocatedByteCount(atPath: path),
+                      total <= UInt64.max - measured else {
+                    total = UInt64.max
+                    return
+                }
+                total += measured
+            }
+            guard allocatedBytes != UInt64.max else {
+                return .init(
+                    summary: "Retention preview could not measure eligible backup allocation. No data was changed.",
+                    eligibleBackupCount: 0, eligibleLogicalBytes: 0, eligibleAllocatedBytes: 0
+                )
+            }
+            let count = inventory.previewEligibleBackupPaths.count
+            if count == 0 {
+                return .init(
+                    summary: "No eligible obsolete restored backups for \(project.name). Logical bytes: 0. Allocated bytes: 0. Recent, newest, recovery-protected, changed, or unreadable copies are kept.",
+                    eligibleBackupCount: 0, eligibleLogicalBytes: 0, eligibleAllocatedBytes: 0
+                )
+            }
+            return .init(
+                summary: "Eligible obsolete backups for \(project.name): \(count). Logical bytes: \(formattedByteCount(inventory.previewEligibleLogicalBytes)). Allocated bytes: \(formattedByteCount(allocatedBytes)). A final safety check runs before any removal.",
+                eligibleBackupCount: count,
+                eligibleLogicalBytes: inventory.previewEligibleLogicalBytes,
+                eligibleAllocatedBytes: allocatedBytes
+            )
+        case .refused(let message):
+            return .init(
+                summary: "No cleanup preview is available. No data was changed. \(message)",
+                eligibleBackupCount: 0, eligibleLogicalBytes: 0, eligibleAllocatedBytes: 0
+            )
+        case .failed(let error):
+            return .init(
+                summary: "No cleanup preview is available. No data was changed. \(error.localizedDescription).",
+                eligibleBackupCount: 0, eligibleLogicalBytes: 0, eligibleAllocatedBytes: 0
+            )
         }
-        guard !restored.isEmpty else {
-            return "No older restored backups for \(project.name) appear eligible. Recent, newest, protected, or unreadable copies are kept."
-        }
-        return "Up to \(restored.count) older restored backup(s) for \(project.name) may be removable. Recent, newest, recovery-protected, changed, or unreadable copies are kept after a final safety check."
+    }
+
+    private func formattedByteCount(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(min(bytes, UInt64(Int64.max))), countStyle: .file)
     }
 
     /// Explicit, Test-only cleanup for one selected saved app project. This is

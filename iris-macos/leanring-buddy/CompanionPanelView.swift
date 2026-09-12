@@ -309,7 +309,7 @@ struct CompanionPanelView: View {
                         },
                         testProjects: companionManager.savedTestProjects,
                         previewTestBackups: { project in
-                            companionManager.previewSavedTestBackups(for: project)
+                            await companionManager.previewSavedTestBackups(for: project)
                         },
                         onCleanupTestBackups: { project in
                             await companionManager.cleanupSavedTestBackups(for: project)

@@ -4,6 +4,15 @@ import Foundation
 /// Test delivery uses explicit registry paths, never Launch Services discovery.
 @MainActor
 enum IrisTestAppDelivery {
+    struct TestBackupCleanupPreview: Equatable, Sendable {
+        let summary: String
+        let eligibleBackupCount: Int
+        let eligibleLogicalBytes: UInt64
+        let eligibleAllocatedBytes: UInt64
+
+        var hasEligibleBackups: Bool { eligibleBackupCount > 0 }
+    }
+
     enum BackupCleanupOutcome: Equatable, Sendable {
         case cleaned(AppDeliveryReceiptStore.BackupCleanupResult)
         case refused(String)

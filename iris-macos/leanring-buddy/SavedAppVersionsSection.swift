@@ -7,19 +7,21 @@ struct SavedAppVersionsSection: View {
     private let receiptStore: AppDeliveryReceiptStore
     private let onUndoReceipt: ((AppDeliveryReceipt) -> Void)?
     private let testProjects: [IrisTestProjectRegistry.Project]
-    private let previewTestBackups: ((IrisTestProjectRegistry.Project) -> String)?
+    private let previewTestBackups: ((IrisTestProjectRegistry.Project) async -> IrisTestAppDelivery.TestBackupCleanupPreview)?
     private let onCleanupTestBackups: ((IrisTestProjectRegistry.Project) async -> String)?
     @State private var records: [AppDeliveryReceiptStore.Entry] = []
     @State private var missingFiles = false
     @State private var isShowingCleanupConfirmation = false
     @State private var cleanupMessage: String?
     @State private var selectedTestProjectSlug: String?
+    @State private var cleanupPreview: IrisTestAppDelivery.TestBackupCleanupPreview?
+    @State private var isPreviewingCleanup = false
 
     init(
         receiptStore: AppDeliveryReceiptStore = AppDeliveryReceiptStore(),
         onUndoReceipt: ((AppDeliveryReceipt) -> Void)? = nil,
         testProjects: [IrisTestProjectRegistry.Project] = [],
-        previewTestBackups: ((IrisTestProjectRegistry.Project) -> String)? = nil,
+        previewTestBackups: ((IrisTestProjectRegistry.Project) async -> IrisTestAppDelivery.TestBackupCleanupPreview)? = nil,
         onCleanupTestBackups: ((IrisTestProjectRegistry.Project) async -> String)? = nil
     ) {
         self.receiptStore = receiptStore
@@ -112,12 +114,28 @@ struct SavedAppVersionsSection: View {
                         }
                         .pickerStyle(.menu)
                         let selectedProject = testProjects.first(where: { $0.slug == selectedTestProjectSlug }) ?? testProjects[0]
-                        Text(previewTestBackups?(selectedProject) ?? "Iris will re-check this Test app before removing anything.")
+                        Text(cleanupPreview?.summary ?? "Review cleanup runs a fresh, read-only retention preview before showing any confirmation.")
                             .fixedSize(horizontal: false, vertical: true)
                         Button("Review cleanup…") {
-                            isShowingCleanupConfirmation = true
+                            guard let previewTestBackups else { return }
+                            isPreviewingCleanup = true
+                            cleanupPreview = nil
+                            Task {
+                                let preview = await previewTestBackups(selectedProject)
+                                await MainActor.run {
+                                    cleanupPreview = preview
+                                    isPreviewingCleanup = false
+                                    if preview.hasEligibleBackups {
+                                        isShowingCleanupConfirmation = true
+                                    }
+                                }
+                            }
                         }
                         .irisTinyButton()
+                        .disabled(isPreviewingCleanup || previewTestBackups == nil)
+                        .overlay {
+                            if isPreviewingCleanup { ProgressView().controlSize(.small) }
+                        }
                         .alert("Remove obsolete Test backups?", isPresented: $isShowingCleanupConfirmation) {
                             Button("Cancel", role: .cancel) {}
                             Button("Remove obsolete backups", role: .destructive) {
@@ -130,7 +148,7 @@ struct SavedAppVersionsSection: View {
                                 }
                             }
                         } message: {
-                            Text(previewTestBackups?(selectedProject) ?? "Iris will re-check project identity, recovery references, bundle identity, and paths immediately before removing anything. Your source clone and installed app are not deleted.")
+                            Text(cleanupPreview?.summary ?? "Iris will re-check project identity, recovery references, bundle identity, and paths immediately before removing anything. Your source clone and installed app are not deleted.")
                         }
                         if let cleanupMessage {
                             Text(cleanupMessage)
@@ -150,6 +168,10 @@ struct SavedAppVersionsSection: View {
             if selectedTestProjectSlug == nil {
                 selectedTestProjectSlug = testProjects.first?.slug
             }
+        }
+        .onChange(of: selectedTestProjectSlug) { _, _ in
+            cleanupPreview = nil
+            isShowingCleanupConfirmation = false
         }
     }
 

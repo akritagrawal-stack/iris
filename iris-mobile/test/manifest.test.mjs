@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   MAX_APPS,
@@ -6,6 +7,8 @@ import {
   ManifestError,
   createCatalogClient,
   createMemoryCache,
+  mapCatalogResponse,
+  parseCatalogText,
   parseManifestText,
   validateManifest,
 } from "../manifest.js";
@@ -17,6 +20,7 @@ function validManifest(overrides = {}) {
     schemaVersion: 1,
     prototype: true,
     label: "Local prototype",
+    observedAt: "2026-09-12T23:00:00.000Z",
     apps: [{
       id: "kneecap",
       title: "Kneecap",
@@ -33,17 +37,63 @@ function validManifest(overrides = {}) {
   };
 }
 
+function rawCatalog(overrides = {}) {
+  return {
+    apps: [{ slug: "kneecap", name: "kneecap", macBundleId: null, latestReleaseTag: null, guideSlug: "kneecap", ...overrides }],
+  };
+}
+
 function expectManifestError(action, code) {
   assert.throws(action, (error) => error instanceof ManifestError && (!code || error.code === code));
 }
 
-test("accepts the local prototype manifest and preserves the source pin", async () => {
+test("maps the opt-in fixture through the same adapter as production", async () => {
   const text = await (await import("node:fs/promises")).readFile(new URL("../prototype-manifest.json", import.meta.url), "utf8");
-  const manifest = parseManifestText(text);
+  const manifest = parseCatalogText(text, { prototype: true, observedAt: "2026-09-12T23:00:00.000Z" });
   assert.equal(manifest.prototype, true);
   assert.equal(manifest.apps[0].id, "kneecap");
-  assert.equal(manifest.apps[0].source.revision, revision);
+  assert.equal(manifest.apps[0].source.revision, null);
   assert.equal(manifest.apps[0].routes.iphone.destination, null);
+  assert.equal(manifest.apps[0].icon.kind, "fallback");
+});
+
+test("maps observed live fields without inventing native routes or a commit pin", () => {
+  const manifest = mapCatalogResponse({ apps: [{ slug: "cue", name: "cue", macBundleId: "com.cue.overlay", latestReleaseTag: "v0.2.2", guideSlug: "cue" }] }, { observedAt: "2026-09-12T23:00:00.000Z" });
+  const app = manifest.apps[0];
+  assert.deepEqual(app.os, ["computer"]);
+  assert.equal(app.source.guideSlug, "cue");
+  assert.equal(app.source.releaseTag, "v0.2.2");
+  assert.equal(app.source.revision, null);
+  assert.equal(app.source.repository, null);
+  assert.equal(app.routes.computer.status, "unavailable");
+  assert.equal(app.routes.computer.destination, null);
+  assert.equal(app.icon.kind, "fallback");
+});
+
+test("maps a checked-in sample of the actual catalog response", async () => {
+  const text = await readFile(new URL("./fixtures/live-catalog.json", import.meta.url), "utf8");
+  const manifest = parseCatalogText(text, { observedAt: "2026-09-12T23:24:09.000Z" });
+  assert.equal(manifest.apps.length, 2);
+  assert.equal(manifest.apps[0].observations.macBundleId, "com.cue.overlay");
+  assert.equal(manifest.apps[1].source.revision, null);
+  assert.equal(manifest.apps[1].routes.iphone.status, "unavailable");
+});
+
+test("keeps missing platform, link, and pin fields unknown", async () => {
+  const text = await readFile(new URL("./fixtures/missing-fields.json", import.meta.url), "utf8");
+  const manifest = parseCatalogText(text, { observedAt: "2026-09-12T23:00:00.000Z" });
+  const app = manifest.apps[0];
+  assert.deepEqual(app.os, []);
+  assert.equal(app.source.guideSlug, null);
+  assert.equal(app.source.revision, null);
+  assert.equal(app.setupGuide, null);
+  for (const device of ["iphone", "android", "computer"]) assert.equal(app.routes[device].destination, null);
+});
+
+test("preserves a valid observed icon URL and rejects an unsafe one", () => {
+  const mapped = mapCatalogResponse({ apps: [{ slug: "icon-app", name: "Icon App", macBundleId: null, latestReleaseTag: null, guideSlug: "icon-app", iconUrl: "https://publikhq.com/assets/icon.png" }] }, { observedAt: "2026-09-12T23:00:00.000Z" });
+  assert.deepEqual(mapped.apps[0].icon, { kind: "url", url: "https://publikhq.com/assets/icon.png" });
+  expectManifestError(() => mapCatalogResponse({ apps: [{ slug: "icon-app", name: "Icon App", macBundleId: null, latestReleaseTag: null, guideSlug: "icon-app", iconUrl: "https://evil.example/icon.png" }] }, { observedAt: "2026-09-12T23:00:00.000Z" }), "unverified-host");
 });
 
 test("rejects malformed, oversized, and duplicate manifests", () => {
@@ -99,7 +149,7 @@ test("allows only verified destinations to become actionable routes", () => {
 
 test("coalesces concurrent refreshes to one request", async () => {
   const cache = createMemoryCache();
-  const text = JSON.stringify(validManifest());
+  const text = JSON.stringify(rawCatalog());
   let calls = 0;
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
@@ -121,7 +171,7 @@ test("coalesces concurrent refreshes to one request", async () => {
 });
 
 test("uses verified cached metadata offline and reports no-cache offline", async () => {
-  const text = JSON.stringify(validManifest());
+  const text = JSON.stringify(rawCatalog());
   const cache = createMemoryCache();
   let now = 10_000;
   const client = createCatalogClient({ cache, now: () => now, fetchImpl: async () => ({ ok: true, text: async () => text }) });
@@ -136,7 +186,7 @@ test("uses verified cached metadata offline and reports no-cache offline", async
 });
 
 test("falls back to stale verified metadata after a network failure", async () => {
-  const text = JSON.stringify(validManifest());
+  const text = JSON.stringify(rawCatalog());
   const cache = createMemoryCache();
   let now = 10_000;
   let fail = false;
@@ -172,4 +222,26 @@ test("caps a streamed response while it is being read", async () => {
     },
   }) });
   await assert.rejects(() => client.refresh(), (error) => error.code === "manifest-too-large");
+});
+
+test("rejects unsafe or forged route URLs even when the source mapper is valid", () => {
+  const base = validManifest({});
+  for (const [destination, code] of [
+    ["https://u:p@testflight.apple.com/join/x", "unsafe-url"],
+    ["https://evil.example/join/x", "unverified-host"],
+    ["http://apps.apple.com/app/x", "unsafe-url"],
+  ]) {
+    const forged = structuredClone(base);
+    forged.apps[0].routes.iphone = { kind: destination.includes("testflight") ? "testflight" : "app-store", destination, status: "verified" };
+    expectManifestError(() => validateManifest(forged), code);
+  }
+});
+
+test("rejects malformed live catalog records and duplicate IDs", () => {
+  expectManifestError(() => parseCatalogText("{"));
+  expectManifestError(() => mapCatalogResponse({ apps: [{ slug: "bad slug", name: "Bad", macBundleId: null, latestReleaseTag: null, guideSlug: null }] }, { observedAt: "2026-09-12T23:00:00.000Z" }));
+  expectManifestError(() => mapCatalogResponse({ apps: [
+    { slug: "same", name: "Same", macBundleId: null, latestReleaseTag: null, guideSlug: null },
+    { slug: "same", name: "Same again", macBundleId: null, latestReleaseTag: null, guideSlug: null },
+  ] }, { observedAt: "2026-09-12T23:00:00.000Z" }), "duplicate-id");
 });

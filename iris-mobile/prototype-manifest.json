@@ -1,48 +1,13 @@
 {
-  "schemaVersion": 1,
   "prototype": true,
-  "label": "Local prototype manifest · observed source identity; native routes still need publisher setup",
+  "label": "Local prototype fixture · mapped with the live catalog adapter",
   "apps": [
     {
-      "id": "kneecap",
-      "title": "Kneecap",
-      "icon": { "kind": "fallback", "label": "K" },
-      "os": ["iphone", "android"],
-      "routes": {
-        "iphone": {
-          "kind": "unavailable",
-          "destination": null,
-          "status": "unavailable",
-          "evidence": "The observed catalog has no verified TestFlight or App Store destination.",
-          "nextActions": ["Publisher enrolls in Apple Developer Program.", "Publisher signs and uploads a build to TestFlight.", "Publisher adds the verified invite destination to the catalog."]
-        },
-        "android": {
-          "kind": "unavailable",
-          "destination": null,
-          "status": "unavailable",
-          "evidence": "The observed catalog has no verified Android package destination.",
-          "nextActions": ["Publisher signs a release APK or Play listing.", "Publisher verifies package identity and release access.", "Publisher adds the verified HTTPS destination to the catalog."]
-        },
-        "computer": {
-          "kind": "unavailable",
-          "destination": null,
-          "status": "unavailable",
-          "evidence": "No verified computer route is established by the observed catalog.",
-          "nextActions": ["Publisher publishes a supported computer route.", "Publisher verifies its HTTPS destination before listing it."]
-        }
-      },
-      "source": {
-        "guideSlug": "kneecap",
-        "revision": "fc48ba487a1e0d0cd10b30d6600acd2895ffdbed",
-        "repository": "https://github.com/Blueturboguy07/kneecap"
-      },
-      "setupGuide": { "label": "View setup guide", "destination": "https://publikhq.com/kneecap" },
-      "capabilities": ["Native mobile editor capabilities are observed in source; runtime delivery is unverified."],
-      "setup": {
-        "iphone": ["This hub cannot install unsigned iPhone software.", "Use a publisher signed TestFlight build after it is provided."],
-        "android": ["This hub cannot install an unpublished Android package.", "Use a publisher signed APK or Play listing after it is provided."],
-        "computer": ["No verified computer destination is listed for this prototype.", "Use the source guide only after Iris prepares its isolated setup path."]
-      }
+      "slug": "kneecap",
+      "name": "kneecap",
+      "macBundleId": null,
+      "latestReleaseTag": null,
+      "guideSlug": "kneecap"
     }
   ]
 }

@@ -1,0 +1,6 @@
+{
+  "apps": [
+    { "slug": "cue", "name": "cue", "macBundleId": "com.cue.overlay", "latestReleaseTag": "v0.2.2", "guideSlug": "cue" },
+    { "slug": "kneecap", "name": "kneecap", "macBundleId": null, "latestReleaseTag": null, "guideSlug": "kneecap" }
+  ]
+}

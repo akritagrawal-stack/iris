@@ -63,7 +63,11 @@ function renderRoute(app) {
       list.className = "next-actions";
       for (const action of [...new Set(actions)]) list.append(textElement("li", action));
       if (route.evidence) details.append(textElement("p", route.evidence, "route-evidence"));
-      details.append(textElement("p", `Source guide ${app.source.guideSlug} · ${app.source.revision.slice(0, 12)}`, "source-label"));
+      const sourceParts = [];
+      if (app.source.guideSlug) sourceParts.push(`guide ${app.source.guideSlug}`);
+      sourceParts.push(app.source.revision ? `commit ${app.source.revision.slice(0, 12)}` : "commit pin unknown");
+      if (app.source.releaseTag) sourceParts.push(`release ${app.source.releaseTag}`);
+      details.append(textElement("p", `Observed source: ${sourceParts.join(" · ")}`, "source-label"));
       details.append(textElement("p", `Publisher next steps for ${deviceLabels[state.device]}:`, "route-evidence"), list);
       routeBox.append(details);
     }
@@ -95,8 +99,13 @@ function renderCard(app) {
   title.append(textElement("h2", app.title));
   head.append(title);
   card.append(head);
-  const supported = app.os.includes(state.device);
-  card.append(textElement("p", supported ? `${deviceLabels[state.device]} route` : `${deviceLabels[state.device]} support unavailable`, `compatibility ${supported ? "compatible" : "unknown"}`));
+  const support = app.os.length === 0 ? "unknown" : app.os.includes(state.device) ? "compatible" : "unavailable";
+  const compatibilityCopy = {
+    compatible: `${deviceLabels[state.device]} support observed`,
+    unavailable: `${deviceLabels[state.device]} support unavailable`,
+    unknown: `${deviceLabels[state.device]} support unknown`,
+  };
+  card.append(textElement("p", compatibilityCopy[support], `compatibility ${support}`));
   card.append(renderRoute(app));
   return card;
 }
@@ -125,7 +134,7 @@ async function loadCatalog({ force = false } = {}) {
     state.result = null;
     render();
     error.hidden = false;
-    errorCopy.textContent = loadError.code === "offline-no-cache" ? "You are offline and no verified catalog is cached yet." : "The local catalog could not be verified. Try again when the server is available.";
+    errorCopy.textContent = loadError.code === "offline-no-cache" ? "You are offline and no verified catalog is cached yet." : "The live catalog could not be verified. Try again when the server is available.";
     setStatus("Catalog unavailable.");
   }
 }

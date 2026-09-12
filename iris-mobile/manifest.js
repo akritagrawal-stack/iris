@@ -1,7 +1,7 @@
 /**
- * Pure catalog manifest validation and bounded metadata loading for the mobile hub.
- * The module deliberately does not know about a framework, native installer, or
- * binary payloads.
+ * Pure catalog mapping, validation, and bounded metadata loading for the
+ * mobile hub. The live adapter only maps fields observed in the public
+ * catalog. It does not know about a framework, native installer, or binaries.
  */
 
 export const MAX_MANIFEST_BYTES = 64 * 1024;
@@ -12,6 +12,10 @@ export const MAX_URL_LENGTH = 2_048;
 export const CACHE_KEY = "iris-mobile.catalog.v1";
 export const CACHE_MAX_BYTES = 64 * 1024;
 export const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+export const SERVER_CACHE_MAX_AGE_MS = 5 * 60 * 1_000;
+export const LIVE_CATALOG_UPSTREAM = "https://publikhq.com/api/iris/apps";
+export const LIVE_CATALOG_ENDPOINT = "./api/iris/apps";
+export const PROTOTYPE_CATALOG_ENDPOINT = "./prototype-manifest.json";
 
 export const DEVICES = Object.freeze(["iphone", "android", "computer"]);
 export const ROUTE_KINDS = Object.freeze([
@@ -70,6 +74,12 @@ function assertText(value, label, max = MAX_TEXT_LENGTH) {
   if ([...value].some((character) => character.charCodeAt(0) < 32 && character !== "\n" && character !== "\t")) {
     fail(`${label} contains a control character`);
   }
+}
+
+function nullableText(value, label, max = MAX_TEXT_LENGTH) {
+  if (value === null || value === undefined) return null;
+  assertText(value, label, max);
+  return value.trim();
 }
 
 function assertUrl(value, label, allowedHosts) {
@@ -133,26 +143,43 @@ function validateRoute(route, device) {
   return { kind: route.kind, destination, status: route.status, evidence: route.evidence?.trim() || "", nextActions };
 }
 
-function validateSource(source, appId) {
+function validateSource(source) {
   assertRecord(source, "app.source");
-  assertKeys(source, new Set(["guideSlug", "revision", "repository"]), "app.source");
-  assertText(source.guideSlug, "app.source.guideSlug", 80);
-  if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(source.guideSlug.trim())) fail("app.source.guideSlug is invalid");
-  if (typeof source.revision !== "string" || !/^[0-9a-f]{40}$/i.test(source.revision)) fail("app.source.revision must be a 40-character commit pin");
+  assertKeys(source, new Set(["guideSlug", "revision", "repository", "releaseTag"]), "app.source");
+  const guideSlug = nullableText(source.guideSlug, "app.source.guideSlug", 80);
+  if (guideSlug !== null && !/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(guideSlug)) fail("app.source.guideSlug is invalid");
+  if (source.revision !== null && source.revision !== undefined && (typeof source.revision !== "string" || !/^[0-9a-f]{40}$/i.test(source.revision))) {
+    fail("app.source.revision must be a 40-character commit pin or null");
+  }
+  const repository = source.repository === null || source.repository === undefined
+    ? null
+    : assertUrl(source.repository, "app.source.repository", new Set(["github.com"]));
+  const releaseTag = nullableText(source.releaseTag, "app.source.releaseTag", 80);
   return {
-    guideSlug: source.guideSlug.trim(),
-    revision: source.revision.toLowerCase(),
-    repository: assertUrl(source.repository, "app.source.repository", new Set(["github.com"])),
+    guideSlug,
+    revision: source.revision ? source.revision.toLowerCase() : null,
+    repository,
+    releaseTag,
+  };
+}
+
+function validateObservations(observations) {
+  if (observations === undefined) return { macBundleId: null, latestReleaseTag: null };
+  assertRecord(observations, "app.observations");
+  assertKeys(observations, new Set(["macBundleId", "latestReleaseTag"]), "app.observations");
+  return {
+    macBundleId: nullableText(observations.macBundleId, "app.observations.macBundleId", 120),
+    latestReleaseTag: nullableText(observations.latestReleaseTag, "app.observations.latestReleaseTag", 80),
   };
 }
 
 function validateApp(app) {
   assertRecord(app, "manifest.apps[]");
-  assertKeys(app, new Set(["id", "title", "icon", "os", "routes", "source", "capabilities", "setup", "setupGuide"]), "manifest.apps[]");
+  assertKeys(app, new Set(["id", "title", "icon", "os", "routes", "source", "capabilities", "setup", "setupGuide", "observations"]), "manifest.apps[]");
   if (typeof app.id !== "string" || !/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(app.id) || app.id.length > 80) fail("app.id is invalid");
   assertText(app.title, "app.title", MAX_TITLE_LENGTH);
-  const os = Array.isArray(app.os) ? [...new Set(app.os)] : fail("app.os must be a non-empty array");
-  if (os.length === 0 || os.some((device) => !DEVICES.includes(device))) fail("app.os contains an unsupported device", "unsupported-os");
+  const os = Array.isArray(app.os) ? [...new Set(app.os)] : fail("app.os must be an array");
+  if (os.some((device) => !DEVICES.includes(device))) fail("app.os contains an unsupported device", "unsupported-os");
   const icon = validateIcon(app.icon);
   assertRecord(app.routes, "app.routes");
   assertKeys(app.routes, new Set(DEVICES), "app.routes");
@@ -168,7 +195,7 @@ function validateApp(app) {
   const setup = Object.fromEntries(DEVICES.map((device) => [device, app.setup?.[device] === undefined ? [] : validatePrerequisites(app.setup[device], `app.setup.${device}`)]));
   const capabilities = app.capabilities === undefined ? [] : validatePrerequisites(app.capabilities, "app.capabilities");
   let setupGuide = null;
-  if (app.setupGuide !== undefined) {
+  if (app.setupGuide !== undefined && app.setupGuide !== null) {
     assertRecord(app.setupGuide, "app.setupGuide");
     assertKeys(app.setupGuide, new Set(["destination", "label"]), "app.setupGuide");
     assertText(app.setupGuide.label, "app.setupGuide.label", MAX_TITLE_LENGTH);
@@ -180,11 +207,106 @@ function validateApp(app) {
     icon,
     os,
     routes,
-    source: validateSource(app.source, app.id),
+    source: validateSource(app.source),
     capabilities,
     setup,
     setupGuide,
+    observations: validateObservations(app.observations),
   };
+}
+
+function validateObservedAt(value) {
+  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) fail("manifest.observedAt must be an ISO timestamp", "invalid-observation-time");
+  return value;
+}
+
+export function validateManifest(manifest, knownBytes) {
+  assertRecord(manifest, "manifest");
+  assertKeys(manifest, new Set(["schemaVersion", "apps", "prototype", "label", "observedAt"]), "manifest");
+  if (manifest.schemaVersion !== 1) fail("manifest.schemaVersion must be 1", "unsupported-schema");
+  if (!Array.isArray(manifest.apps) || manifest.apps.length > MAX_APPS) fail(`manifest.apps must contain at most ${MAX_APPS} apps`, "app-limit");
+  if (manifest.prototype !== true && manifest.prototype !== false) fail("manifest.prototype must be a boolean");
+  assertText(manifest.label, "manifest.label", MAX_TEXT_LENGTH);
+  const observedAt = validateObservedAt(manifest.observedAt);
+  if (knownBytes === undefined) {
+    const bytes = new TextEncoder().encode(JSON.stringify(manifest)).byteLength;
+    if (bytes > MAX_MANIFEST_BYTES) fail(`manifest exceeds ${MAX_MANIFEST_BYTES} bytes`, "manifest-too-large");
+  }
+  const seen = new Set();
+  const apps = manifest.apps.map((app) => {
+    if (seen.has(app?.id)) fail(`duplicate app id: ${app?.id || "unknown"}`, "duplicate-id");
+    const normalized = validateApp(app);
+    if (seen.has(normalized.id)) fail(`duplicate app id: ${normalized.id}`, "duplicate-id");
+    seen.add(normalized.id);
+    return normalized;
+  });
+  return { schemaVersion: 1, prototype: manifest.prototype, label: manifest.label.trim(), observedAt, apps };
+}
+
+function fallbackLabel(name) {
+  const first = [...name.trim()][0];
+  return first ? first.toUpperCase() : "?";
+}
+
+function unavailableRoute(device, hasMacBundle) {
+  const platform = device === "iphone" ? "iPhone" : device === "android" ? "Android" : "computer";
+  const evidence = hasMacBundle && device === "computer"
+    ? "A Mac bundle ID is observed, but the catalog has no verified computer destination."
+    : `The live catalog has no verified ${platform} destination.`;
+  const action = device === "iphone"
+    ? "Publisher must provide a signed TestFlight or App Store destination."
+    : device === "android"
+      ? "Publisher must provide a signed Android package or Play listing."
+      : "Publisher must provide and verify a supported computer destination.";
+  return { kind: "unavailable", destination: null, status: "unavailable", evidence, nextActions: [action] };
+}
+
+function mapLiveApp(raw) {
+  assertRecord(raw, "catalog.apps[]");
+  assertKeys(raw, new Set(["slug", "name", "macBundleId", "latestReleaseTag", "guideSlug", "iconUrl"]), "catalog.apps[]");
+  assertText(raw.slug, "catalog.apps[].slug", 80);
+  if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(raw.slug.trim())) fail("catalog.apps[].slug is invalid");
+  assertText(raw.name, "catalog.apps[].name", MAX_TITLE_LENGTH);
+  const slug = raw.slug.trim();
+  const name = raw.name.trim();
+  const macBundleId = nullableText(raw.macBundleId, "catalog.apps[].macBundleId", 120);
+  const latestReleaseTag = nullableText(raw.latestReleaseTag, "catalog.apps[].latestReleaseTag", 80);
+  const guideSlug = nullableText(raw.guideSlug, "catalog.apps[].guideSlug", 80);
+  if (guideSlug !== null && !/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(guideSlug)) fail("catalog.apps[].guideSlug is invalid");
+  const icon = raw.iconUrl === undefined || raw.iconUrl === null
+    ? { kind: "fallback", label: fallbackLabel(name) }
+    : { kind: "url", url: raw.iconUrl };
+  const hasMacBundle = macBundleId !== null;
+  return {
+    id: slug,
+    title: name,
+    icon,
+    os: hasMacBundle ? ["computer"] : [],
+    routes: Object.fromEntries(DEVICES.map((device) => [device, unavailableRoute(device, hasMacBundle)])),
+    source: { guideSlug, revision: null, repository: null, releaseTag: latestReleaseTag },
+    capabilities: [],
+    setup: Object.fromEntries(DEVICES.map((device) => [device, [
+      "This catalog entry contains metadata only; no native package is available here.",
+      device === "computer" && hasMacBundle ? `Observed Mac bundle ID: ${macBundleId}.` : "The publisher has not listed a verified route for this device.",
+    ]])),
+    setupGuide: guideSlug === null ? null : { label: "View setup guide", destination: `https://publikhq.com/${encodeURIComponent(guideSlug)}` },
+    observations: { macBundleId, latestReleaseTag },
+  };
+}
+
+/** Map the public /api/iris/apps response. This is also used by the fixture. */
+export function mapCatalogResponse(value, { prototype = false, observedAt = new Date().toISOString() } = {}) {
+  assertRecord(value, "catalog response");
+  assertKeys(value, new Set(["apps", "prototype", "label"]), "catalog response");
+  if (!Array.isArray(value.apps) || value.apps.length > MAX_APPS) fail(`catalog.apps must contain at most ${MAX_APPS} apps`, "app-limit");
+  const mapped = {
+    schemaVersion: 1,
+    prototype,
+    label: typeof value.label === "string" && value.label.trim() ? value.label.trim() : prototype ? "Local prototype catalog" : "Publik live catalog",
+    observedAt,
+    apps: value.apps.map((app) => mapLiveApp(app)),
+  };
+  return validateManifest(mapped);
 }
 
 export function parseManifestText(text) {
@@ -200,26 +322,17 @@ export function parseManifestText(text) {
   return validateManifest(value, bytes);
 }
 
-export function validateManifest(manifest, knownBytes) {
-  assertRecord(manifest, "manifest");
-  assertKeys(manifest, new Set(["schemaVersion", "apps", "prototype", "label"]), "manifest");
-  if (manifest.schemaVersion !== 1) fail("manifest.schemaVersion must be 1", "unsupported-schema");
-  if (!Array.isArray(manifest.apps) || manifest.apps.length > MAX_APPS) fail(`manifest.apps must contain at most ${MAX_APPS} apps`, "app-limit");
-  if (manifest.prototype !== true) fail("manifest must be explicitly labeled as a local prototype");
-  assertText(manifest.label, "manifest.label", MAX_TEXT_LENGTH);
-  if (knownBytes === undefined) {
-    const bytes = new TextEncoder().encode(JSON.stringify(manifest)).byteLength;
-    if (bytes > MAX_MANIFEST_BYTES) fail(`manifest exceeds ${MAX_MANIFEST_BYTES} bytes`, "manifest-too-large");
+export function parseCatalogText(text, options = {}) {
+  if (typeof text !== "string") fail("catalog response must be text", "invalid-manifest");
+  const bytes = new TextEncoder().encode(text).byteLength;
+  if (bytes > MAX_MANIFEST_BYTES) fail(`catalog response exceeds ${MAX_MANIFEST_BYTES} bytes`, "manifest-too-large");
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    fail("catalog response is not valid JSON", "invalid-manifest");
   }
-  const seen = new Set();
-  const apps = manifest.apps.map((app) => {
-    if (seen.has(app?.id)) fail(`duplicate app id: ${app?.id || "unknown"}`, "duplicate-id");
-    const normalized = validateApp(app);
-    if (seen.has(normalized.id)) fail(`duplicate app id: ${normalized.id}`, "duplicate-id");
-    seen.add(normalized.id);
-    return normalized;
-  });
-  return { schemaVersion: 1, prototype: true, label: manifest.label.trim(), apps };
+  return mapCatalogResponse(value, options);
 }
 
 export function createMemoryCache() {
@@ -262,7 +375,7 @@ export function createStorageCache(storage, key = CACHE_KEY) {
   };
 }
 
-export function createCatalogClient({ fetchImpl = globalThis.fetch, cache = createMemoryCache(), now = () => Date.now(), maxAgeMs = CACHE_MAX_AGE_MS } = {}) {
+export function createCatalogClient({ fetchImpl = globalThis.fetch, cache = createMemoryCache(), now = () => Date.now(), maxAgeMs = CACHE_MAX_AGE_MS, fixture = false } = {}) {
   if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl is required");
   let inFlight = null;
   let requestCount = 0;
@@ -272,7 +385,7 @@ export function createCatalogClient({ fetchImpl = globalThis.fetch, cache = crea
     if (!entry || typeof entry.manifestText !== "string" || typeof entry.savedAt !== "number") return null;
     if (!allowStale && now() - entry.savedAt > maxAgeMs) return null;
     try {
-      return { manifest: parseManifestText(entry.manifestText), source: "cache", savedAt: entry.savedAt };
+      return { manifest: parseCatalogText(entry.manifestText, { prototype: fixture, observedAt: new Date(entry.savedAt).toISOString() }), source: "cache", savedAt: entry.savedAt };
     } catch {
       return null;
     }
@@ -289,7 +402,7 @@ export function createCatalogClient({ fetchImpl = globalThis.fetch, cache = crea
           if (done) break;
           if (!(value instanceof Uint8Array)) fail("catalog response contains invalid bytes", "invalid-manifest");
           size += value.byteLength;
-          if (size > MAX_MANIFEST_BYTES) fail(`manifest exceeds ${MAX_MANIFEST_BYTES} bytes`, "manifest-too-large");
+          if (size > MAX_MANIFEST_BYTES) fail(`catalog response exceeds ${MAX_MANIFEST_BYTES} bytes`, "manifest-too-large");
           chunks.push(value);
         }
       } finally {
@@ -302,7 +415,7 @@ export function createCatalogClient({ fetchImpl = globalThis.fetch, cache = crea
     }
     if (typeof response.text !== "function") fail("catalog response has no readable body", "network-error");
     const text = await response.text();
-    if (new TextEncoder().encode(text).byteLength > MAX_MANIFEST_BYTES) fail(`manifest exceeds ${MAX_MANIFEST_BYTES} bytes`, "manifest-too-large");
+    if (new TextEncoder().encode(text).byteLength > MAX_MANIFEST_BYTES) fail(`catalog response exceeds ${MAX_MANIFEST_BYTES} bytes`, "manifest-too-large");
     return text;
   }
 
@@ -318,11 +431,12 @@ export function createCatalogClient({ fetchImpl = globalThis.fetch, cache = crea
     inFlight = (async () => {
       requestCount += 1;
       try {
-        const response = await fetchImpl("./prototype-manifest.json", { cache: "no-store", headers: { Accept: "application/json" } });
+        const endpoint = fixture ? PROTOTYPE_CATALOG_ENDPOINT : LIVE_CATALOG_ENDPOINT;
+        const response = await fetchImpl(endpoint, { cache: "no-store", credentials: "omit", headers: { Accept: "application/json" } });
         if (!response || !response.ok) throw new ManifestError(`Catalog request failed (${response?.status || "network"})`, "network-error");
         const text = await readBoundedText(response);
-        const manifest = parseManifestText(text);
         const savedAt = now();
+        const manifest = parseCatalogText(text, { prototype: fixture, observedAt: new Date(savedAt).toISOString() });
         cache.write({ savedAt, manifestText: text });
         return { manifest, source: "network", savedAt };
       } catch (error) {

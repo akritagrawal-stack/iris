@@ -13,6 +13,7 @@ export const CACHE_KEY = "iris-mobile.catalog.v1";
 export const CACHE_MAX_BYTES = 64 * 1024;
 export const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 export const SERVER_CACHE_MAX_AGE_MS = 5 * 60 * 1_000;
+export const CATALOG_TIMEOUT_MS = 5_000;
 export const LIVE_CATALOG_UPSTREAM = "https://publikhq.com/api/iris/apps";
 export const LIVE_CATALOG_ENDPOINT = "./api/iris/apps";
 export const PROTOTYPE_CATALOG_ENDPOINT = "./prototype-manifest.json";
@@ -222,12 +223,17 @@ function validateObservedAt(value) {
 
 export function validateManifest(manifest, knownBytes) {
   assertRecord(manifest, "manifest");
-  assertKeys(manifest, new Set(["schemaVersion", "apps", "prototype", "label", "observedAt"]), "manifest");
+  assertKeys(manifest, new Set(["schemaVersion", "apps", "prototype", "label", "observedAt", "totalApps", "truncated"]), "manifest");
   if (manifest.schemaVersion !== 1) fail("manifest.schemaVersion must be 1", "unsupported-schema");
   if (!Array.isArray(manifest.apps) || manifest.apps.length > MAX_APPS) fail(`manifest.apps must contain at most ${MAX_APPS} apps`, "app-limit");
   if (manifest.prototype !== true && manifest.prototype !== false) fail("manifest.prototype must be a boolean");
   assertText(manifest.label, "manifest.label", MAX_TEXT_LENGTH);
   const observedAt = validateObservedAt(manifest.observedAt);
+  const totalApps = manifest.totalApps === undefined ? manifest.apps.length : manifest.totalApps;
+  if (!Number.isInteger(totalApps) || totalApps < manifest.apps.length) fail("manifest.totalApps must cover the mapped apps", "invalid-app-count");
+  const truncated = manifest.truncated === undefined ? false : manifest.truncated;
+  if (typeof truncated !== "boolean") fail("manifest.truncated must be a boolean");
+  if (truncated !== (totalApps > manifest.apps.length)) fail("manifest.truncated must describe omitted apps", "invalid-app-count");
   if (knownBytes === undefined) {
     const bytes = new TextEncoder().encode(JSON.stringify(manifest)).byteLength;
     if (bytes > MAX_MANIFEST_BYTES) fail(`manifest exceeds ${MAX_MANIFEST_BYTES} bytes`, "manifest-too-large");
@@ -240,7 +246,7 @@ export function validateManifest(manifest, knownBytes) {
     seen.add(normalized.id);
     return normalized;
   });
-  return { schemaVersion: 1, prototype: manifest.prototype, label: manifest.label.trim(), observedAt, apps };
+  return { schemaVersion: 1, prototype: manifest.prototype, label: manifest.label.trim(), observedAt, totalApps, truncated, apps };
 }
 
 function fallbackLabel(name) {
@@ -263,7 +269,6 @@ function unavailableRoute(device, hasMacBundle) {
 
 function mapLiveApp(raw) {
   assertRecord(raw, "catalog.apps[]");
-  assertKeys(raw, new Set(["slug", "name", "macBundleId", "latestReleaseTag", "guideSlug", "iconUrl"]), "catalog.apps[]");
   assertText(raw.slug, "catalog.apps[].slug", 80);
   if (!/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/.test(raw.slug.trim())) fail("catalog.apps[].slug is invalid");
   assertText(raw.name, "catalog.apps[].name", MAX_TITLE_LENGTH);
@@ -281,7 +286,7 @@ function mapLiveApp(raw) {
     id: slug,
     title: name,
     icon,
-    os: hasMacBundle ? ["computer"] : [],
+    os: [],
     routes: Object.fromEntries(DEVICES.map((device) => [device, unavailableRoute(device, hasMacBundle)])),
     source: { guideSlug, revision: null, repository: null, releaseTag: latestReleaseTag },
     capabilities: [],
@@ -297,14 +302,16 @@ function mapLiveApp(raw) {
 /** Map the public /api/iris/apps response. This is also used by the fixture. */
 export function mapCatalogResponse(value, { prototype = false, observedAt = new Date().toISOString() } = {}) {
   assertRecord(value, "catalog response");
-  assertKeys(value, new Set(["apps", "prototype", "label"]), "catalog response");
-  if (!Array.isArray(value.apps) || value.apps.length > MAX_APPS) fail(`catalog.apps must contain at most ${MAX_APPS} apps`, "app-limit");
+  if (!Array.isArray(value.apps)) fail("catalog.apps must be an array", "invalid-manifest");
+  const totalApps = value.apps.length;
   const mapped = {
     schemaVersion: 1,
     prototype,
     label: typeof value.label === "string" && value.label.trim() ? value.label.trim() : prototype ? "Local prototype catalog" : "Publik live catalog",
     observedAt,
-    apps: value.apps.map((app) => mapLiveApp(app)),
+    totalApps,
+    truncated: totalApps > MAX_APPS,
+    apps: value.apps.slice(0, MAX_APPS).map((app) => mapLiveApp(app)),
   };
   return validateManifest(mapped);
 }
@@ -375,8 +382,10 @@ export function createStorageCache(storage, key = CACHE_KEY) {
   };
 }
 
-export function createCatalogClient({ fetchImpl = globalThis.fetch, cache = createMemoryCache(), now = () => Date.now(), maxAgeMs = CACHE_MAX_AGE_MS, fixture = false } = {}) {
+export function createCatalogClient({ fetchImpl = globalThis.fetch, cache = createMemoryCache(), now = () => Date.now(), maxAgeMs = CACHE_MAX_AGE_MS, fixture = false, timeoutMs = CATALOG_TIMEOUT_MS, setTimeoutImpl = globalThis.setTimeout, clearTimeoutImpl = globalThis.clearTimeout } = {}) {
   if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl is required");
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new TypeError("timeoutMs must be positive");
+  if (typeof setTimeoutImpl !== "function" || typeof clearTimeoutImpl !== "function") throw new TypeError("timeout functions are required");
   let inFlight = null;
   let requestCount = 0;
 
@@ -391,20 +400,48 @@ export function createCatalogClient({ fetchImpl = globalThis.fetch, cache = crea
     }
   }
 
-  async function readBoundedText(response) {
+  async function readChunk(reader, signal) {
+    if (!signal) return reader.read();
+    if (signal.aborted) throw signal.reason || new Error("catalog request aborted");
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(signal.reason || new Error("catalog request aborted"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      reader.read().then((value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      }, (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      });
+    });
+  }
+
+  async function readBoundedText(response, signal) {
     if (response.body && typeof response.body.getReader === "function") {
       const reader = response.body.getReader();
       const chunks = [];
       let size = 0;
       try {
         while (true) {
-          const { done, value } = await reader.read();
+          const { done, value } = await readChunk(reader, signal);
           if (done) break;
           if (!(value instanceof Uint8Array)) fail("catalog response contains invalid bytes", "invalid-manifest");
           size += value.byteLength;
           if (size > MAX_MANIFEST_BYTES) fail(`catalog response exceeds ${MAX_MANIFEST_BYTES} bytes`, "manifest-too-large");
           chunks.push(value);
         }
+      } catch (error) {
+        Promise.resolve(reader.cancel?.(error)).catch(() => {});
+        throw error;
       } finally {
         reader.releaseLock?.();
       }
@@ -424,25 +461,33 @@ export function createCatalogClient({ fetchImpl = globalThis.fetch, cache = crea
     const cached = cachedResult();
     const staleCached = cached || cachedResult({ allowStale: true });
     if (offline) {
-      if (staleCached) return cached ? cached : { ...staleCached, stale: true };
+      if (staleCached) return { ...(cached || staleCached), offline: true, ...(cached ? {} : { stale: true }) };
       throw new ManifestError("Offline and no verified catalog is cached", "offline-no-cache");
     }
     if (!force && cached) return cached;
     inFlight = (async () => {
       requestCount += 1;
+      const controller = new AbortController();
+      const timeout = setTimeoutImpl(() => controller.abort(new Error("catalog request timed out")), timeoutMs);
       try {
         const endpoint = fixture ? PROTOTYPE_CATALOG_ENDPOINT : LIVE_CATALOG_ENDPOINT;
-        const response = await fetchImpl(endpoint, { cache: "no-store", credentials: "omit", headers: { Accept: "application/json" } });
+        const response = await fetchImpl(endpoint, { cache: "no-store", credentials: "omit", headers: { Accept: "application/json" }, signal: controller.signal });
         if (!response || !response.ok) throw new ManifestError(`Catalog request failed (${response?.status || "network"})`, "network-error");
-        const text = await readBoundedText(response);
+        const text = await readBoundedText(response, controller.signal);
         const savedAt = now();
         const manifest = parseCatalogText(text, { prototype: fixture, observedAt: new Date(savedAt).toISOString() });
         cache.write({ savedAt, manifestText: text });
         return { manifest, source: "network", savedAt };
       } catch (error) {
+        if (controller.signal.aborted) {
+          const timeoutError = new ManifestError("Catalog request timed out", "network-timeout");
+          if (staleCached) return { ...staleCached, stale: true, error: timeoutError };
+          throw timeoutError;
+        }
         if (staleCached) return { ...staleCached, stale: true, error };
         throw error;
       } finally {
+        clearTimeoutImpl(timeout);
         inFlight = null;
       }
     })();

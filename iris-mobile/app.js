@@ -16,7 +16,7 @@ function setStatus(message) { status.textContent = message; }
 
 function showCatalogStatus() {
   if (!state.result) return;
-  const freshness = state.result.stale ? "Could not refresh. Showing the last saved catalog" : "Catalog ready";
+  const freshness = state.result.stale || state.result.offline ? "Offline or refresh failed. Showing the last saved catalog" : "Catalog ready";
   setStatus(`${freshness}. Showing ${deviceLabels[state.device]}.`);
 }
 
@@ -80,19 +80,22 @@ function renderCard(app) {
   card.className = "app-card";
   const head = document.createElement("div");
   head.className = "app-head";
-  const icon = textElement("span", app.icon.kind === "fallback" ? app.icon.label : "", "app-icon");
-  icon.setAttribute("aria-hidden", "true");
+  const fallbackIcon = textElement("span", app.icon.kind === "fallback" ? app.icon.label : app.title[0]?.toUpperCase() || "?", "app-icon");
+  fallbackIcon.setAttribute("aria-hidden", "true");
   if (app.icon.kind === "url") {
     const image = document.createElement("img");
     image.src = app.icon.url;
     image.alt = "";
     image.width = 48;
     image.height = 48;
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
     image.className = "app-icon";
-    image.addEventListener("error", () => image.replaceWith(icon));
+    image.addEventListener("error", () => image.replaceWith(fallbackIcon));
     head.append(image);
   } else {
-    head.append(icon);
+    head.append(fallbackIcon);
   }
   const title = document.createElement("div");
   title.className = "app-title";
@@ -120,7 +123,8 @@ function render() {
     return;
   }
   for (const app of manifest.apps) catalog.append(renderCard(app));
-  manifestNote.textContent = `${manifest.label} · ${manifest.apps.length} app${manifest.apps.length === 1 ? "" : "s"}`;
+  const shown = `${manifest.apps.length} app${manifest.apps.length === 1 ? "" : "s"}`;
+  manifestNote.textContent = manifest.truncated ? `${manifest.label} · Showing first ${shown} of ${manifest.totalApps}` : `${manifest.label} · ${shown}`;
 }
 
 async function loadCatalog({ force = false } = {}) {

@@ -12,6 +12,7 @@ import {
   parseManifestText,
   validateManifest,
 } from "../manifest.js";
+import { createCatalogProxy } from "../catalog-proxy.mjs";
 
 const revision = "fc48ba487a1e0d0cd10b30d6600acd2895ffdbed";
 
@@ -60,7 +61,7 @@ test("maps the opt-in fixture through the same adapter as production", async () 
 test("maps observed live fields without inventing native routes or a commit pin", () => {
   const manifest = mapCatalogResponse({ apps: [{ slug: "cue", name: "cue", macBundleId: "com.cue.overlay", latestReleaseTag: "v0.2.2", guideSlug: "cue" }] }, { observedAt: "2026-09-12T23:00:00.000Z" });
   const app = manifest.apps[0];
-  assert.deepEqual(app.os, ["computer"]);
+  assert.deepEqual(app.os, []);
   assert.equal(app.source.guideSlug, "cue");
   assert.equal(app.source.releaseTag, "v0.2.2");
   assert.equal(app.source.revision, null);
@@ -178,9 +179,12 @@ test("uses verified cached metadata offline and reports no-cache offline", async
   await client.refresh();
   const cached = await client.load({ offline: true });
   assert.equal(cached.source, "cache");
+  assert.equal(cached.offline, true);
+  assert.equal(cached.stale, undefined);
   now += 25 * 60 * 60 * 1_000;
   const stale = await client.load({ offline: true });
   assert.equal(stale.stale, true);
+  assert.equal(stale.offline, true);
   const emptyClient = createCatalogClient({ cache: createMemoryCache(), now: () => now, fetchImpl: async () => ({ ok: true, text: async () => text }) });
   await assert.rejects(() => emptyClient.load({ offline: true }), (error) => error.code === "offline-no-cache");
 });
@@ -205,6 +209,7 @@ test("falls back to stale verified metadata after a network failure", async () =
 test("caps a streamed response while it is being read", async () => {
   const cache = createMemoryCache();
   const oversized = new Uint8Array(MAX_MANIFEST_BYTES + 1);
+  let cancelled = false;
   const client = createCatalogClient({ cache, fetchImpl: async () => ({
     ok: true,
     body: {
@@ -216,12 +221,104 @@ test("caps a streamed response while it is being read", async () => {
             sent = true;
             return { done: false, value: oversized };
           },
+          cancel() { cancelled = true; },
           releaseLock() {},
         };
       },
     },
   }) });
   await assert.rejects(() => client.refresh(), (error) => error.code === "manifest-too-large");
+  assert.equal(cancelled, true);
+});
+
+test("times out a stalled fetch, falls back to cache, clears inFlight, and recovers", async () => {
+  const cache = createMemoryCache();
+  const text = JSON.stringify(rawCatalog());
+  let mode = "seed";
+  let signal;
+  let now = 10_000;
+  const client = createCatalogClient({ cache, now: () => now, timeoutMs: 5, fetchImpl: async (_url, options) => {
+    signal = options.signal;
+    if (mode === "stall") return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+    return { ok: true, text: async () => text };
+  } });
+  await client.refresh();
+  now += 25 * 60 * 60 * 1_000;
+  mode = "stall";
+  const stale = await client.refresh();
+  assert.equal(stale.stale, true);
+  assert.equal(stale.error.code, "network-timeout");
+  assert.equal(signal.aborted, true);
+  assert.equal(client.requestCount, 2);
+  mode = "recover";
+  const recovered = await client.refresh();
+  assert.equal(recovered.stale, undefined);
+  assert.equal(client.requestCount, 3);
+});
+
+test("times out a stalled body read, cancels the reader, and recovers", async () => {
+  const cache = createMemoryCache();
+  const text = JSON.stringify(rawCatalog());
+  let mode = "seed";
+  let cancelled = false;
+  let now = 10_000;
+  const client = createCatalogClient({ cache, now: () => now, timeoutMs: 5, fetchImpl: async () => {
+    if (mode === "stall-body") return {
+      ok: true,
+      body: {
+        getReader() {
+          return {
+            read: () => new Promise(() => {}),
+            cancel() { cancelled = true; },
+            releaseLock() {},
+          };
+        },
+      },
+    };
+    return { ok: true, text: async () => text };
+  } });
+  await client.refresh();
+  now += 25 * 60 * 60 * 1_000;
+  mode = "stall-body";
+  const stale = await client.refresh();
+  assert.equal(stale.stale, true);
+  assert.equal(stale.error.code, "network-timeout");
+  assert.equal(cancelled, true);
+  mode = "recover";
+  const recovered = await client.refresh();
+  assert.equal(recovered.stale, undefined);
+});
+
+test("proxy cancels oversized upstream bodies and never caches malformed responses", async () => {
+  const text = JSON.stringify(rawCatalog());
+  let mode = "oversize";
+  let cancelled = false;
+  let now = 10_000;
+  const proxy = createCatalogProxy({ now: () => now, fetchImpl: async () => {
+    if (mode === "oversize") return {
+      ok: true,
+      body: {
+        getReader() {
+          return {
+            read: async () => ({ done: false, value: new Uint8Array(MAX_MANIFEST_BYTES + 1) }),
+            cancel() { cancelled = true; },
+            releaseLock() {},
+          };
+        },
+      },
+    };
+    if (mode === "malformed") return { ok: true, text: async () => "{}" };
+    return { ok: true, text: async () => text };
+  } });
+  await assert.rejects(() => proxy.fetchCatalog());
+  assert.equal(cancelled, true);
+  mode = "malformed";
+  await assert.rejects(() => proxy.fetchCatalog());
+  now += 6 * 60 * 1_000;
+  mode = "valid";
+  const recovered = await proxy.fetchCatalog();
+  assert.equal(JSON.parse(recovered.text).apps[0].slug, "kneecap");
+  assert.equal(proxy.requestCount, 3);
 });
 
 test("rejects unsafe or forged route URLs even when the source mapper is valid", () => {
@@ -244,4 +341,22 @@ test("rejects malformed live catalog records and duplicate IDs", () => {
     { slug: "same", name: "Same", macBundleId: null, latestReleaseTag: null, guideSlug: null },
     { slug: "same", name: "Same again", macBundleId: null, latestReleaseTag: null, guideSlug: null },
   ] }, { observedAt: "2026-09-12T23:00:00.000Z" }), "duplicate-id");
+});
+
+test("bounds an oversized catalog without silently hiding the omitted count", () => {
+  const apps = Array.from({ length: MAX_APPS + 1 }, (_, index) => ({
+    slug: `app-${index}`,
+    name: `App ${index}`,
+    macBundleId: null,
+    latestReleaseTag: null,
+    guideSlug: `app-${index}`,
+    routes: { iphone: { kind: "testflight", destination: "https://evil.example/forged", status: "verified" } },
+    platform: "iphone",
+  }));
+  const manifest = mapCatalogResponse({ apps }, { observedAt: "2026-09-12T23:00:00.000Z" });
+  assert.equal(manifest.apps.length, MAX_APPS);
+  assert.equal(manifest.totalApps, MAX_APPS + 1);
+  assert.equal(manifest.truncated, true);
+  assert.equal(manifest.apps.at(-1).id, "app-31");
+  assert.equal(manifest.apps[0].routes.iphone.destination, null);
 });

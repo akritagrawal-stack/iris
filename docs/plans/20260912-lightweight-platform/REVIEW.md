@@ -26,11 +26,20 @@ Existing guides carry absolute `workingDirectory` values and may include hard-co
 
 **Correction:** the source-preparation record should include the common Git directory and the owned linked-worktree administrative identity. Before adding, confirm the original checkout’s canonical path, origin, required commit, and porcelain state; after adding, confirm the original has the same HEAD and porcelain output, while the owned staged worktree is detached at the required commit and clean. The only permitted shared mutation is the linked-worktree administrative entry created by `git worktree add`. Stop should leave an owned interrupted stage for review; removal is an explicit later operation that first revalidates ownership. Never run `reset`, `clean`, `stash`, `prune`, `--force`, or branch-moving flags.
 
-### P1: make the mobile hub an existing Kneecap surface
+### Resolved: mobile hub is a Publik/Iris entry module
 
-The plan correctly rejects a second wrapper and invented distribution URLs, but “small static module” is not enough ownership. A standalone page could become a second delivery surface disconnected from Kneecap’s existing Capacitor app.
+The hub is used before Kneecap is installed, so it must not be embedded in or
+modify the user’s dirty separate Kneecap product. First wave adds a tiny
+`iris-mobile` static module owned by Publik/Iris, using a shared versioned route
+manifest and existing catalog identity. It introduces no native bridge, second
+runtime, signing/distribution framework, or deployment. A later platform route
+may host the same static assets.
 
-**Correction:** first wave adds the install-route hub as a small route/module inside Kneecap’s existing Vite/Capacitor application, with no native bridge and no signing/distribution framework. Its validated static manifest may show only verified HTTPS routes or `Setup needed`/`Unavailable`; it never represents a TestFlight, App Store, APK, or hardware installation as complete without a real published route. Browser rendering validates the hub contract. Installed native UI acceptance, signing/upload, and physical-phone acceptance remain separate evidence lanes.
+The manifest may show only validated HTTPS routes or `Setup needed`/
+`Unavailable`; it never represents a TestFlight, App Store, APK, or hardware
+installation as complete without a real published route. Browser rendering
+validates the contract. Installed native UI acceptance, signing/upload, and
+physical-phone acceptance remain separate evidence lanes.
 
 ## Bounded first-wave acceptance
 
@@ -43,4 +52,3 @@ The plan correctly rejects a second wrapper and invented distribution URLs, but 
 4. **Mobile hub:** validate malformed/duplicate IDs, non-HTTPS destinations, credential-shaped URLs, unsupported native claims, and absent routes. Browser acceptance proves route rendering and `Setup needed`; it does not prove a native install, signing, launch, or phone workflow.
 
 Only after these checks pass should integration proceed to one actual Iris Test candidate recheck/delivery/restart/Undo journey. A native installed-app result and a physical-phone result must be reported separately.
-

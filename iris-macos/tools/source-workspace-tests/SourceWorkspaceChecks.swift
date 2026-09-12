@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 private enum SourceWorkspaceCheckError: Error, LocalizedError {
     case failed(String)
@@ -38,6 +39,23 @@ private final class DelayingWorktreeExecutor: GuideSourceWorkspaceCommandExecuti
         lock.lock()
         worktreeHasStarted = true
         lock.unlock()
+    }
+}
+
+private enum TestRecordFailure: Error, Equatable {
+    case missing
+    case persistence
+}
+
+private final class FailingRecorder: GuideSourceWorkspaceRecording, @unchecked Sendable {
+    let failure: TestRecordFailure
+
+    init(_ failure: TestRecordFailure) {
+        self.failure = failure
+    }
+
+    func save(_ record: GuideSourceWorkspaceRecord) throws {
+        throw failure
     }
 }
 
@@ -112,6 +130,16 @@ struct SourceWorkspaceChecks {
         )
         try require(largeOutput.outputWasTruncated,
                     "large Git-like output was not bounded")
+        let hardStopStarted = Date()
+        let ignoringSignal = try await executor.run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "trap '' TERM; while :; do :; done"],
+            workingDirectory: URL(fileURLWithPath: "/Users/Shared"), deadline: 0.1
+        )
+        try require(Date().timeIntervalSince(hardStopStarted) < 2,
+                    "deadline hard-stop waited on a child that ignored SIGTERM")
+        try require(ignoringSignal.outputWasTruncated,
+                    "deadline hard-stop did not mark the bounded operation")
         let task = Task {
             try await executor.run(
                 executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["10"],
@@ -119,11 +147,29 @@ struct SourceWorkspaceChecks {
             )
         }
         try await Task.sleep(for: .milliseconds(50))
+        let concurrentTask = Task {
+            try await executor.run(
+                executable: URL(fileURLWithPath: "/bin/echo"), arguments: ["must-not-run"],
+                workingDirectory: URL(fileURLWithPath: "/Users/Shared"), deadline: 2
+            )
+        }
+        do {
+            _ = try await concurrentTask.value
+            throw SourceWorkspaceCheckError.failed("concurrent executor use was not rejected")
+        } catch GuideSourceWorkspaceExecutorError.busy {
+            // A second command cannot replace the process owned by the first.
+        }
         task.cancel()
         do {
             _ = try await task.value
             throw SourceWorkspaceCheckError.failed("executor cancellation did not stop the child")
         } catch is CancellationError { }
+        let afterCancellation = try await executor.run(
+            executable: URL(fileURLWithPath: "/bin/echo"), arguments: ["second-command"],
+            workingDirectory: URL(fileURLWithPath: "/Users/Shared"), deadline: 2
+        )
+        try require(afterCancellation.exitCode == 0 && afterCancellation.output.contains("second-command"),
+                    "executor did not release ownership after targeted cancellation")
         print("PASS bounded output, deadline and child cancellation")
     }
 
@@ -186,6 +232,57 @@ struct SourceWorkspaceChecks {
         guard case .success(.isolatedCopyOffered(let identity)) = inspectionResult else {
             throw SourceWorkspaceCheckError.failed("dirty matching source did not offer an isolated workspace")
         }
+
+        // A recovery record is a precondition for any worktree mutation. Both
+        // missing and persistence-failing recorders must stop before Git sees
+        // `worktree add`, leaving no destination or linked-worktree metadata.
+        let worktreeMetadata = source.appendingPathComponent(".git/worktrees")
+        try require(!fileManager.fileExists(atPath: worktreeMetadata.path),
+                    "fixture unexpectedly had linked-worktree metadata before staging")
+        for failure in [TestRecordFailure.missing, .persistence] {
+            let failingService = GuideSourceWorkspaceService(
+                store: FailingRecorder(failure),
+                destinationIsOwned: { $0.path == projects.path }
+            )
+            let failingRequest = GuideSourceWorkspaceRequest(
+                runID: UUID(), guideID: request.guideID, guideRevision: request.guideRevision,
+                projectID: request.projectID, sourcePath: request.sourcePath,
+                expectedOrigin: request.expectedOrigin, expectedCommit: request.expectedCommit,
+                ownedProjectsRoot: request.ownedProjectsRoot
+            )
+            do {
+                _ = try await failingService.prepare(
+                    failingRequest, from: .isolatedCopyOffered(identity), choice: .createIsolatedWorktree
+                )
+                throw SourceWorkspaceCheckError.failed("staging proceeded without a recoverable record")
+            } catch GuideSourceWorkspacePreparationError.recoveryRecordCouldNotBeSaved {
+                // Different persistence failures have the same safe outcome:
+                // no Git mutation is allowed without a recoverable record.
+            }
+            try require(!fileManager.fileExists(atPath: worktreeMetadata.path),
+                        "record failure created linked-worktree metadata")
+            try require((try fileManager.contentsOfDirectory(atPath: projects.path)).isEmpty,
+                        "record failure created an unrecorded destination")
+        }
+
+        let hostileOutside = root.appendingPathComponent("hostile-git-dir")
+        let hostileSentinel = hostileOutside.appendingPathComponent("sentinel")
+        try fileManager.createDirectory(at: hostileOutside, withIntermediateDirectories: true)
+        try Data("must remain untouched\n".utf8).write(to: hostileSentinel)
+        let hostileEnvironment: [String: String] = [
+            "GIT_DIR": hostileOutside.path,
+            "GIT_WORK_TREE": hostileOutside.path,
+            "GIT_INDEX_FILE": hostileOutside.appendingPathComponent("index").path,
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": hostileOutside.appendingPathComponent("hooks").path,
+            "GIT_OBJECT_DIRECTORY": hostileOutside.appendingPathComponent("objects").path,
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": hostileOutside.appendingPathComponent("alternate").path,
+            "GIT_COMMON_DIR": hostileOutside.path,
+            "GIT_CEILING_DIRECTORIES": hostileOutside.path
+        ]
+        for (key, value) in hostileEnvironment { setenv(key, value, 1) }
+        defer { for key in hostileEnvironment.keys { unsetenv(key) } }
         try Data("changed after inspection\n".utf8).write(to: lockfile)
         do {
             _ = try await service.prepare(
@@ -217,6 +314,10 @@ struct SourceWorkspaceChecks {
                     "expected linked-worktree administrative metadata was not created")
         try require(!fileManager.fileExists(atPath: hookMarker.path),
                     "repository hook executed during controlled worktree creation")
+        try require(Data(contentsOf: hostileSentinel) == Data("must remain untouched\n".utf8),
+                    "inherited GIT_* routing/config variables touched an outside path")
+        try require((try fileManager.contentsOfDirectory(atPath: hostileOutside.path)) == ["sentinel"],
+                    "inherited GIT_* routing/config variables created outside-fixture entries")
         try require(try binding.workingDirectory(forRelativePath: ".").path == binding.stagedPath,
                     "root structural binding did not resolve to the stage")
         try require(try binding.workingDirectory(forRelativePath: "apps/mobile").path
@@ -324,6 +425,13 @@ struct SourceWorkspaceChecks {
         process.standardOutput = pipe
         process.standardError = pipe
         var environment = ProcessInfo.processInfo.environment
+        for key in [
+            "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0", "GIT_CONFIG_PARAMETERS", "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES"
+        ] {
+            environment.removeValue(forKey: key)
+        }
         environment["GIT_CONFIG_NOSYSTEM"] = "1"
         environment["GIT_TERMINAL_PROMPT"] = "0"
         process.environment = environment

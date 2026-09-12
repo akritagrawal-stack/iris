@@ -10,6 +10,7 @@
 
 import Foundation
 import CryptoKit
+import Darwin
 
 // MARK: - Source identity and structural guide binding
 
@@ -246,7 +247,11 @@ nonisolated struct GuideSourceWorkspaceRecord: Codable, Equatable, Sendable {
     let state: State
 }
 
-nonisolated final class GuideSourceWorkspaceStore: @unchecked Sendable {
+nonisolated protocol GuideSourceWorkspaceRecording: Sendable {
+    func save(_ record: GuideSourceWorkspaceRecord) throws
+}
+
+nonisolated final class GuideSourceWorkspaceStore: GuideSourceWorkspaceRecording, @unchecked Sendable {
     private let directory: URL
     private let lock = NSLock()
 
@@ -298,6 +303,10 @@ nonisolated struct GuideSourceWorkspaceCommandResult: Sendable {
     let outputWasTruncated: Bool
 }
 
+nonisolated enum GuideSourceWorkspaceExecutorError: Error, Equatable, Sendable {
+    case busy
+}
+
 nonisolated protocol GuideSourceWorkspaceCommandExecuting: Sendable {
     func run(executable: URL, arguments: [String], workingDirectory: URL, deadline: TimeInterval) async throws -> GuideSourceWorkspaceCommandResult
     func cancelRunningProcess()
@@ -305,6 +314,7 @@ nonisolated protocol GuideSourceWorkspaceCommandExecuting: Sendable {
 
 nonisolated final class GuideSourceWorkspaceProcessExecutor: GuideSourceWorkspaceCommandExecuting, @unchecked Sendable {
     private static let maximumOutputBytes = 64 * 1024
+    private static let hardStopGrace: TimeInterval = 0.25
     private let lock = NSLock()
     private var process: Process?
     private var activeInvocation: UUID?
@@ -314,59 +324,111 @@ nonisolated final class GuideSourceWorkspaceProcessExecutor: GuideSourceWorkspac
     func run(executable: URL, arguments: [String], workingDirectory: URL, deadline: TimeInterval) async throws -> GuideSourceWorkspaceCommandResult {
         try Task.checkCancellation()
         let invocation = UUID()
-        beginInvocation(invocation)
+        guard beginInvocation(invocation) else {
+            // The service deliberately serializes Git probes. Rejecting a
+            // second caller keeps cancellation ownership deterministic for
+            // direct users of this small executor too.
+            throw GuideSourceWorkspaceExecutorError.busy
+        }
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<GuideSourceWorkspaceCommandResult, Error>) in
                 DispatchQueue.global(qos: .utility).async {
                     let child = Process()
                     let outputPipe = Pipe()
+                    let output = BoundedOutputAccumulator(maximumBytes: Self.maximumOutputBytes)
                     child.executableURL = executable
                     child.arguments = arguments
                     child.currentDirectoryURL = workingDirectory
                     child.standardOutput = outputPipe
                     child.standardError = outputPipe
-                    self.lock.lock()
-                    self.process = child
-                    let wasCancelledBeforeLaunch = self.cancelledInvocations.contains(invocation)
-                    self.lock.unlock()
+                    // Do not inherit the caller's environment. In particular,
+                    // GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_CONFIG_* and
+                    // related routing variables can redirect a fixed argv.
+                    child.environment = [
+                        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                        "GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_CONFIG_GLOBAL": "/dev/null",
+                        "GIT_CONFIG_SYSTEM": "/dev/null",
+                        "GIT_OPTIONAL_LOCKS": "0",
+                        "GIT_TERMINAL_PROMPT": "0",
+                        "GIT_ASKPASS": "/usr/bin/false"
+                    ]
                     do {
-                        if wasCancelledBeforeLaunch {
+                        // Hold ownership through Process.run(). This closes
+                        // the cancellation-before-launch gap: a cancellation
+                        // cannot observe an unlaunched child and then have it
+                        // start after terminate() was attempted.
+                        self.lock.lock()
+                        self.process = child
+                        if self.cancelledInvocations.contains(invocation) {
+                            self.lock.unlock()
                             throw CancellationError()
                         }
-                        try child.run()
-                        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + max(0.1, deadline)) {
-                            self.lock.lock()
-                            if self.activeInvocation == invocation, self.process === child {
-                                self.timedOutInvocations.insert(invocation)
-                                child.terminate()
-                            }
+                        do {
+                            try child.run()
+                        } catch {
                             self.lock.unlock()
+                            throw error
                         }
-                        var outputData = Data()
-                        var outputWasTruncated = false
-                        while let chunk = try outputPipe.fileHandleForReading.read(upToCount: 16 * 1024), !chunk.isEmpty {
-                            if outputData.count + chunk.count <= Self.maximumOutputBytes {
-                                outputData.append(chunk)
-                            } else {
-                                outputWasTruncated = true
-                                let room = max(0, Self.maximumOutputBytes - outputData.count)
-                                if room > 0 { outputData.append(chunk.prefix(room)) }
+                        self.lock.unlock()
+
+                        let drainGroup = DispatchGroup()
+                        drainGroup.enter()
+                        DispatchQueue.global(qos: .utility).async {
+                            defer { drainGroup.leave() }
+                            do {
+                                while let chunk = try outputPipe.fileHandleForReading.read(upToCount: 16 * 1024), !chunk.isEmpty {
+                                    output.append(chunk)
+                                }
+                            } catch {
+                                // The deadline/cancellation path closes the
+                                // reader to bound a pipe held by a descendant.
                             }
+                        }
+
+                        let deadlineDate = Date().addingTimeInterval(max(0.1, deadline))
+                        var hardStopAt: Date?
+                        var timedOut = false
+                        while child.isRunning {
+                            let cancelled = self.isCancelled(invocation: invocation)
+                            let deadlineReached = Date() >= deadlineDate
+                            if (cancelled || deadlineReached), hardStopAt == nil {
+                                timedOut = timedOut || deadlineReached
+                                if deadlineReached { self.markTimedOut(invocation: invocation, child: child) }
+                                child.terminate()
+                                hardStopAt = Date().addingTimeInterval(Self.hardStopGrace)
+                            } else if let hardStopAt, Date() >= hardStopAt {
+                                // SIGTERM is advisory. A fixed Git operation
+                                // must have a bounded completion even when a
+                                // child ignores it or keeps the pipe open.
+                                kill(child.processIdentifier, SIGKILL)
+                                break
+                            }
+                            usleep(10_000)
                         }
                         child.waitUntilExit()
-                        let output = String(decoding: outputData, as: UTF8.self)
+                        // Closing our read end prevents a descendant that
+                        // inherited the write end from keeping this invocation
+                        // alive forever. The drain remains bounded by the same
+                        // grace interval and only retains a fixed prefix.
+                        outputPipe.fileHandleForReading.closeFile()
+                        _ = drainGroup.wait(timeout: .now() + Self.hardStopGrace)
+                        let outputText = output.string
                         self.lock.lock()
                         let wasCancelled = self.cancelledInvocations.remove(invocation) != nil
-                        let timedOut = self.timedOutInvocations.remove(invocation) != nil
+                        let recordedTimeout = self.timedOutInvocations.remove(invocation) != nil
                         if self.process === child { self.process = nil }
                         if self.activeInvocation == invocation { self.activeInvocation = nil }
                         self.lock.unlock()
-                        if wasCancelled || Task.isCancelled {
+                        // The dispatch-queue closure has its own task context;
+                        // use the cancellation bit set by the parent's
+                        // cancellation handler rather than consulting it here.
+                        if wasCancelled {
                             continuation.resume(throwing: CancellationError())
                         } else {
                             continuation.resume(returning: GuideSourceWorkspaceCommandResult(
-                                exitCode: child.terminationStatus, output: output,
-                                outputWasTruncated: outputWasTruncated || timedOut
+                                exitCode: child.terminationStatus, output: outputText,
+                                outputWasTruncated: output.wasTruncated || recordedTimeout || timedOut
                             ))
                         }
                     } catch {
@@ -381,22 +443,84 @@ nonisolated final class GuideSourceWorkspaceProcessExecutor: GuideSourceWorkspac
                 }
             }
         }, onCancel: {
-            self.cancelRunningProcess()
+            self.cancel(invocation: invocation)
         })
     }
 
     func cancelRunningProcess() {
         lock.lock()
+        let invocation = activeInvocation
+        lock.unlock()
+        if let invocation { cancel(invocation: invocation) }
+    }
+
+    private func cancel(invocation: UUID) {
+        lock.lock()
+        guard activeInvocation == invocation else {
+            lock.unlock()
+            return
+        }
+        cancelledInvocations.insert(invocation)
         let child = process
-        if let activeInvocation { cancelledInvocations.insert(activeInvocation) }
         lock.unlock()
         child?.terminate()
     }
 
-    private func beginInvocation(_ invocation: UUID) {
+    private func isCancelled(invocation: UUID) -> Bool {
         lock.lock()
-        activeInvocation = invocation
+        defer { lock.unlock() }
+        return cancelledInvocations.contains(invocation)
+    }
+
+    private func markTimedOut(invocation: UUID, child: Process) {
+        lock.lock()
+        if activeInvocation == invocation, process === child {
+            timedOutInvocations.insert(invocation)
+        }
         lock.unlock()
+    }
+
+    private func beginInvocation(_ invocation: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeInvocation == nil else { return false }
+        activeInvocation = invocation
+        return true
+    }
+}
+
+private final class BoundedOutputAccumulator: @unchecked Sendable {
+    private let maximumBytes: Int
+    private let lock = NSLock()
+    private var data = Data()
+    private var truncated = false
+
+    init(maximumBytes: Int) {
+        self.maximumBytes = maximumBytes
+    }
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard data.count < maximumBytes else {
+            truncated = true
+            return
+        }
+        let room = maximumBytes - data.count
+        data.append(chunk.prefix(room))
+        if chunk.count > room { truncated = true }
+    }
+
+    var wasTruncated: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return truncated
+    }
+
+    var string: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(decoding: data, as: UTF8.self)
     }
 }
 
@@ -407,12 +531,12 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
     private static let maximumFingerprintFileBytes = 1 * 1024 * 1024
     private static let maximumFingerprintTotalBytes = 4 * 1024 * 1024
     private let executor: any GuideSourceWorkspaceCommandExecuting
-    private let store: GuideSourceWorkspaceStore?
+    private let store: any GuideSourceWorkspaceRecording
     private let destinationIsOwned: @Sendable (URL) -> Bool
 
     init(
         executor: any GuideSourceWorkspaceCommandExecuting = GuideSourceWorkspaceProcessExecutor(),
-        store: GuideSourceWorkspaceStore? = nil,
+        store: any GuideSourceWorkspaceRecording,
         destinationIsOwned: @escaping @Sendable (URL) -> Bool
     ) {
         self.executor = executor
@@ -562,12 +686,16 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
             throw GuideSourceWorkspacePreparationError.destinationAlreadyExists
         }
         let marker = UUID().uuidString
-        try store?.save(GuideSourceWorkspaceRecord(
-            runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
-            projectID: request.projectID, originalPath: identity.canonicalPath, stagedPath: destination.path,
-            expectedOrigin: request.expectedOrigin, expectedCommit: request.expectedCommit,
-            ownershipMarker: marker, state: .staging
-        ))
+        do {
+            try saveRecord(GuideSourceWorkspaceRecord(
+                runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
+                projectID: request.projectID, originalPath: identity.canonicalPath, stagedPath: destination.path,
+                expectedOrigin: request.expectedOrigin, expectedCommit: request.expectedCommit,
+                ownershipMarker: marker, state: .staging
+            ))
+        } catch {
+            throw GuideSourceWorkspacePreparationError.recoveryRecordCouldNotBeSaved
+        }
 
         do {
             let result = try await runGit([
@@ -662,7 +790,7 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
     }
 
     private func saveRecord(_ record: GuideSourceWorkspaceRecord) throws {
-        try store?.save(record)
+        try store.save(record)
     }
 
     private func runGit(_ arguments: [String], in directory: URL) async throws -> GuideSourceWorkspaceCommandResult {

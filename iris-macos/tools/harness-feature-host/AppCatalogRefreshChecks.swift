@@ -19,7 +19,7 @@ struct AppCatalogRefreshChecks {
     static func main() async {
         do {
             try await run()
-            print("APP CATALOG REFRESH CHECKS PASS: 5 groups")
+            print("APP CATALOG REFRESH CHECKS PASS: 6 groups")
         } catch {
             let message = "APP CATALOG REFRESH CHECKS FAIL: \(error.localizedDescription)\n"
             FileHandle.standardError.write(Data(message.utf8))
@@ -29,11 +29,28 @@ struct AppCatalogRefreshChecks {
 
     @MainActor
     private static func run() async throws {
+        try checkPublishedGuideSurvivesCatalogDecoding()
         try await checkForceRefreshInvalidatesCachedCatalog()
         try await checkForceRefreshBypassesURLSessionCache()
         try await checkDuplicateSlugsKeepFirstRow()
         try await checkFailurePreservesRowsAndPublishesError()
         try await checkRefreshDoesNotStartWatcherOrUseNetwork()
+    }
+
+    private static func checkPublishedGuideSurvivesCatalogDecoding() throws {
+        let published = Data(#"{"slug":"kneecap","name":"Kneecap","macBundleId":null,"latestReleaseTag":null,"guideSlug":"kneecap-mobile"}"#.utf8)
+        let descriptor = try JSONDecoder().decode(CatalogAppDescriptor.self, from: published)
+        let rows = AppInventoryService.buildInventoryEntries(
+            fromCatalogDescriptors: [descriptor],
+            using: InertInstalledApplicationLocator()
+        )
+        try require(rows.first?.guideSlug == "kneecap-mobile" && rows.first?.hasAnInstallGuide == true,
+                    "published install guide was lost between decoding and inventory")
+        let legacy = Data(#"{"slug":"legacy","name":"Legacy","macBundleId":null,"latestReleaseTag":null}"#.utf8)
+        let legacyDescriptor = try JSONDecoder().decode(CatalogAppDescriptor.self, from: legacy)
+        try require(legacyDescriptor.guideSlug == nil,
+                    "legacy catalog gained an invented guide")
+        print("PASS published guide survives decoding and legacy absence stays unknown")
     }
 
     @MainActor

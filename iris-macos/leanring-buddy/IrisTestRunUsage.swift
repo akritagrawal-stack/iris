@@ -5,7 +5,12 @@ import Foundation
 final class IrisTestRunUsage {
     private let runID = UUID().uuidString
     private let startedAt = Date()
+    private let implementationArm: HarnessImplementationArm?
     private var inputCountsByReservationID: [HarnessRunReservationID: HarnessModelInputCounts] = [:]
+
+    init(implementationArm: HarnessImplementationArm? = nil) {
+        self.implementationArm = implementationArm
+    }
 
     /// Serialize one settled call without retaining prompt or response data.
     /// The reservation is the authoritative submitted-input accounting even
@@ -19,6 +24,8 @@ final class IrisTestRunUsage {
     ) -> [String: Any] {
         func count(_ value: UInt64?) -> Any { value.map { $0 as Any } ?? NSNull() }
         var document: [String: Any] = [
+            "reservationID": call.reservation.id.rawValue,
+            "attempt": call.reservation.attempt,
             "phase": call.reservation.task.rawValue,
             "outcome": call.outcome.rawValue,
             "inputBytes": call.reservation.inputBytesReserved,
@@ -57,17 +64,27 @@ final class IrisTestRunUsage {
         runID: String,
         startedAt: Date,
         snapshot: HarnessRunLedgerSnapshot,
-        calls: [[String: Any]]
+        calls: [[String: Any]],
+        implementationArm: HarnessImplementationArm? = nil
     ) -> [String: Any] {
         func count(_ value: UInt64?) -> Any { value.map { $0 as Any } ?? NSNull() }
         let allCallsSettled = snapshot.inFlightCallCount == 0
+        let ledgerState: String
+        switch snapshot.status {
+        case .running: ledgerState = "running"
+        case .stopped(let reason): ledgerState = reason.rawValue
+        }
         return [
             "schemaVersion": 1, "runID": runID,
             "appBundleIdentifier": IrisTestEnvironment.testBundleIdentifier,
             "startedAt": ISO8601DateFormatter().string(from: startedAt),
             "elapsedSeconds": Date().timeIntervalSince(startedAt),
-            "requestedPlanner": "Astra Medium", "requestedEditor": "Astra Low",
+            "requestedPlanner": HarnessModelRoute.planner.description,
+            "requestedEditor": implementationArm.map { $0.route.description as Any } ?? NSNull(),
+            "providerConfirmedModel": NSNull(),
             "modelIdentity": "requested, not provider-confirmed",
+            "ledgerState": ledgerState,
+            "uiAccepted": NSNull(),
             "admittedCalls": snapshot.admittedCallCount,
             "settledCalls": snapshot.settledCallCount,
             "inFlightCalls": snapshot.inFlightCallCount,
@@ -88,7 +105,8 @@ final class IrisTestRunUsage {
             runID: runID,
             startedAt: startedAt,
             snapshot: snapshot,
-            calls: snapshot.settledCalls.map { callDocument(for: $0) }
+            calls: snapshot.settledCalls.map { callDocument(for: $0) },
+            implementationArm: implementationArm
         )
         do {
             let directory = IrisTestEnvironment.logsDirectory.appendingPathComponent("harness-usage")

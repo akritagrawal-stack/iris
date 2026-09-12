@@ -293,7 +293,7 @@ final class CompanionManager: ObservableObject {
             makeHarnessWorkflow: IrisTestEnvironment.isEnabled ? {
                 let workflow = try HarnessCodexAdapter.makeWorkflow(settings: .init(maxCalls: 18, maxInputBytes: 1_800_000),
                     maximumDurationNanoseconds: 1_200_000_000_000, webSearchEnabled: true)
-                let usage = IrisTestRunUsage()
+                let usage = IrisTestRunUsage(implementationArm: workflow.modelSession.implementationArm)
                 workflow.modelSession.admissionDidSucceed = { reservation, inputCounts in
                     usage.recordAdmission(reservation, inputCounts: inputCounts)
                 }

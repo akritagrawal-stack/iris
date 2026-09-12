@@ -317,9 +317,35 @@ struct DiscoverAppsSectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Discover apps")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(DS.Colors.textSecondary)
+            HStack {
+                Text("Discover apps")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Spacer(minLength: 8)
+                Button {
+                    Task { await appInventoryService.refreshInventory(forceCatalogFetch: true) }
+                } label: {
+                    Label(appInventoryService.isRefreshing ? "Refreshing…" : "Refresh catalog",
+                          systemImage: "arrow.clockwise")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .disabled(appInventoryService.isRefreshing)
+                .help("Check Publik for new apps and current installation guides")
+            }
+
+            if let failure = appInventoryService.lastRefreshFailureMessage,
+               !appInventoryService.inventoryEntries.isEmpty {
+                Text("Showing previously loaded apps. \(failure)")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let checkedAt = appInventoryService.lastSuccessfulRefreshCompletedAt {
+                Text("Last checked \(checkedAt, style: .time)")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
 
             searchField
 

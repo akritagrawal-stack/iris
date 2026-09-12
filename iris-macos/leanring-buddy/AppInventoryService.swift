@@ -42,7 +42,7 @@ nonisolated struct CatalogAppDescriptor: Decodable, Equatable, Sendable {
     let latestReleaseTag: String?
     /// The published guide slug, when this catalog entry has an Iris install
     /// guide. Nil keeps older catalog responses compatible.
-    let guideSlug: String? = nil
+    var guideSlug: String? = nil
     var macCompatibility: CatalogMacCompatibility = .unknown
 
     private enum CodingKeys: String, CodingKey {
@@ -483,7 +483,7 @@ final class AppInventoryService: ObservableObject {
     /// minute ago is still installed when the network drops.
     @Published private(set) var lastRefreshFailureMessage: String?
 
-    private(set) var lastSuccessfulRefreshCompletedAt: Date?
+    @Published private(set) var lastSuccessfulRefreshCompletedAt: Date?
 
     /// A slug → "may Iris edit this app's local source?" join, set by
     /// `CompanionManager` so the inventory can carry the advisory

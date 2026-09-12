@@ -981,6 +981,8 @@ final class GuideSessionController: ObservableObject {
         if IrisTestEnvironment.isEnabled {
             loadState = .guideCouldNotBeLoaded(slug: slug,
                 userFacingMessage: "Iris Test is for editing separate test copies. Use regular Iris for marketplace installations.")
+            // The refusal still needs a visible card when opened from Settings.
+            surfaceTheGuideCardAtTheEye?()
             return
         }
         guideSessionGeneration &+= 1

@@ -114,6 +114,10 @@ func runUsageAttributionChecks() async throws {
     _ = try aggregateLedger.reserve(task: .review, attempt: 2, inputBytes: 20, at: 3)
     let unsettledSnapshot = aggregateLedger.snapshot
     let firstCallDocument = IrisTestRunUsage.callDocument(for: unsettledSnapshot.settledCalls[0])
+    try require((firstCallDocument["reservationID"] as? UInt64) == firstReservation.id.rawValue,
+                "usage lost the physical call reservation identity")
+    try require((firstCallDocument["attempt"] as? UInt64) == 1,
+                "usage lost the attempt count")
     let unsettledDocument = IrisTestRunUsage.snapshotDocument(
         runID: "usage-check-unsettled",
         startedAt: Date(timeIntervalSince1970: 0),
@@ -124,6 +128,10 @@ func runUsageAttributionChecks() async throws {
         try require(unsettledDocument[key] is NSNull,
                     "aggregate \(key) was reported while a call was unsettled")
     }
+    try require(unsettledDocument["requestedEditor"] is NSNull,
+                "unknown requested route was replaced with a hard-coded model")
+    try require(unsettledDocument["providerConfirmedModel"] is NSNull && unsettledDocument["uiAccepted"] is NSNull,
+                "usage inferred provider identity or UI acceptance")
     try require((unsettledDocument["submittedInputBytes"] as? UInt64) == 40,
                 "authoritative serialized input-byte accounting changed while tokens were unsettled")
     try require((firstCallDocument["reasoningOutputTokens"] as? UInt64) == 7,
@@ -147,8 +155,11 @@ func runUsageAttributionChecks() async throws {
         runID: "usage-check-settled",
         startedAt: Date(timeIntervalSince1970: 0),
         snapshot: settledSnapshot,
-        calls: settledDocuments
+        calls: settledDocuments,
+        implementationArm: .lunaXHigh
     )
+    try require((settledDocument["requestedEditor"] as? String) == HarnessImplementationArm.lunaXHigh.route.description,
+                "usage reported the baseline editor for a different configured arm")
     try require((settledDocument["inputTokens"] as? UInt64) == 24,
                 "settled aggregate input token total was not retained")
     try require((settledDocument["cachedInputTokens"] as? UInt64) == 5,

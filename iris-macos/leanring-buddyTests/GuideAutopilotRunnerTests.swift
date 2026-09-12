@@ -127,13 +127,15 @@ struct GuideAutopilotRunnerTests {
         id: String = "package",
         command: String?,
         sensitive: Bool = false,
-        workingDirectory: String? = nil
+        workingDirectory: String? = nil,
+        workspace: IrisGuideStepWorkspace? = nil
     ) -> IrisGuideStep {
         IrisGuideStep(
             id: id, kind: .terminal, title: "Build the app", body: "…",
             command: command,
             watch: sensitive ? IrisStepWatch(expect: [], sensitive: true) : nil,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            workspace: workspace
         )
     }
 
@@ -160,6 +162,45 @@ struct GuideAutopilotRunnerTests {
     }
 
     // MARK: - The escape hatch
+
+    @Test func preparedWorkspaceStepsRefuseEveryExecutionRouteUntilBound() async {
+        let workspace: IrisGuideStepWorkspace
+        do {
+            workspace = try IrisGuideStepWorkspace(kind: .preparedProject, relativePath: "apps/mobile")
+        } catch {
+            Issue.record("test workspace metadata could not be constructed: \(error)")
+            return
+        }
+        let main = FakeShellSession(outcomes: [.failed(exitStatus: 1, workingDirectory: "/Users/x/app")])
+        let long = FakeShellSession(outcomes: [.succeeded(workingDirectory: "/Users/x/app")])
+        let proposer = FakeFixProposer(rungA: [GuideAutopilotProposedFix(
+            diagnosis: "must not be asked",
+            confidence: "high",
+            action: .runACommand(command: "echo repair", whatItDoes: "repair"),
+            retryTheOriginalCommandAfterwards: true,
+            cameFromWebSearch: false
+        )])
+        let runner = Self.runner(shell: main, longRunning: long, proposer: proposer)
+
+        let result = await runner.executeStepCommand(
+            step: Self.step(command: "npm run dev", workspace: workspace),
+            stepIndex: 0,
+            totalSteps: 1
+        )
+
+        #expect(result == .surfacedToReader)
+        #expect(main.commandsRun.isEmpty && long.commandsRun.isEmpty,
+                "a structured workspace step must not run from the shell cwd or HOME")
+        #expect(proposer.rungACalls == 0 && proposer.rungBCalls == 0,
+                "workspace refusal must precede retry and repair model paths")
+        guard case .surfacedToReader(let diagnosis, _) = runner.state else {
+            Issue.record("expected prepared-workspace refusal, got \(runner.state)")
+            return
+        }
+        #expect(diagnosis.contains("prepared project workspace"))
+        #expect(diagnosis.contains("did not run"))
+        #expect(diagnosis.contains("apps/mobile"))
+    }
 
     @Test func theRedButtonCancelsBothTheMainAndTheLongRunningSession() async {
         // A run-from-source step (`npm run app`, a dev server) runs on the

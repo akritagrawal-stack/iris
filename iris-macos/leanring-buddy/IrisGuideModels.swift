@@ -379,6 +379,10 @@ struct IrisGuideStep: Codable, Equatable, Sendable {
     /// Nil keeps the old behaviour exactly — run wherever the shell is — which
     /// every already-published guide relies on, so this stays optional forever
     /// rather than becoming required once the guides are backfilled.
+    /// An explicit `workspace: null` therefore leaves this legacy field
+    /// eligible. A malformed legacy value is ignored when no workspace field
+    /// exists for backward compatibility; if a workspace field is present,
+    /// that malformed value fails decoding as contradictory metadata.
     let workingDirectory: String?
 
     /// An unrecognized `kind` falls back to `terminal` rather than failing the
@@ -402,12 +406,32 @@ struct IrisGuideStep: Codable, Equatable, Sendable {
         // Same reasoning as `watch`: a target Iris cannot parse costs the step
         // its arrow, not its existence.
         point = try? container.decodeIfPresent(IrisStepPointTarget.self, forKey: .point)
+        let hasWorkspaceField = container.contains(.workspace)
+        // An explicit null means no prepared workspace was declared, so the
+        // legacy workingDirectory remains eligible. A present, malformed
+        // workspace is a guide error and must fail the step decode.
         workspace = try container.decodeIfPresent(IrisGuideStepWorkspace.self, forKey: .workspace)
         // Same fallback reasoning again: a folder Iris cannot read costs the
         // step its declaration, not its existence — it falls back to the
         // inherited working directory, which is where it ran before the field
         // existed at all.
-        let decodedWorkingDirectory = try? container.decodeIfPresent(String.self, forKey: .workingDirectory)
+        let decodedWorkingDirectory: String?
+        do {
+            decodedWorkingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+        } catch {
+            // Preserve legacy behavior for old steps that carry only a bad
+            // workingDirectory value: it is ignored and does not become HOME
+            // text. Once a workspace field is present, however, a malformed
+            // legacy field is an explicit contradictory declaration.
+            guard !hasWorkspaceField else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .workingDirectory,
+                    in: container,
+                    debugDescription: "workingDirectory must be a string when workspace metadata is present"
+                )
+            }
+            decodedWorkingDirectory = nil
+        }
         guard workspace == nil || decodedWorkingDirectory == nil else {
             throw DecodingError.dataCorruptedError(
                 forKey: .workspace,

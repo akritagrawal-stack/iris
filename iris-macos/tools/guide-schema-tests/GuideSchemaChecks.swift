@@ -61,28 +61,43 @@ struct GuideSchemaChecks {
     }
 
     private static func checkStrictWorkspaceFailures() throws {
-        let invalidValues: [Any] = [
+        let invalidPaths = [
             "",
             "/apps/mobile",
             "../mobile",
             "apps/../mobile",
             "apps//mobile",
             "apps\\mobile",
-            "apps/./mobile",
+            "apps/./mobile"
+        ]
+        for path in invalidPaths {
+            do {
+                _ = try decodeStep(workspace: [
+                    "kind": "prepared-project", "relativePath": path
+                ])
+                throw GuideSchemaCheckError.failed("invalid workspace relativePath was accepted: " + path)
+            } catch let checkError as GuideSchemaCheckError {
+                throw checkError
+            } catch {
+                // Every invalid relativePath must fail decoding; it may never
+                // fall back to the user's HOME directory.
+            }
+        }
+        let malformedValues: [Any] = [
             ["kind": "unsupported", "relativePath": "apps/mobile"],
             ["kind": "prepared-project"],
             ["kind": "prepared-project", "relativePath": 42],
             "prepared-project"
         ]
-        for value in invalidValues {
+        for value in malformedValues {
             do {
                 _ = try decodeStep(workspace: value)
-                throw GuideSchemaCheckError.failed("malformed workspace metadata was accepted: \(value)")
+                throw GuideSchemaCheckError.failed("malformed workspace metadata was accepted")
             } catch let checkError as GuideSchemaCheckError {
                 throw checkError
             } catch {
-                // Every malformed or unsupported workspace must fail decoding;
-                // it may never fall back to the user's HOME directory.
+                // Unsupported kinds, missing fields, wrong field types and a
+                // non-object all fail instead of becoming a HOME run.
             }
         }
         do {
@@ -95,6 +110,24 @@ struct GuideSchemaChecks {
             throw checkError
         } catch {
             // Mutually exclusive declarations fail as required.
+        }
+        let explicitNull = try decodeStep(workspace: NSNull(), workingDirectory: "~/legacy-project")
+        try require(explicitNull.workspace == nil && explicitNull.workingDirectory == "~/legacy-project",
+                    "workspace:null did not preserve the documented legacy directory behavior")
+        let malformedLegacy = try decodeStep(workingDirectory: 42)
+        try require(malformedLegacy.workspace == nil && malformedLegacy.workingDirectory == nil,
+                    "malformed legacy workingDirectory did not follow its documented ignore behavior")
+        do {
+            _ = try decodeStep(
+                workspace: ["kind": "prepared-project", "relativePath": "apps/mobile"],
+                workingDirectory: 42
+            )
+            throw GuideSchemaCheckError.failed("malformed legacy directory was accepted beside workspace metadata")
+        } catch let checkError as GuideSchemaCheckError {
+            throw checkError
+        } catch {
+            // A structured declaration cannot be paired with a malformed
+            // legacy directory field.
         }
         print("PASS unsupported, malformed and conflicting metadata refusal")
     }

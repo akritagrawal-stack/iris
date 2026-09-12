@@ -746,6 +746,14 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         "This run-from-source command was interrupted before it finished. "
         + "Iris did not replay it. Tap Try again if you want to start it once more."
 
+    private static func preparedWorkspaceRequiredDiagnosis(
+        _ workspace: IrisGuideStepWorkspace
+    ) -> String {
+        "This step requires Iris's prepared project workspace at '\(workspace.relativePath)'. "
+            + "Iris has no validated workspace binding yet, so it did not run the command. "
+            + "Prepare the pinned project workspace, then try this step again."
+    }
+
     init(
         shellSession: GuideAutopilotShellSessionDriving,
         longRunningSession: GuideAutopilotShellSessionDriving,
@@ -873,6 +881,13 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
     ) async -> GuideAutopilotStepResult {
         guard !sessionEndWasRequested, !longRunningAbortIsInProgress else {
             return .stopped
+        }
+        // Workspace metadata is a strict execution requirement. Until the
+        // integrator supplies a validated structural binding, every route —
+        // ordinary, retry, repair and long-running — must stop here rather
+        // than silently using HOME or the shell's current directory.
+        if let workspace = step.workspace {
+            return refusePreparedWorkspace(workspace, command: step.command ?? "")
         }
         guard let command = step.command else { return .succeeded }
 
@@ -1122,6 +1137,9 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         exitStatus: Int32,
         workingDirectory: String
     ) async -> GuideAutopilotStepResult {
+        if let workspace = step.workspace {
+            return refusePreparedWorkspace(workspace, command: command)
+        }
         // Ahead of the ladder, and ahead of spending anything: a step that died
         // because a tool is missing, when the guide installs that tool itself,
         // is repaired from the guide rather than from a model.
@@ -1520,6 +1538,15 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         isASystemFolder(folder) ? systemFolderDiagnosis(folder) : wrongFolderDiagnosis(folder)
     }
 
+    private func refusePreparedWorkspace(
+        _ workspace: IrisGuideStepWorkspace,
+        command: String
+    ) -> GuideAutopilotStepResult {
+        let diagnosis = Self.preparedWorkspaceRequiredDiagnosis(workspace)
+        transcript.append(.explanation(text: diagnosis))
+        return surface(diagnosis: diagnosis, command: command)
+    }
+
     private static func systemFolderDiagnosis(_ folder: String) -> String {
         "This step asks Iris to work inside \(folder), which is a system folder. "
             + "Iris won't put a terminal there — a command written for the folder "
@@ -1698,6 +1725,9 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         stepGeneration: Int,
         command: String
     ) async -> GuideAutopilotStepResult {
+        if let workspace = step.workspace {
+            return refusePreparedWorkspace(workspace, command: command)
+        }
         // A dev server keeps the side session's command lane occupied even
         // though `executeStepCommand` returns as soon as the process starts.
         // Check before any await so a second long-running step cannot slip in

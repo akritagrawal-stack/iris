@@ -84,3 +84,36 @@ did not change that UI path.
 
 This final combined build and launch do not upgrade any of the remaining
 user-journey or physical-device gaps to a pass.
+
+## Repair-wave verification at 2:55 PM Pacific
+
+Source `e3fa21a` repaired three execution-boundary defects before another
+desktop run: guide owner/repository metadata now canonicalizes to the real
+`github.com` origin, source setup completions carry a generation so a cancelled
+or superseded setup cannot publish late state, and every prepared-workspace
+retry revalidates and moves into the current contained directory. The
+retention preview also now opens an existing store read-only: an absent store
+or lock returns an empty preview without creating either path.
+
+- GUI Xcode build and launch: `iris-lightweight-20260912`, `Iris Test` scheme,
+  `My Mac`, completed at approximately 2:54 PM Pacific.
+- Launched artifact:
+  `/Users/akrit/Library/Developer/Xcode/DerivedData/leanring-buddy-dajsagjrurlvaigplzqblrdboant/Build/Products/Test/Iris Test.app`.
+- `Contents/MacOS/Iris Test.debug.dylib` SHA-256:
+  `5ba5d20026cd5d5cf1a4394f27351b6e3789164a7986b97e97b2b4723baf9318`.
+- The focused native run compiled the repaired module, passed 71 guide tests
+  across five suites, passed spatial guidance checks, and passed the existing
+  inert harness checks. The dedicated backup-retention executable also passed
+  all 8 groups, including the absent-store non-mutation regression. Logs are in
+  `/Users/Shared/iris-harness-host-repair-IJzSvG/`.
+
+The app launched and the Iris eye was visible over the desktop. The initial
+computer-use accessibility surface was opaque, but a real hover then click on
+the eye opened the compact composer. The screenshot showed the expected
+“Codex is connected for app edits” message, Connect screen help, Choose app to
+edit, History, and New chat. This verifies the repaired build reaches the
+normal entry surface. The saved-versions and app-edit controls were not
+re-exercised after this repair, so that remains an observation limitation, not
+a successful version-history UI acceptance. The earlier saved-versions
+open/cancel observation remains evidence only for the existing cleanup screen;
+it does not establish that the new retention preview is wired to that UI.

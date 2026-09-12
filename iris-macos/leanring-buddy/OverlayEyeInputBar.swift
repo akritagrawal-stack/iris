@@ -758,6 +758,7 @@ struct OverlayEyeInputBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            guideLoadingOrFailure
             if theCenteredTakeoverIsCoveringTheScreen {
                 // While a centered takeover runs, keep the ask field available
                 // but suppress the duplicate guide/edit surface.
@@ -1034,6 +1035,47 @@ struct OverlayEyeInputBarView: View {
                         }
                 }
             }
+        }
+    }
+
+    /// Loading and refusals have no step model. Keep them visible independently
+    /// of the step card so opening a guide cannot silently become general chat.
+    @ViewBuilder
+    private var guideLoadingOrFailure: some View {
+        switch guideSessionController.loadState {
+        case .guideIsLoading(let slug):
+            Text("Loading the \(slug) guide…")
+                .font(DS.Typography.caption)
+                .foregroundColor(DS.Colors.textSecondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(IrisShellBackground(
+                    cornerRadius: DS.CornerRadius.large,
+                    surface: DS.Colors.readableOverAnything
+                ))
+        case .guideCouldNotBeLoaded(_, let message):
+            VStack(alignment: .leading, spacing: 6) {
+                Text("This guide could not be opened")
+                    .font(DS.Typography.caption.weight(.semibold))
+                    .foregroundColor(DS.Colors.textPrimary)
+                Text(message)
+                    .font(DS.Typography.caption)
+                    .foregroundColor(DS.Colors.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Dismiss", action: { guideSessionController.closeTheGuide() })
+                    .irisTextButton(fontSize: 10)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(IrisShellBackground(
+                cornerRadius: DS.CornerRadius.large,
+                surface: DS.Colors.readableOverAnything
+            ))
+            .accessibilityElement(children: .contain)
+        case .noGuideIsOpen, .guideIsOpen:
+            EmptyView()
         }
     }
 

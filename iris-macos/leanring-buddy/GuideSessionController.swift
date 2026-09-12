@@ -745,7 +745,8 @@ final class GuideSessionController: ObservableObject {
                 let flight = GuideEyeFlight(
                     stepIdentity: stepIdentityForBudget,
                     screenLocation: location,
-                    label: step.title
+                    label: step.title,
+                    targetFingerprint: outcome.targetEvidence?.fingerprint
                 )
                 if self.theFlightTheEyeIsShowing.theEyeShouldFly(to: flight) {
                     self.sendTheEyeTo?(location, displayFrame, step.title)

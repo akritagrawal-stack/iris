@@ -10,6 +10,192 @@ import Testing
 @MainActor
 struct SpatialGuidanceRegressionTests {
 
+    @Test("same rectangle with different semantic identity is stale")
+    func semanticIdentityWinsOverRectangleEquality() {
+        let topology = GuideDisplayTopology(
+            displays: [GuideDisplayReference(
+                displayID: 1,
+                frame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+                visibleFrame: CGRect(x: 0, y: 22, width: 1440, height: 878),
+                pixelSize: CGSize(width: 2880, height: 1800),
+                scale: 2
+            )],
+            accessibilityTopLeftReferenceY: 900,
+            menuBarReferenceY: 878
+        )
+        let first = Self.evidence(
+            processIdentifier: 101,
+            windowIdentifier: "window-a",
+            controlIdentifier: "button-a",
+            tabFingerprint: "tab-a",
+            rectangle: CGRect(x: 100, y: 200, width: 80, height: 24),
+            topology: topology
+        )
+        let sameTargetMoved = Self.evidence(
+            processIdentifier: 101,
+            windowIdentifier: "window-a",
+            controlIdentifier: "button-a",
+            tabFingerprint: "tab-a",
+            rectangle: CGRect(x: 160, y: 240, width: 80, height: 24),
+            topology: topology
+        )
+        let differentProcess = Self.evidence(
+            processIdentifier: 202,
+            windowIdentifier: "window-a",
+            controlIdentifier: "button-a",
+            tabFingerprint: "tab-a",
+            rectangle: first.rectangle,
+            topology: topology
+        )
+        let differentTab = Self.evidence(
+            processIdentifier: 101,
+            windowIdentifier: "window-a",
+            controlIdentifier: "button-a",
+            tabFingerprint: "tab-b",
+            rectangle: first.rectangle,
+            topology: topology
+        )
+        let differentControl = Self.evidence(
+            processIdentifier: 101,
+            windowIdentifier: "window-a",
+            controlIdentifier: "button-b",
+            tabFingerprint: "tab-a",
+            rectangle: first.rectangle,
+            topology: topology
+        )
+        let differentWindow = Self.evidence(
+            processIdentifier: 101,
+            windowIdentifier: "window-b",
+            controlIdentifier: "button-a",
+            tabFingerprint: "tab-a",
+            rectangle: first.rectangle,
+            topology: topology
+        )
+
+        #expect(GuidePointingFreshness.freshness(from: first, to: sameTargetMoved) == .movedSameTarget)
+        #expect(GuidePointingFreshness.freshness(from: first, to: differentProcess) == .stale(.processChanged))
+        #expect(GuidePointingFreshness.freshness(from: first, to: differentTab) == .stale(.tabOrDocumentChanged))
+        #expect(GuidePointingFreshness.freshness(from: first, to: differentControl) == .stale(.controlIdentityChanged))
+        #expect(GuidePointingFreshness.freshness(from: first, to: differentWindow) == .stale(.windowChanged))
+        #expect(
+            GuidePointingFreshness.freshness(
+                from: .geometryOnly(first.rectangle), to: .geometryOnly(first.rectangle)
+            ) == .unavailable(.missingSemanticIdentity)
+        )
+    }
+
+    @Test("capture coordinates retain crop, mixed scale, and negative monitor origin")
+    func captureCoordinatesUseTheMatchingDisplayTopology() throws {
+        let topology = GuideDisplayTopology(
+            displays: [
+                GuideDisplayReference(
+                    displayID: 1,
+                    frame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+                    visibleFrame: CGRect(x: 0, y: 22, width: 1440, height: 878),
+                    pixelSize: CGSize(width: 2880, height: 1800),
+                    scale: 2
+                ),
+                GuideDisplayReference(
+                    displayID: 2,
+                    frame: CGRect(x: -1280, y: 100, width: 1280, height: 800),
+                    visibleFrame: CGRect(x: -1280, y: 100, width: 1280, height: 800),
+                    pixelSize: CGSize(width: 1280, height: 800),
+                    scale: 1
+                ),
+            ],
+            accessibilityTopLeftReferenceY: 900,
+            menuBarReferenceY: 878
+        )
+        let metadata = GuideCoordinateMetadata(
+            topology: topology,
+            displayID: 2,
+            captureCropOriginInDisplayPixels: CGPoint(x: 200, y: 100),
+            captureCropSizeInDisplayPixels: CGSize(width: 600, height: 400),
+            captureImageSizeInPixels: CGSize(width: 300, height: 200),
+            scale: 1
+        )
+
+        let point = try #require(
+            GuidePointingFreshness.appKitPoint(
+                fromCapturePixels: CGPoint(x: 50, y: 25),
+                metadata: metadata,
+                currentTopology: topology
+            )
+        )
+        #expect(point == CGPoint(x: -980, y: 750))
+
+        var changedTopology = topology
+        changedTopology = GuideDisplayTopology(
+            displays: topology.displays.dropLast(),
+            accessibilityTopLeftReferenceY: topology.accessibilityTopLeftReferenceY,
+            menuBarReferenceY: topology.menuBarReferenceY
+        )
+        #expect(
+            GuidePointingFreshness.appKitPoint(
+                fromCapturePixels: CGPoint(x: 50, y: 25),
+                metadata: metadata,
+                currentTopology: changedTopology
+            ) == nil
+        )
+    }
+
+    @Test("duplicate evidence refuses instead of choosing a control")
+    func duplicateCandidatesRemainAmbiguous() async throws {
+        let locator = AmbiguousTargetLocator()
+        let outcome = await GuideStepPointingCoordinator.resolve(
+            decision: .pointAt(GuidePointTarget(
+                descriptor: "the Save button",
+                inApp: nil,
+                isWindow: false,
+                provenance: .authoredAndFound
+            )),
+            stepTitle: "Save",
+            stepBody: "",
+            mayAskTheModel: false,
+            using: locator
+        )
+        guard case .doNotPoint(.pointingUnavailable(let message)) = outcome.decision else {
+            Issue.record("duplicate candidate resolution did not refuse")
+            return
+        }
+        #expect(message.contains("more than one"))
+        #expect(outcome.screenLocation == nil)
+        #expect(outcome.freshness == .ambiguous(.duplicateCandidates))
+    }
+
+    @Test("eye memo does not collapse distinct semantic targets at one point")
+    func eyeMemoUsesSemanticIdentityWhenItIsAvailable() {
+        let first = GuideTargetFingerprint(
+            processIdentifier: 101,
+            bundleIdentifier: "com.example.app",
+            windowIdentifier: "window-a",
+            role: "AXButton",
+            identifier: "save-a",
+            label: "Save"
+        )
+        let second = GuideTargetFingerprint(
+            processIdentifier: 202,
+            bundleIdentifier: "com.example.app",
+            windowIdentifier: "window-a",
+            role: "AXButton",
+            identifier: "save-a",
+            label: "Save"
+        )
+        let one = GuideEyeFlight(
+            stepIdentity: "step",
+            screenLocation: CGPoint(x: 200, y: 300),
+            label: "Save",
+            targetFingerprint: first
+        )
+        let other = GuideEyeFlight(
+            stepIdentity: "step",
+            screenLocation: one.screenLocation,
+            label: one.label,
+            targetFingerprint: second
+        )
+        #expect(!GuideEyeFlightMemo.isTheSameAnswer(one, other))
+    }
+
     @Test("a chat point uses the model label as a bounded one-line cue")
     func modelLabelsAreSanitizedBeforeTheyReachTheOverlay() {
         #expect(
@@ -141,5 +327,61 @@ struct SpatialGuidanceRegressionTests {
         func locateByAskingTheModel(stepTitle: String, stepBody: String) async -> CGRect? {
             nil
         }
+    }
+
+    @MainActor
+    final class AmbiguousTargetLocator: GuideTargetEvidenceLocating {
+        func locateInAccessibilityTree(descriptor: String, inApp bundleIdentifier: String?) -> CGRect? { nil }
+        func locateWindow(ofApp bundleIdentifier: String) -> CGRect? { nil }
+        func locateFocusedWindow(ofApp bundleIdentifier: String) -> CGRect? { nil }
+        func locateByAskingTheModel(stepTitle: String, stepBody: String) async -> CGRect? { nil }
+
+        func locateInAccessibilityTreeEvidence(
+            descriptor: String,
+            inApp bundleIdentifier: String?
+        ) -> GuideTargetLookup {
+            .ambiguous(.duplicateCandidates)
+        }
+    }
+
+    private static func evidence(
+        processIdentifier: Int32,
+        windowIdentifier: String,
+        controlIdentifier: String,
+        tabFingerprint: String,
+        rectangle: CGRect,
+        topology: GuideDisplayTopology
+    ) -> GuideTargetEvidence {
+        let fingerprint = GuideTargetFingerprint(
+            processIdentifier: processIdentifier,
+            bundleIdentifier: "com.example.app",
+            windowIdentifier: windowIdentifier,
+            windowTitleFingerprint: "window-title",
+            role: "AXButton",
+            identifier: controlIdentifier,
+            label: "Save",
+            ancestry: [GuideAccessibilityAncestor(role: "AXGroup", identifier: "toolbar", label: "Toolbar")],
+            tabOrDocumentFingerprint: tabFingerprint
+        )
+        return GuideTargetEvidence(
+            rectangle: rectangle,
+            fingerprint: fingerprint,
+            observation: GuideObservationSnapshot(
+                monotonicNanoseconds: 10,
+                frontmostProcessIdentifier: processIdentifier,
+                frontmostBundleIdentifier: "com.example.app",
+                focusedWindow: GuideWindowFingerprint(
+                    processIdentifier: processIdentifier,
+                    bundleIdentifier: "com.example.app",
+                    windowIdentifier: windowIdentifier,
+                    titleFingerprint: "window-title"
+                ),
+                coordinateMetadata: GuideCoordinateMetadata(
+                    topology: topology,
+                    displayID: 1,
+                    scale: 2
+                )
+            )
+        )
     }
 }

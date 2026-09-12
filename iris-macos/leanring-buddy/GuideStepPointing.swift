@@ -53,6 +53,43 @@ extension GuideTargetLocating {
     var modelFailureMessage: String? { nil }
 }
 
+/// Additive evidence-aware companion to `GuideTargetLocating`.
+///
+/// Existing locators can keep returning rectangles. New locators return a
+/// semantic fingerprint and observation snapshot, or an explicit ambiguity.
+/// This is the small adapter boundary the session controller can adopt without
+/// knowing about AX, capture pixels, or display topology.
+@MainActor
+protocol GuideTargetEvidenceLocating: GuideTargetLocating {
+    func locateInAccessibilityTreeEvidence(
+        descriptor: String,
+        inApp bundleIdentifier: String?
+    ) -> GuideTargetLookup
+
+    func locateWindowEvidence(ofApp bundleIdentifier: String) -> GuideTargetLookup
+    func locateFocusedWindowEvidence(ofApp bundleIdentifier: String) -> GuideTargetLookup
+}
+
+extension GuideTargetEvidenceLocating {
+    func locateInAccessibilityTreeEvidence(
+        descriptor: String,
+        inApp bundleIdentifier: String?
+    ) -> GuideTargetLookup {
+        locateInAccessibilityTree(descriptor: descriptor, inApp: bundleIdentifier)
+            .map { .found(.geometryOnly($0)) } ?? .unavailable(.missingSemanticIdentity)
+    }
+
+    func locateWindowEvidence(ofApp bundleIdentifier: String) -> GuideTargetLookup {
+        locateWindow(ofApp: bundleIdentifier)
+            .map { .found(.geometryOnly($0)) } ?? .unavailable(.missingSemanticIdentity)
+    }
+
+    func locateFocusedWindowEvidence(ofApp bundleIdentifier: String) -> GuideTargetLookup {
+        locateFocusedWindow(ofApp: bundleIdentifier)
+            .map { .found(.geometryOnly($0)) } ?? .unavailable(.missingSemanticIdentity)
+    }
+}
+
 /// What the eye was told to do about the current step.
 @MainActor
 struct GuideStepPointingOutcome: Equatable {
@@ -65,6 +102,27 @@ struct GuideStepPointingOutcome: Equatable {
     /// app activation now, and an uncounted model call per refresh is how one
     /// step burned through the funded tier's day.
     let theModelWasAsked: Bool
+    /// Semantic evidence returned by an evidence-aware locator. Nil means the
+    /// legacy rectangle adapter was used and the result needs live revalidation
+    /// before a click-through highlight can be trusted.
+    let targetEvidence: GuideTargetEvidence?
+    let freshness: GuidePointingFreshnessVerdict
+
+    init(
+        decision: GuidePointingDecision,
+        screenLocation: CGPoint?,
+        displayFrame: CGRect?,
+        theModelWasAsked: Bool,
+        targetEvidence: GuideTargetEvidence? = nil,
+        freshness: GuidePointingFreshnessVerdict = .unavailable(.geometryOnly)
+    ) {
+        self.decision = decision
+        self.screenLocation = screenLocation
+        self.displayFrame = displayFrame
+        self.theModelWasAsked = theModelWasAsked
+        self.targetEvidence = targetEvidence
+        self.freshness = freshness
+    }
 }
 
 /// One display, reduced to the two rectangles pointing cares about.
@@ -120,6 +178,32 @@ enum GuideStepPointingCoordinator {
         NSScreen.screens.map {
             GuidePointableDisplay(frame: $0.frame, usableArea: $0.visibleFrame)
         }
+    }
+
+    /// Capture the live AppKit display topology once for an observation. The
+    /// primary screen supplies AX's top-left reference and the menu-bar edge;
+    /// every display keeps its ID, point frame, pixel size, and scale.
+    static func currentDisplayTopology() -> GuideDisplayTopology? {
+        let screens = NSScreen.screens
+        guard let primary = NSScreen.main ?? screens.first else { return nil }
+        let displayReferences: [GuideDisplayReference] = screens.compactMap { screen in
+            guard let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+                return nil
+            }
+            return GuideDisplayReference(
+                displayID: displayID,
+                frame: screen.frame,
+                visibleFrame: screen.visibleFrame,
+                pixelSize: CGSize(width: CGDisplayPixelsWide(displayID), height: CGDisplayPixelsHigh(displayID)),
+                scale: screen.backingScaleFactor
+            )
+        }
+        guard !displayReferences.isEmpty else { return nil }
+        return GuideDisplayTopology(
+            displays: displayReferences,
+            accessibilityTopLeftReferenceY: primary.frame.maxY,
+            menuBarReferenceY: primary.visibleFrame.maxY
+        )
     }
 
     /// How wide the speech bubble `OverlayWindow` draws beside the eye will be
@@ -392,20 +476,60 @@ enum GuideStepPointingCoordinator {
         }
 
         var found: CGRect?
+        var targetEvidence: GuideTargetEvidence?
+        var lookupAmbiguity: GuidePointingAmbiguityReason?
         var theModelWasAsked = false
         var theModelLocationWasRejected = false
+        let evidenceLocator = locator as? any GuideTargetEvidenceLocating
         if target.isWindow, let bundleIdentifier = target.inApp {
             // The model/capture path is about the focused window, not an
             // arbitrary member of the app's window list. Keep the old window
             // lookup as one bounded compatibility fallback for apps that do
             // not publish a focused-window attribute.
-            found = locator.locateFocusedWindow(ofApp: bundleIdentifier)
-            if found == nil {
-                found = locator.locateWindow(ofApp: bundleIdentifier)
+            if let evidenceLocator {
+                switch evidenceLocator.locateFocusedWindowEvidence(ofApp: bundleIdentifier) {
+                case .found(let evidence):
+                    targetEvidence = evidence
+                    found = evidence.rectangle
+                case .ambiguous(let reason):
+                    lookupAmbiguity = reason
+                case .unavailable:
+                    break
+                }
+                if found == nil, lookupAmbiguity == nil {
+                    switch evidenceLocator.locateWindowEvidence(ofApp: bundleIdentifier) {
+                    case .found(let evidence):
+                        targetEvidence = evidence
+                        found = evidence.rectangle
+                    case .ambiguous(let reason):
+                        lookupAmbiguity = reason
+                    case .unavailable:
+                        break
+                    }
+                }
+            } else {
+                found = locator.locateFocusedWindow(ofApp: bundleIdentifier)
+                if found == nil {
+                    found = locator.locateWindow(ofApp: bundleIdentifier)
+                }
             }
         }
         if found == nil {
-            found = locator.locateInAccessibilityTree(descriptor: target.descriptor, inApp: target.inApp)
+            if let evidenceLocator, lookupAmbiguity == nil {
+                switch evidenceLocator.locateInAccessibilityTreeEvidence(
+                    descriptor: target.descriptor, inApp: target.inApp
+                ) {
+                case .found(let evidence):
+                    targetEvidence = evidence
+                    found = evidence.rectangle
+                case .ambiguous(let reason):
+                    lookupAmbiguity = reason
+                case .unavailable:
+                    break
+                }
+            } else if lookupAmbiguity == nil {
+                found = locator.locateInAccessibilityTree(descriptor: target.descriptor, inApp: target.inApp)
+            }
         }
         // Only an inferred target is allowed to reach the model: an authored
         // descriptor the tree could not find is a stale guide, and guessing
@@ -435,9 +559,15 @@ enum GuideStepPointingCoordinator {
             theModelLocationWasRejected = rectangleTheModelAnsweredWith != nil && found == nil
         }
 
-        guard let rectangle = found else {
+        guard let rectangle = found, lookupAmbiguity == nil else {
             let refusal: GuidePointRefusal
-            if theModelWasAsked, let failureMessage = locator.modelFailureMessage {
+            if let lookupAmbiguity {
+                refusal = .pointingUnavailable(
+                    message: lookupAmbiguity == .duplicateCandidates
+                        ? "I found more than one matching control, so I stopped rather than choose the wrong one."
+                        : "I couldn't confirm a unique control on the current screen, so I stopped pointing."
+                )
+            } else if theModelWasAsked, let failureMessage = locator.modelFailureMessage {
                 refusal = .pointingUnavailable(message: failureMessage)
             } else if theModelLocationWasRejected {
                 refusal = .pointingUnavailable(
@@ -450,7 +580,10 @@ enum GuideStepPointingCoordinator {
                 decision: .doNotPoint(refusal),
                 screenLocation: nil,
                 displayFrame: nil,
-                theModelWasAsked: theModelWasAsked
+                theModelWasAsked: theModelWasAsked,
+                targetEvidence: targetEvidence,
+                freshness: lookupAmbiguity.map(GuidePointingFreshnessVerdict.ambiguous)
+                    ?? .unavailable(.geometryOnly)
             )
         }
 
@@ -477,7 +610,9 @@ enum GuideStepPointingCoordinator {
                 decision: .doNotPoint(.couldNotFindIt(descriptor: target.descriptor)),
                 screenLocation: nil,
                 displayFrame: nil,
-                theModelWasAsked: theModelWasAsked
+                theModelWasAsked: theModelWasAsked,
+                targetEvidence: targetEvidence,
+                freshness: .unavailable(.noCurrentDisplay)
             )
         }
 
@@ -485,7 +620,15 @@ enum GuideStepPointingCoordinator {
             decision: decision,
             screenLocation: aim.point,
             displayFrame: aim.displayFrame,
-            theModelWasAsked: theModelWasAsked
+            theModelWasAsked: theModelWasAsked,
+            targetEvidence: targetEvidence,
+            freshness: targetEvidence.map { evidence in
+                guard evidence.observation != nil else { return .unavailable(.geometryOnly) }
+                guard evidence.fingerprint.availability == .complete else {
+                    return .unavailable(.missingSemanticIdentity)
+                }
+                return .fresh
+            } ?? .unavailable(.geometryOnly)
         )
     }
 }
@@ -498,7 +641,7 @@ enum GuideStepPointingCoordinator {
 /// resolves for somebody who has never granted Screen Recording — and it is why
 /// `GuidePointingLadder.decide` only blocks the *inferred* path on that grant.
 @MainActor
-struct SystemGuideTargetLocator: GuideTargetLocating {
+struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocating {
     /// Asks the model. Injected because it goes through `AssistantTransport`
     /// like every other model call in this app, and this file must not build a
     /// second route to one.
@@ -508,7 +651,19 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
     var modelFailureMessage: String? { readModelFailureMessage?() }
 
     func locateInAccessibilityTree(descriptor: String, inApp bundleIdentifier: String?) -> CGRect? {
-        guard AXIsProcessTrusted() else { return nil }
+        if case .found(let evidence) = locateInAccessibilityTreeEvidence(
+            descriptor: descriptor, inApp: bundleIdentifier
+        ) {
+            return evidence.rectangle
+        }
+        return nil
+    }
+
+    func locateInAccessibilityTreeEvidence(
+        descriptor: String,
+        inApp bundleIdentifier: String?
+    ) -> GuideTargetLookup {
+        guard AXIsProcessTrusted() else { return .unavailable(.missingSemanticIdentity) }
 
         let applications: [NSRunningApplication]
         if let bundleIdentifier {
@@ -520,31 +675,57 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
         }
 
         let wanted = GuidePointingLabelScore.nameAndContext(of: descriptor)
-        guard !wanted.name.isEmpty else { return nil }
+        guard !wanted.name.isEmpty else { return .unavailable(.missingSemanticIdentity) }
         let displays = GuideStepPointingCoordinator.displaysTheEyeCouldFlyTo()
+        guard let topology = GuideStepPointingCoordinator.currentDisplayTopology() else {
+            return .unavailable(.noCurrentDisplay)
+        }
+        var matchFromAnotherProcess: AccessibilityMatch?
         for application in applications {
             let element = AXUIElementCreateApplication(application.processIdentifier)
-            var best: (rectangle: CGRect, score: GuidePointingLabelScore)?
+            var best: AccessibilityMatch?
+            var foundEqualScoredCandidate = false
             var nodesVisited = 0
             bestMatch(
                 element: element, wanted: wanted, depth: 0,
                 displays: displays,
                 stopWalkingAt: Date().addingTimeInterval(Self.longestTheWalkMayTake),
-                best: &best, nodesVisited: &nodesVisited
+                application: application,
+                topology: topology,
+                ancestors: [], window: nil,
+                best: &best, foundEqualScoredCandidate: &foundEqualScoredCandidate,
+                nodesVisited: &nodesVisited
             )
             if let best {
-                return best.rectangle
+                if foundEqualScoredCandidate {
+                    return .ambiguous(.duplicateCandidates)
+                }
+                if matchFromAnotherProcess != nil {
+                    return .ambiguous(.duplicateCandidates)
+                }
+                matchFromAnotherProcess = best
             }
+        }
+        return matchFromAnotherProcess.map { .found($0.evidence) }
+            ?? .unavailable(.missingSemanticIdentity)
+    }
+
+    func locateWindow(ofApp bundleIdentifier: String) -> CGRect? {
+        if case .found(let evidence) = locateWindowEvidence(ofApp: bundleIdentifier) {
+            return evidence.rectangle
         }
         return nil
     }
 
-    func locateWindow(ofApp bundleIdentifier: String) -> CGRect? {
-        guard
-            AXIsProcessTrusted(),
-            let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first
-        else {
-            return nil
+    func locateWindowEvidence(ofApp bundleIdentifier: String) -> GuideTargetLookup {
+        guard AXIsProcessTrusted() else {
+            return .unavailable(.missingSemanticIdentity)
+        }
+        let applications = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+        guard applications.count == 1, let application = applications.first else {
+            return applications.isEmpty
+                ? .unavailable(.missingSemanticIdentity)
+                : .ambiguous(.duplicateCandidates)
         }
         let element = AXUIElementCreateApplication(application.processIdentifier)
         var windowsValue: AnyObject?
@@ -552,7 +733,7 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
             AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windowsValue) == .success,
             let windows = windowsValue as? [AXUIElement]
         else {
-            return nil
+            return .unavailable(.missingSemanticIdentity)
         }
         // A minimised window keeps the position and size it had when it went
         // down, so `windows.first` cheerfully hands back a rectangle over an
@@ -561,17 +742,33 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
         // Take the first window that is actually up; if none is, say nothing
         // rather than aim at a ghost.
         guard let windowThatIsActuallyUp = windows.first(where: { !isMinimised($0) }) else {
-            return nil
+            return .unavailable(.noCurrentDisplay)
         }
-        return frame(of: windowThatIsActuallyUp)
+        guard let rectangle = frame(of: windowThatIsActuallyUp),
+              let evidence = evidence(
+                for: windowThatIsActuallyUp, rectangle: rectangle,
+                application: application, topology: GuideStepPointingCoordinator.currentDisplayTopology(),
+                ancestors: []
+              ) else { return .unavailable(.missingSemanticIdentity) }
+        return .found(evidence)
     }
 
     func locateFocusedWindow(ofApp bundleIdentifier: String) -> CGRect? {
-        guard
-            AXIsProcessTrusted(),
-            let application = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first
-        else {
-            return nil
+        if case .found(let evidence) = locateFocusedWindowEvidence(ofApp: bundleIdentifier) {
+            return evidence.rectangle
+        }
+        return nil
+    }
+
+    func locateFocusedWindowEvidence(ofApp bundleIdentifier: String) -> GuideTargetLookup {
+        guard AXIsProcessTrusted() else {
+            return .unavailable(.missingSemanticIdentity)
+        }
+        let applications = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+        guard applications.count == 1, let application = applications.first else {
+            return applications.isEmpty
+                ? .unavailable(.missingSemanticIdentity)
+                : .ambiguous(.duplicateCandidates)
         }
         let element = AXUIElementCreateApplication(application.processIdentifier)
         var focusedWindowValue: AnyObject?
@@ -582,14 +779,20 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
             let focusedWindowValue,
             CFGetTypeID(focusedWindowValue) == AXUIElementGetTypeID()
         else {
-            return nil
+            return .unavailable(.missingSemanticIdentity)
         }
         let focusedWindow = focusedWindowValue as! AXUIElement
         // A minimized focused window can retain its last geometry. It is not a
         // visible place for the eye to fly, so use the same non-minimized rule
         // as the bounded window-list fallback above.
-        guard !isMinimised(focusedWindow) else { return nil }
-        return frame(of: focusedWindow)
+        guard !isMinimised(focusedWindow),
+              let rectangle = frame(of: focusedWindow),
+              let evidence = evidence(
+                for: focusedWindow, rectangle: rectangle,
+                application: application, topology: GuideStepPointingCoordinator.currentDisplayTopology(),
+                ancestors: []
+              ) else { return .unavailable(.missingSemanticIdentity) }
+        return .found(evidence)
     }
 
     private func isMinimised(_ window: AXUIElement) -> Bool {
@@ -640,6 +843,11 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
     private static let maximumNodesToVisit = 6000
     private static let longestTheWalkMayTake: TimeInterval = 0.4
 
+    private struct AccessibilityMatch {
+        let evidence: GuideTargetEvidence
+        let score: GuidePointingLabelScore
+    }
+
     /// The best element in the whole tree, not the first one that matched.
     ///
     /// THIS IS THE FIX for "does not point correctly when asking you to install
@@ -663,7 +871,12 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
         depth: Int,
         displays: [GuidePointableDisplay],
         stopWalkingAt: Date,
-        best: inout (rectangle: CGRect, score: GuidePointingLabelScore)?,
+        application: NSRunningApplication,
+        topology: GuideDisplayTopology,
+        ancestors: [GuideAccessibilityAncestor],
+        window: GuideWindowFingerprint?,
+        best: inout AccessibilityMatch?,
+        foundEqualScoredCandidate: inout Bool,
         nodesVisited: inout Int
     ) {
         guard depth <= Self.maximumDepth, nodesVisited < Self.maximumNodesToVisit else { return }
@@ -673,11 +886,23 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
         if nodesVisited % 64 == 0, Date() >= stopWalkingAt { return }
         nodesVisited += 1
 
-        if let label = label(of: element) {
+        let currentLabel = label(of: element)
+        let currentRole = stringValue(of: element, attribute: kAXRoleAttribute)
+        let currentIdentifier = stringValue(of: element, attribute: kAXIdentifierAttribute)
+        let currentWindow = currentRole == (kAXWindowRole as String)
+            ? GuideWindowFingerprint(
+                processIdentifier: application.processIdentifier,
+                bundleIdentifier: application.bundleIdentifier,
+                windowIdentifier: currentIdentifier,
+                titleFingerprint: GuidePointingFreshness.privacyFingerprint(of: currentLabel)
+            )
+            : window
+
+        if let label = currentLabel {
             let score = GuidePointingLabelScore.of(
                 label: normalizedTokens(label), againstName: wanted.name, context: wanted.context
             )
-            if score.isAMatch, score > (best?.score ?? .noMatch) {
+            if score.isAMatch {
                 // A match the reader cannot see is not a match, and the walk has
                 // to keep going rather than stop on it. Measured live on this
                 // Mac: the step title "Open Terminal" matched Terminal's own
@@ -690,11 +915,25 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
                 if let rectangle = frame(of: element),
                    rectangle.width > 1,
                    rectangle.height > 1,
-                   GuideStepPointingCoordinator.displayShowingTheMostOf(rectangle, among: displays) != nil {
-                    best = (rectangle, score)
-                    // Nothing can beat a label that IS the descriptor, so stop
-                    // paying for the rest of the tree once one turns up.
-                    if score.isTheDescriptorExactly { return }
+                   GuideStepPointingCoordinator.displayShowingTheMostOf(rectangle, among: displays) != nil,
+                   let evidence = evidence(
+                       for: element, rectangle: rectangle, application: application,
+                       topology: topology, ancestors: ancestors, window: currentWindow
+                   ) {
+                    if let currentBest = best {
+                        if score > currentBest.score {
+                            best = AccessibilityMatch(evidence: evidence, score: score)
+                            foundEqualScoredCandidate = false
+                        } else if score == currentBest.score {
+                            // A duplicate label is not a reason to guess. Even
+                            // an exact textual match must remain ambiguous until
+                            // an authored role/identifier/context distinguishes
+                            // it through a future resolver.
+                            foundEqualScoredCandidate = true
+                        }
+                    } else {
+                        best = AccessibilityMatch(evidence: evidence, score: score)
+                    }
                 }
             }
         }
@@ -707,11 +946,17 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
             return
         }
         for child in children {
-            if let best, best.score.isTheDescriptorExactly { return }
             bestMatch(
                 element: child, wanted: wanted, depth: depth + 1,
                 displays: displays, stopWalkingAt: stopWalkingAt,
-                best: &best, nodesVisited: &nodesVisited
+                application: application, topology: topology,
+                ancestors: ancestors + [
+                    GuideAccessibilityAncestor(
+                        role: currentRole, identifier: currentIdentifier, label: currentLabel
+                    )
+                ], window: currentWindow,
+                best: &best, foundEqualScoredCandidate: &foundEqualScoredCandidate,
+                nodesVisited: &nodesVisited
             )
         }
     }
@@ -729,6 +974,58 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
             }
         }
         return nil
+    }
+
+    private func stringValue(of element: AXUIElement, attribute: String) -> String? {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
+            return nil
+        }
+        return value as? String
+    }
+
+    private func evidence(
+        for element: AXUIElement,
+        rectangle: CGRect,
+        application: NSRunningApplication,
+        topology: GuideDisplayTopology?,
+        ancestors: [GuideAccessibilityAncestor],
+        window: GuideWindowFingerprint? = nil
+    ) -> GuideTargetEvidence? {
+        guard let topology,
+              let displayID = topology.displays.first(where: { $0.frame.intersects(rectangle) })?.displayID
+        else { return nil }
+        let role = stringValue(of: element, attribute: kAXRoleAttribute)
+        let identifier = stringValue(of: element, attribute: kAXIdentifierAttribute)
+        let label = label(of: element)
+        let fingerprint = GuideTargetFingerprint(
+            processIdentifier: application.processIdentifier,
+            bundleIdentifier: application.bundleIdentifier,
+            windowIdentifier: window?.windowIdentifier,
+            windowTitleFingerprint: window?.titleFingerprint,
+            role: role,
+            identifier: identifier,
+            label: label,
+            ancestry: ancestors,
+            tabOrDocumentFingerprint: nil
+        )
+        let coordinates = GuideCoordinateMetadata(
+            topology: topology,
+            displayID: displayID,
+            scale: topology.display(withID: displayID)?.scale
+        )
+        let snapshot = GuideObservationSnapshot(
+            monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
+            frontmostProcessIdentifier: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            frontmostBundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            focusedWindow: window,
+            coordinateMetadata: coordinates
+        )
+        return GuideTargetEvidence(
+            rectangle: rectangle,
+            fingerprint: fingerprint,
+            observation: snapshot
+        )
     }
 
     private func frame(of element: AXUIElement) -> CGRect? {
@@ -750,11 +1047,11 @@ struct SystemGuideTargetLocator: GuideTargetLocating {
             return nil
         }
 
-        // Accessibility reports a top-left origin on the primary display;
-        // AppKit's global space is bottom-left. Flip through the main screen's
-        // height, which is the same conversion `OverlayWindow` already does.
-        let mainHeight = NSScreen.screens.first?.frame.maxY ?? size.height
-        return CGRect(x: origin.x, y: mainHeight - origin.y - size.height, width: size.width, height: size.height)
+        guard let topology = GuideStepPointingCoordinator.currentDisplayTopology() else { return nil }
+        return GuidePointingFreshness.appKitRectangle(
+            fromAccessibilityTopLeft: CGRect(origin: origin, size: size),
+            topology: topology
+        )
     }
 
     /// Case, punctuation and the words a guide author adds for readability

@@ -103,6 +103,23 @@ nonisolated struct GuideEyeFlight: Equatable, Sendable {
     /// because two steps can point at the same control and still have
     /// different things to say about it.
     let label: String
+    /// Evidence for the semantic control, when the locator had it. A legacy
+    /// rectangle-only caller leaves this nil and keeps the old geometry memo.
+    /// When present, this prevents an identical rectangle from suppressing a
+    /// flight to a different PID, window, tab, or control.
+    let targetFingerprint: GuideTargetFingerprint?
+
+    init(
+        stepIdentity: String,
+        screenLocation: CGPoint,
+        label: String,
+        targetFingerprint: GuideTargetFingerprint? = nil
+    ) {
+        self.stepIdentity = stepIdentity
+        self.screenLocation = screenLocation
+        self.label = label
+        self.targetFingerprint = targetFingerprint
+    }
 }
 
 /// Whether the eye has already been flown somewhere, so it is not flown there
@@ -167,7 +184,19 @@ nonisolated struct GuideEyeFlightMemo: Sendable {
     }
 
     static func isTheSameAnswer(_ one: GuideEyeFlight, _ other: GuideEyeFlight) -> Bool {
-        one.stepIdentity == other.stepIdentity
+        let sameSemanticTarget: Bool
+        switch (one.targetFingerprint, other.targetFingerprint) {
+        case (let first?, let second?):
+            sameSemanticTarget = first == second
+        case (nil, nil):
+            sameSemanticTarget = true
+        case (_, _):
+            // Evidence arriving after a legacy rectangle-only refresh is new
+            // information. Do not let the old memo hide that transition.
+            sameSemanticTarget = false
+        }
+        return sameSemanticTarget
+            && one.stepIdentity == other.stepIdentity
             && one.label == other.label
             && abs(one.screenLocation.x - other.screenLocation.x) <= distanceAtWhichTwoAnswersAreTheSameAnswer
             && abs(one.screenLocation.y - other.screenLocation.y) <= distanceAtWhichTwoAnswersAreTheSameAnswer

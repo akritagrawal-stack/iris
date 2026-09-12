@@ -180,6 +180,53 @@ func vaguePasteRequestAsksAboutDestinationBehaviorWithoutAPIJargon() async throw
 }
 
 @Test @MainActor
+func plannerAddsOneDestinationChoiceWhenANontechnicalRequestLeavesTheTabImplicit() async throws {
+    let request = "I want Whisper Flow to paste into the right tab"
+    // Simulate a planner that returns a structurally valid brief but overlooks
+    // the destination decision. The workflow boundary must not guess which
+    // tab the reader means or silently authorize an implementation.
+    let brief = try HarnessTaskBrief(
+        userRequest: request,
+        desiredOutcome: "Put the spoken text in the intended tab",
+        acceptanceCriteria: [
+            .init(id: "insert", statement: "The text appears in the intended tab without being sent")
+        ],
+        milestones: [.init(id: "target", title: "Choose the destination")]
+    )
+    let reply = try encodedBrief(brief)
+    let session = try HarnessModelSession(
+        implementationArm: .astraLow,
+        settings: .init(maxCalls: 2, maxInputBytes: 80_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { _ in HarnessModelReply(text: reply) }
+    let workflow = HarnessFeatureWorkflow(modelSession: session)
+
+    let planned = try await workflow.plan(
+        request: request,
+        repositorySummary: "The repository exposes browser tabs, but no single destination is selected by this request."
+    )
+
+    #expect(planned.targetedQuestions.count == 1)
+    #expect(planned.targetedQuestions.first?.id == "destination-selection")
+    #expect(planned.targetedQuestions.first?.prompt.contains("how Iris should choose the destination") == true)
+    #expect(planned.targetedQuestions.first?.options.count == 3)
+    #expect(workflow.unansweredQuestionIDs == Set(["destination-selection"]))
+    #expect(throws: HarnessFeatureWorkflow.WorkflowError.unansweredQuestions) {
+        try workflow.implementationContext()
+    }
+
+    try workflow.recordAnswer(
+        questionID: "destination-selection",
+        optionID: "destination-use-focused",
+        answer: "Use the app or tab I am currently looking at"
+    )
+    #expect(workflow.unansweredQuestionIDs.isEmpty)
+    #expect(try workflow.implementationContext().contains("destination-use-focused"))
+    #expect(session.ledger.snapshot.admittedCallCount == 1)
+}
+
+@Test @MainActor
 func clearLocalFixDoesNotRequireAnIntakeInterview() async throws {
     let request = "make the Save button text larger"
     let brief = try HarnessTaskBrief(

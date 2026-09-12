@@ -14,6 +14,34 @@ import Testing
 
 @Suite struct FeatureEditClarificationTests {
 
+    // MARK: - Nontechnical destination gap
+
+    @Test("a vague paste destination gets one bounded product choice")
+    func vaguePasteDestinationIsRecognizedWithoutGuessingTheTab() {
+        #expect(HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "I want Whisper Flow to paste into the right tab"
+        ))
+        #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "Paste into Gmail"
+        ))
+        #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "Add a paste button to the current note"
+        ))
+        #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "Make the settings screen brighter"
+        ))
+    }
+
+    @Test("destination wording does not treat an existing explicit choice as missing")
+    func explicitDestinationSelectionNeedsNoExtraQuestion() {
+        #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "Paste into the app I choose each time"
+        ))
+        #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "Send the transcript to the currently focused tab"
+        ))
+    }
+
     // MARK: - Proceed cases (the anti-over-asking half of the table)
 
     @Test func unambiguousRequestWithKnownRecipeOnAPureLocalAppAsksNothing() {

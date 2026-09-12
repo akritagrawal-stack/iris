@@ -188,9 +188,18 @@ final class HarnessFeatureWorkflow {
         let brief = try HarnessTaskBriefParser.parse(reply)
         guard brief.userRequest == request else { throw WorkflowError.requestWasChanged }
         try validatePlanningBrief(brief)
-        state = try HarnessTaskState(brief: brief, activeRevisionID: "request-1")
+        // A planner can satisfy the JSON contract while still missing the one
+        // product decision a nontechnical reader left implicit.  In
+        // particular, "paste into the right tab" names an action but not the
+        // destination-selection rule.  Add one bounded product question at
+        // this existing intake boundary rather than guessing a tab or adding a
+        // second routing framework.  The returned brief is the same model
+        // contract plus that one required choice, so all existing answer,
+        // revision and projection safeguards continue to apply.
+        let guardedBrief = try briefWithRequiredDestinationChoice(brief)
+        state = try HarnessTaskState(brief: guardedBrief, activeRevisionID: "request-1")
         clarificationRoundCount = 1
-        return brief
+        return guardedBrief
     }
 
     func recordAnswer(questionID: String, optionID: String? = nil, answer: String) throws {
@@ -538,6 +547,113 @@ final class HarnessFeatureWorkflow {
                   (2...3).contains($0.options.count)
                       && Set($0.options.map(\.label)).count == $0.options.count
               }) else { throw WorkflowError.invalidQuestions }
+    }
+
+    /// Returns the planner's brief with one plain-language destination choice
+    /// when the request asks Iris to move/paste/type something but leaves the
+    /// destination-selection behavior implicit. This is intentionally a small
+    /// lexical guard: repository evidence and the planner still decide the
+    /// implementation, while this guard protects the user-owned product
+    /// choice that repository code cannot answer.
+    private func briefWithRequiredDestinationChoice(
+        _ brief: HarnessTaskBrief
+    ) throws -> HarnessTaskBrief {
+        guard Self.requestNeedsDestinationChoice(brief.userRequest),
+              !brief.targetedQuestions.contains(where: Self.isDestinationChoiceQuestion),
+              brief.targetedQuestions.count < 3 else {
+            return brief
+        }
+
+        var questions = brief.targetedQuestions
+        questions.append(HarnessTargetedQuestion(
+            id: Self.destinationChoiceQuestionID,
+            prompt: "Your request describes moving or pasting something, but it does not say how Iris should choose the destination. What should happen?",
+            options: [
+                HarnessQuestionOption(
+                    id: "destination-choose-each-time",
+                    label: "Let me choose the app or tab each time"
+                ),
+                HarnessQuestionOption(
+                    id: "destination-use-focused",
+                    label: "Use the app or tab I am currently looking at"
+                ),
+                HarnessQuestionOption(
+                    id: "destination-ask-on-ambiguity",
+                    label: "Ask me when more than one app or tab could match"
+                ),
+            ],
+            kind: .productChoice
+        ))
+        return try HarnessTaskBrief(
+            userRequest: brief.userRequest,
+            desiredOutcome: brief.desiredOutcome,
+            explicitNonGoals: brief.explicitNonGoals,
+            acceptanceCriteria: brief.acceptanceCriteria,
+            targetedQuestions: questions,
+            milestones: brief.milestones,
+            modelAssumptions: brief.modelAssumptions
+        )
+    }
+
+    private static let destinationChoiceQuestionID = "destination-selection"
+
+    /// Kept internal for deterministic regression tests. It deliberately
+    /// recognizes only cross-surface movement language; a normal request for a
+    /// copy button or a visual change must not trigger an interview.
+    static func requestNeedsDestinationChoice(_ request: String) -> Bool {
+        let normalized = request.lowercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        let transferIntentWords: Set<String> = [
+            "paste", "type", "send", "insert", "move", "transfer", "open", "switch",
+        ]
+        let words = normalized.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        guard let transferIntentIndex = words.firstIndex(where: {
+            transferIntentWords.contains(String($0))
+        }) else { return false }
+
+        let explicitSelectionLanguage = [
+            "current app", "this app", "selected app", "active app", "focused app",
+            "current tab", "this tab", "selected tab", "active tab", "focused tab",
+            "current window", "this window", "selected window", "active window", "focused window",
+            "current note", "this note", "selected note", "active note",
+            "choose the app", "choose a tab", "choose the tab", "specific app",
+            "specific tab", "destination", "where i choose", "app i choose",
+        ]
+        if explicitSelectionLanguage.contains(where: normalized.contains) { return false }
+
+        // A named destination after a movement preposition is enough to avoid
+        // asking (for example, "paste into Gmail"). Generic words such as
+        // "right tab" are intentionally ignored because they describe the
+        // user's desired result, not a target Iris can resolve.
+        let genericDestinationWords: Set<String> = [
+            "the", "a", "an", "right", "correct", "proper", "appropriate",
+            "target", "desired", "same", "another", "tab", "window", "app",
+            "document", "screen", "place", "location", "one", "it", "i", "my",
+            "your", "this", "that", "choose", "select", "selected", "current",
+            "active", "focused", "first", "next", "best", "matching", "to", "into",
+        ]
+        for marker in ["into", "to", "in"] {
+            guard let markerIndex = words.firstIndex(of: Substring(marker)) else { continue }
+            // In a sentence such as "I want Whisper Flow to paste into…",
+            // the first "to" belongs to the request's subject/verb phrase.
+            // Only prepositions after the movement verb can introduce its
+            // destination.
+            guard markerIndex > transferIntentIndex else { continue }
+            let suffix = words.dropFirst(words.distance(from: words.startIndex, to: markerIndex) + 1)
+            if suffix.prefix(6).contains(where: { !genericDestinationWords.contains(String($0)) }) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func isDestinationChoiceQuestion(
+        _ question: HarnessTargetedQuestion
+    ) -> Bool {
+        let text = (question.id + " " + question.prompt).lowercased()
+        return text.contains("destination") || text.contains("app or tab")
+            || text.contains("target app") || text.contains("target tab")
     }
 
     private func normalizedAnswer(_ value: String) -> String {

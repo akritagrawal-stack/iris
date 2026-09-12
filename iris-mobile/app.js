@@ -14,6 +14,12 @@ const client = createCatalogClient({ cache });
 
 function setStatus(message) { status.textContent = message; }
 
+function showCatalogStatus() {
+  if (!state.result) return;
+  const freshness = state.result.stale ? "Could not refresh. Showing the last saved catalog" : "Catalog ready";
+  setStatus(`${freshness}. Showing ${deviceLabels[state.device]}.`);
+}
+
 function textElement(tag, text, className) {
   const element = document.createElement(tag);
   element.textContent = text;
@@ -32,7 +38,6 @@ function renderRoute(app) {
     computer: "No verified computer route is available yet.",
   };
   routeBox.append(textElement("p", isAvailable ? "Ready to continue" : unavailableCopy[state.device], "route-state"));
-  if (route.evidence) routeBox.append(textElement("p", route.evidence, "route-evidence"));
   if (isAvailable) {
     const link = document.createElement("a");
     link.className = "route-link";
@@ -46,8 +51,6 @@ function renderRoute(app) {
       const link = document.createElement("a");
       link.className = "route-link";
       link.href = app.setupGuide.destination;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
       link.textContent = app.setupGuide.label;
       routeBox.append(link);
     }
@@ -55,11 +58,13 @@ function renderRoute(app) {
     if (actions.length) {
       const details = document.createElement("details");
       details.className = "setup-details";
-      details.append(textElement("summary", "Setup details"));
+      details.append(textElement("summary", "Publisher setup details"));
       const list = document.createElement("ol");
       list.className = "next-actions";
       for (const action of [...new Set(actions)]) list.append(textElement("li", action));
-      details.append(textElement("p", `Next steps for ${deviceLabels[state.device]}:`, "route-evidence"), list);
+      if (route.evidence) details.append(textElement("p", route.evidence, "route-evidence"));
+      details.append(textElement("p", `Source guide ${app.source.guideSlug} · ${app.source.revision.slice(0, 12)}`, "source-label"));
+      details.append(textElement("p", `Publisher next steps for ${deviceLabels[state.device]}:`, "route-evidence"), list);
       routeBox.append(details);
     }
   }
@@ -88,7 +93,6 @@ function renderCard(app) {
   const title = document.createElement("div");
   title.className = "app-title";
   title.append(textElement("h2", app.title));
-  title.append(textElement("p", `Source guide ${app.source.guideSlug} · ${app.source.revision.slice(0, 12)}`, "source-label"));
   head.append(title);
   card.append(head);
   const supported = app.os.includes(state.device);
@@ -116,8 +120,7 @@ async function loadCatalog({ force = false } = {}) {
     const result = await client.load({ force, offline: typeof navigator !== "undefined" && navigator.onLine === false });
     state.result = result;
     render();
-    const suffix = result.stale ? " from stale verified cache" : result.source === "cache" ? " from verified cache" : "";
-    setStatus(`Catalog ready${suffix}. Showing ${deviceLabels[state.device]}.`);
+    showCatalogStatus();
   } catch (loadError) {
     state.result = null;
     render();
@@ -132,7 +135,7 @@ for (const button of document.querySelectorAll("[data-device]")) {
     state.device = button.dataset.device;
     for (const candidate of document.querySelectorAll("[data-device]")) candidate.setAttribute("aria-pressed", String(candidate === button));
     if (state.result) render();
-    setStatus(`Showing ${deviceLabels[state.device]}.`);
+    showCatalogStatus();
   });
 }
 $("refresh").addEventListener("click", () => loadCatalog({ force: true }));

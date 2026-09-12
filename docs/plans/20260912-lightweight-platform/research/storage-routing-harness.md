@@ -4,6 +4,8 @@
 
 ## Blocking design errors
 
+Current-source correction: item 6 below was a stale research finding. Reverse consumers and source-like false/error compaction were already fixed and wired at handoff `080ba93`. Preserve them. The retained Trial 21 matching defect is analyzed in `../HARNESS_FAILURE_ANALYSIS.md`; it is not a reason to rebuild context selection.
+
 1. **Critical: 2 GiB admission is not retention.** The current check measures managed backups plus the next snapshot and correctly refuses an over-budget swap, but it never reclaims. Successful installed deliveries intentionally accumulate, while cleanup intentionally excludes them. This becomes a safe permanent delivery stop, not a bounded version store. See [admission](https://github.com/akritagrawal-stack/iris/blob/080ba93f74de78d7d64ca8c5d92887546d384973/iris-macos/leanring-buddy/AppDeliveryReceiptStore.swift#L542-L602), [cleanup](https://github.com/akritagrawal-stack/iris/blob/080ba93f74de78d7d64ca8c5d92887546d384973/iris-macos/leanring-buddy/AppDeliveryReceiptStore.swift#L604-L717), and the recorded installed-backup growth regression.
 
 2. **Critical: an accepted artifact lacks a reusable coordinator route.** PlantGPT `0db25ba…` and its matching artifact remain, but the registered checkout is at base and no current accepted-edit coordinator state binds the old branch to delivery. Calling it missing is false; treating it as replayable would skip registry, source, receipt, and revision gates. [`INTEGRATED_CANDIDATE.md`](https://github.com/akritagrawal-stack/iris/blob/080ba93f74de78d7d64ca8c5d92887546d384973/research/pr-review-20260912/INTEGRATED_CANDIDATE.md) records the distinction.

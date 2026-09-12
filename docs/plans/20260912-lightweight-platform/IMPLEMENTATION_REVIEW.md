@@ -121,3 +121,113 @@ registered `clonePath` must equal the staged path. Root's wiring must use a
 small atomic typed registration update, then re-read and validate the exact
 entry before build/delivery. It must never replace the original registered
 clone or treat shared `.git/worktrees` metadata as ownership of that clone.
+
+## S1 follow-up review: `1a31d7c`
+
+The earlier foreground/focused-window validation is now called both for a
+fresh comparison and before an initial point is emitted. AX labels and
+ancestor labels are retained only as fingerprints. The existing headless
+runner now compiles and runs `SpatialGuidanceChecks.swift` against the native
+module, so the P1 test-runner gap is closed in source.
+
+### P0: real window evidence omits the window identity that its new gate requires
+
+`SystemGuideTargetLocator.locateFocusedWindowEvidence` and
+`locateWindowEvidence` call `evidence(for: windowThatIsActuallyUp, ...)` with
+the default `window: nil`. `evidence` consequently constructs a fingerprint
+with `windowIdentifier: nil`. Its availability is partial, and
+`GuideStepPointingCoordinator.resolve` now calls `validateCurrentObservation`,
+which refuses it as missing semantic identity. Thus real authored window steps
+(including the focused-window path that this change is meant to prefer) stop
+pointing even when AX has supplied the window.
+
+Build the `GuideWindowFingerprint` from the AX-window element in `evidence`
+when its caller has not supplied one, and use that same value in both the
+target fingerprint and snapshot. Add a narrow headless regression for a
+window-evidence result with the real locator's structural shape. This is a
+small completion of the present seam, not a new observer or routing layer.
+
+Follow-up `4b01f05` retained linked evidence at
+`/Users/Shared/iris-harness-host-s1-window-evidence-20260912/`: its 175-source
+native module compiled, 68 guide regressions passed, and the spatial checks
+passed. This remains headless source evidence, not installed-app or live AX/UI
+acceptance.
+
+## V1 accepted-candidate record review: `ba1f844` and `fbeccba`
+
+The record/store is a useful source-only identity seam and introduces no live
+delivery route. The inert harness checks passed and are retained at
+`/Users/Shared/iris-v1-candidate-checks-20260912.log`; its native compile log
+is retained at `/Users/Shared/iris-v1-candidate-native-compile-20260912.log`.
+That evidence proves codec, receipt/project argument matching, bounded final
+record reads, artifact-digest staleness, and the existing final-leaf symlink
+case. It does not prove installation, UI acceptance, actual current Git source
+state, or candidate delivery.
+
+### P0: accepted-candidate parent symlinks can redirect storage and its lock
+
+`saveAcceptedCandidate` creates `accepted-candidates` and only `lstat`s that
+final directory. `loadAcceptedCandidateUnlocked` checks and opens only the
+final JSON file with `O_NOFOLLOW`. Neither validates symlink components of the
+base directory or `accepted-candidates`; `withExclusiveStoreLock` likewise
+opens only the final `.lock` leaf. A symlinked parent can therefore redirect
+the candidate read, write, and lock while every current final-leaf check
+passes.
+
+Before merge, reuse the existing `pathHasNoSymlinkComponents` policy under the
+store lock for the base and accepted-candidates directories, and apply it to
+unlocked candidate reads before opening the leaf. Treat an unsafe parent as a
+refusal/storage failure rather than absence. Add the two narrow fixtures:
+symlinked base directory and symlinked `accepted-candidates` directory. This
+is not a claim of transactional directory traversal against arbitrary local
+filesystem races; it closes the present unchecked parent path.
+
+### Boundary required for later wiring
+
+`uiAcceptedRunID` and `uiAcceptedReceiptID` are paired only by UUID shape.
+Verification/review IDs are also nonzero UUIDs, and revalidation compares them
+only when callers supply expected values. The receipt is passed as an object,
+not loaded from the receipt store. This is acceptable only while the code has
+no delivery authority. A later delivery caller must load the exact persisted
+receipt under the store boundary and resolve the verifier, reviewer, and UI
+acceptance records by ID; missing records or arbitrary UUIDs must refuse.
+
+`revalidateAcceptedCandidate` is also not a full source recheck. It compares
+the passed registry pin and stored source metadata, then recomputes the
+artifact digest. It does not inspect current Git origin, commit, branch, or
+dirty state. Keep that distinction explicit when the source-workspace binding
+is added.
+
+## Final V1 and I2 inactive-scaffold review: `536e9c4`, `3be625c`, `d8b0100`
+
+**Accepted for cherry-pick as inactive scaffolding.** No live delivery, install,
+launch, or source-workspace execution route is introduced.
+
+V1 now checks base and `accepted-candidates` path components before candidate
+reads and writes, rechecks them after directory creation, and retains the
+final-leaf `O_NOFOLLOW` read/write policy. The supplied fixtures prove base
+and candidate-parent symlinks refuse reads, writes, and lock-backed
+revalidation without modifying the outside fixture. This protects the
+persistent parent-link case identified in the prior review. It does not claim
+to make arbitrary same-user filesystem replacement transactional; no such
+claim is needed for this inert record seam. Candidate revalidation still
+compares supplied registry and receipt values plus the current artifact digest,
+not current Git origin, HEAD, branch, or dirty state. Evidence UUID shape or
+an injected receipt remains insufficient delivery evidence until later code
+loads and validates the persisted evidence records.
+
+I2 strictly decodes only a safe structural `prepared-project` path and
+rejects a conflicting legacy `workingDirectory`. Until an integrator supplies
+a validated binding, `GuideAutopilotRunner` refuses the ordinary command
+entry, failure/retry ladder, and long-running entry before it moves a shell or
+runs a command. The workspace service itself is not wired as execution
+authority, so the scaffold cannot substitute HOME, shell state, or arbitrary
+guide text for a binding.
+
+Automated source evidence was inspected, not rerun:
+`/tmp/iris-harness-host-candidate-symlink-20260912/checks.log` reports the
+candidate base/parent symlink refusals and candidate record checks passed.
+`/Users/Shared/iris-guide-schema-build-Mc8jhJ/schema-run.log` reports the
+strict schema cases passed. These are source/headless checks only; installed
+Iris Test UI, real prepared-workspace binding, app replacement, and delivery
+remain separate unproven acceptance work.

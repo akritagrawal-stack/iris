@@ -1,6 +1,6 @@
 # Iris: a lightweight product that completes the user's task
 
-Status: approved direction from the September 12 user conversation; implementation starts on `codex/iris-lightweight-20260912`, based on `080ba93`. Mann's draft PR #1 stays frozen while he integrates it. This document supersedes older model defaults and feature-only stopping criteria for this phase.
+Status: implementation is underway on `codex/iris-lightweight-20260912`, based on `080ba93`. Mann's draft PR #1 stays frozen while he integrates it. This document supersedes older model defaults and feature-only stopping criteria for this phase. Current implementation and remaining acceptance work are in [CONTINUATION.md](CONTINUATION.md).
 
 The goal is that a nontechnical person can find an app, install or open it, ask for help, request a useful change, use the result, and recover from a bad update. Each journey must preserve their work, explain unavoidable actions, and consume bounded storage and model work. A passing component test or a generated feature is progress, not the finish line.
 
@@ -8,11 +8,11 @@ The goal is that a nontechnical person can find an app, install or open it, ask 
 
 | Area | What the user should experience | What currently prevents it |
 | --- | --- | --- |
-| Install | Pick Kneecap, choose the device, continue from the actual source location, and get an actionable next step. Existing projects are preserved. | The published source command refuses any dirty checkout, even at the right revision, and has no isolated staging route. |
-| Spatial help | Iris outlines the exact visible control to use. Moving to another tab or window clears outdated guidance. | Most target lookup collapses to a rectangle; geometry freshness does not prove the same semantic control is still present. |
+| Install | Pick Kneecap, choose the device, continue from the actual source location, and get an actionable next step. Existing projects are preserved. | Local isolated staging and strict workspace metadata are implemented and tested. They are not yet connected to the published guide or the real setup UI. |
+| Spatial help | Iris outlines the exact visible control to use. Moving to another tab or window clears outdated guidance. | Semantic identity and freshness checks are implemented and tested. Live outline rendering and reacquisition still need wiring and actual UI evidence. |
 | Versions | One installed app, preserved data, safe Undo, and a small understandable backup allowance. | Successful update backups accumulate. Admission stops growth but does not reclaim it. Full lifecycle continuity is not yet proven. |
 | Smart routing and complex changes | Plain-language requests produce correct behavior at a measured cost, with a short escalation when necessary. | Complex candidates have failed; route, context quality, retries and accepted outcome are not yet compared together. |
-| Mobile | A phone-friendly entry point says Open, Install, or Setup needed using the app's actual supported delivery path. | Kneecap already has a native wrapper. A new wrapper alone would leave signing and distribution friction unsolved. |
+| Mobile | A phone-friendly entry point says Open, Install, or Setup needed using the app's actual supported delivery path. | The lightweight hub prototype passed real phone-sized browser interaction. Verified native distribution destinations and a physical phone run remain absent. |
 
 Ask remains general help with optional context. Edit explicitly names the app to change. Platform catalog identity and guide revision follow the whole journey; they do not become hard-coded local folder guesses.
 

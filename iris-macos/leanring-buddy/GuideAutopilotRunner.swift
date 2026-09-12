@@ -883,8 +883,8 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             return .stopped
         }
         // Workspace metadata is a strict execution requirement. Until the
-        // integrator supplies a validated structural binding, every route —
-        // ordinary, retry, repair and long-running — must stop here rather
+        // integrator supplies a validated structural binding, every route
+        // (ordinary, retry, repair and long-running) must stop here rather
         // than silently using HOME or the shell's current directory.
         if let workspace = step.workspace {
             return refusePreparedWorkspace(workspace, command: step.command ?? "")

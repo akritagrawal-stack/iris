@@ -54,6 +54,33 @@ normal profile, credential or permission was changed.
 - Candidate reuse, retention deletion, complex transfer correctness and
   update/restart/Undo of the latest combined build.
 
-Later schema and candidate-record commits require a new combined build before
-this report can be used as evidence for that later source revision. The UI
-journey itself need only be repeated if integration changes its behavior.
+## Combined integration check at 11:11 AM Pacific
+
+After integrating the reviewed candidate-store and workspace-schema commits,
+source `8348f44` plus a comment-only style correction passed:
+
+- 177-source headless native compilation, exit 0, with 266 existing and
+  current warnings retained in the compiler log. No warning-cleanup work was
+  attempted as part of this integration.
+- The existing inert `--checks` suite, including accepted-candidate corruption,
+  stale-identity and base/parent symlink checks, exit 0.
+- 69 guide tests in five suites, exit 0, including the new unresolved-workspace
+  refusal. Spatial checks also exited 0.
+
+Logs are in `/Users/Shared/iris-harness-host-lightweight-final-6InQWI/`:
+`build-invocation.log`, `native-compiler.log`, `checks.log`,
+`guide-regressions-invocation.log`, `guide-regressions-run.log` and
+`spatial-guidance-run.log`. Headless native module SHA-256:
+`7503e3ec677903059463f6b6fa897d26151d47274c013bf033cdbba222b93469`.
+
+The combined Xcode GUI build succeeded at 11:11 AM. The earlier Test process
+was quit, process inspection confirmed it stopped, and this new Test binary
+was launched. Clicking its eye opened the real compact Ask composer with
+Choose app to edit, History and New chat. Its `Iris Test.debug.dylib` SHA-256
+is `89a2d3eb0e6c5f7401211a53a268abfaf03a0da6d8bc17590a8503cacc93a520`.
+Screen help still reported a separate connection requirement. The full guide
+refusal/Dismiss journey above was not repeated because these later commits
+did not change that UI path.
+
+This final combined build and launch do not upgrade any of the remaining
+user-journey or physical-device gaps to a pass.

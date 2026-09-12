@@ -1326,7 +1326,7 @@ final class GuideSessionController: ObservableObject {
             guideRevision: guide.version,
             projectID: guide.appSlug,
             sourcePath: sourcePath,
-            expectedOrigin: "https://(expectedOrigin.host)/(expectedOrigin.path)",
+            expectedOrigin: "https://\(expectedOrigin.host)/\(expectedOrigin.path)",
             expectedCommit: sourceCommit,
             ownedProjectsRoot: ownedProjectsRoot
         )

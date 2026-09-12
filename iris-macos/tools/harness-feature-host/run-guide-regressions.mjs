@@ -22,14 +22,15 @@ const sources = [
   'iris-macos/tools/harness-feature-host/GuideRetryConcurrencyTestMain.swift',
 ];
 const executable = path.join(destination, 'guide-regressions');
-const compiled = spawnSync('xcrun', ['swiftc', '-parse-as-library',
+const commonCompilerArguments = ['swiftc', '-parse-as-library',
   '-whole-module-optimization', '-Onone', '-swift-version', '5',
   '-default-isolation', 'MainActor', '-D', 'IRIS_HARNESS_HEADLESS',
   '-D', 'IRIS_HARNESS_STANDALONE', '-enable-testing',
   '-load-plugin-library', macros, '-I', destination, '-L', destination,
   '-lIrisHarnessNative', '-Xlinker', '-rpath', '-Xlinker', destination,
   '-Xlinker', '-rpath', '-Xlinker', frameworks, '-F', frameworks,
-  '-framework', 'Testing', ...sources, '-o', executable],
+  '-framework', 'Testing'];
+const compiled = spawnSync('xcrun', [...commonCompilerArguments, ...sources, '-o', executable],
 { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 120_000 });
 writeFileSync(path.join(destination, 'guide-regressions-compile.log'),
   (compiled.stdout ?? '') + (compiled.stderr ?? ''));
@@ -44,6 +45,24 @@ const output = (executed.stdout ?? '') + (executed.stderr ?? '');
 writeFileSync(path.join(destination, 'guide-regressions-run.log'), output);
 const hash = createHash('sha256');
 for (const source of sources) hash.update(source).update(readFileSync(source));
+const spatialExecutable = path.join(destination, 'spatial-guidance-checks');
+const spatialCompiled = spawnSync('xcrun', [
+  ...commonCompilerArguments,
+  'iris-macos/tools/harness-feature-host/SpatialGuidanceChecks.swift',
+  '-o', spatialExecutable,
+], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 120_000 });
+writeFileSync(path.join(destination, 'spatial-guidance-compile.log'),
+  (spatialCompiled.stdout ?? '') + (spatialCompiled.stderr ?? ''));
+if (spatialCompiled.status !== 0) {
+  console.log(spatialCompiled.stderr ?? spatialCompiled.error?.message ?? 'Spatial compiler failed');
+  process.exit(spatialCompiled.status ?? 1);
+}
+const spatialExecuted = spawnSync(spatialExecutable, [], {
+  encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 120_000,
+});
+const spatialOutput = (spatialExecuted.stdout ?? '') + (spatialExecuted.stderr ?? '');
+writeFileSync(path.join(destination, 'spatial-guidance-run.log'), spatialOutput);
+
 console.log(JSON.stringify({
   exit: executed.status,
   error: executed.error?.message ?? null,
@@ -52,5 +71,11 @@ console.log(JSON.stringify({
     .update(readFileSync(path.join(destination, 'libIrisHarnessNative.dylib'))).digest('hex'),
   summaries: output.split('\n').filter(line => /Test run with|recorded an issue|Suite .* failed/.test(line)),
   log: path.join(destination, 'guide-regressions-run.log'),
+  spatialExit: spatialExecuted.status,
+  spatialError: spatialExecuted.error?.message ?? null,
+  spatialLog: path.join(destination, 'spatial-guidance-run.log'),
 }));
-process.exitCode = executed.status ?? 1;
+if (spatialExecuted.status !== 0) console.log(spatialOutput);
+process.exitCode = executed.status === 0
+  ? (spatialExecuted.status ?? 1)
+  : (executed.status ?? 1);

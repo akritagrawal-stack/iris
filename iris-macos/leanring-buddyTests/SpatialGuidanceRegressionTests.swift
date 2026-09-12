@@ -171,7 +171,7 @@ struct SpatialGuidanceRegressionTests {
             windowIdentifier: "window-a",
             role: "AXButton",
             identifier: "save-a",
-            label: "Save"
+            labelFingerprint: GuidePointingFreshness.privacyFingerprint(of: "Save")
         )
         let second = GuideTargetFingerprint(
             processIdentifier: 202,
@@ -179,7 +179,7 @@ struct SpatialGuidanceRegressionTests {
             windowIdentifier: "window-a",
             role: "AXButton",
             identifier: "save-a",
-            label: "Save"
+            labelFingerprint: GuidePointingFreshness.privacyFingerprint(of: "Save")
         )
         let one = GuideEyeFlight(
             stepIdentity: "step",
@@ -359,8 +359,12 @@ struct SpatialGuidanceRegressionTests {
             windowTitleFingerprint: "window-title",
             role: "AXButton",
             identifier: controlIdentifier,
-            label: "Save",
-            ancestry: [GuideAccessibilityAncestor(role: "AXGroup", identifier: "toolbar", label: "Toolbar")],
+            labelFingerprint: GuidePointingFreshness.privacyFingerprint(of: "Save"),
+            ancestry: [GuideAccessibilityAncestor(
+                role: "AXGroup",
+                identifier: "toolbar",
+                labelFingerprint: GuidePointingFreshness.privacyFingerprint(of: "Toolbar")
+            )],
             tabOrDocumentFingerprint: tabFingerprint
         )
         return GuideTargetEvidence(

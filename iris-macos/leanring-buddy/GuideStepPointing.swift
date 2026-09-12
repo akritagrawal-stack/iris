@@ -478,6 +478,7 @@ enum GuideStepPointingCoordinator {
         var found: CGRect?
         var targetEvidence: GuideTargetEvidence?
         var lookupAmbiguity: GuidePointingAmbiguityReason?
+        var freshnessFailure: GuidePointingFreshnessVerdict?
         var theModelWasAsked = false
         var theModelLocationWasRejected = false
         let evidenceLocator = locator as? any GuideTargetEvidenceLocating
@@ -559,9 +560,19 @@ enum GuideStepPointingCoordinator {
             theModelLocationWasRejected = rectangleTheModelAnsweredWith != nil && found == nil
         }
 
+        if let targetEvidence {
+            let initialFreshness = GuidePointingFreshness.validateCurrentObservation(targetEvidence)
+            if initialFreshness != .fresh {
+                freshnessFailure = initialFreshness
+                found = nil
+            }
+        }
+
         guard let rectangle = found, lookupAmbiguity == nil else {
             let refusal: GuidePointRefusal
-            if let lookupAmbiguity {
+            if let freshnessFailure {
+                refusal = .pointingUnavailable(message: Self.message(for: freshnessFailure))
+            } else if let lookupAmbiguity {
                 refusal = .pointingUnavailable(
                     message: lookupAmbiguity == .duplicateCandidates
                         ? "I found more than one matching control, so I stopped rather than choose the wrong one."
@@ -582,7 +593,8 @@ enum GuideStepPointingCoordinator {
                 displayFrame: nil,
                 theModelWasAsked: theModelWasAsked,
                 targetEvidence: targetEvidence,
-                freshness: lookupAmbiguity.map(GuidePointingFreshnessVerdict.ambiguous)
+                freshness: freshnessFailure
+                    ?? lookupAmbiguity.map(GuidePointingFreshnessVerdict.ambiguous)
                     ?? .unavailable(.geometryOnly)
             )
         }
@@ -630,6 +642,19 @@ enum GuideStepPointingCoordinator {
                 return .fresh
             } ?? .unavailable(.geometryOnly)
         )
+    }
+
+    private static func message(for freshness: GuidePointingFreshnessVerdict) -> String {
+        switch freshness {
+        case .stale:
+            return "The screen changed while I was locating that control, so I stopped pointing."
+        case .ambiguous:
+            return "I found more than one matching control, so I stopped rather than choose the wrong one."
+        case .unavailable:
+            return "I couldn't confirm the current app and window identity, so I stopped pointing."
+        case .fresh, .movedSameTarget:
+            return "I couldn't confirm that location on the current screen, so I stopped pointing."
+        }
     }
 }
 
@@ -952,7 +977,9 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
                 application: application, topology: topology,
                 ancestors: ancestors + [
                     GuideAccessibilityAncestor(
-                        role: currentRole, identifier: currentIdentifier, label: currentLabel
+                        role: currentRole,
+                        identifier: currentIdentifier,
+                        labelFingerprint: GuidePointingFreshness.privacyFingerprint(of: currentLabel)
                     )
                 ], window: currentWindow,
                 best: &best, foundEqualScoredCandidate: &foundEqualScoredCandidate,
@@ -1005,7 +1032,7 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
             windowTitleFingerprint: window?.titleFingerprint,
             role: role,
             identifier: identifier,
-            label: label,
+            labelFingerprint: GuidePointingFreshness.privacyFingerprint(of: label),
             ancestry: ancestors,
             tabOrDocumentFingerprint: nil
         )

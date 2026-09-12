@@ -10,7 +10,7 @@ import CoreGraphics
 nonisolated struct GuideAccessibilityAncestor: Equatable, Sendable {
     let role: String?
     let identifier: String?
-    let label: String?
+    let labelFingerprint: String?
 }
 
 nonisolated enum GuideSemanticEvidenceAvailability: String, Equatable, Sendable {
@@ -26,7 +26,7 @@ nonisolated struct GuideTargetFingerprint: Equatable, Sendable {
     let windowTitleFingerprint: String?
     let role: String?
     let identifier: String?
-    let label: String?
+    let labelFingerprint: String?
     let ancestry: [GuideAccessibilityAncestor]
     let tabOrDocumentFingerprint: String?
 
@@ -37,7 +37,7 @@ nonisolated struct GuideTargetFingerprint: Equatable, Sendable {
         windowTitleFingerprint: String? = nil,
         role: String? = nil,
         identifier: String? = nil,
-        label: String? = nil,
+        labelFingerprint: String? = nil,
         ancestry: [GuideAccessibilityAncestor] = [],
         tabOrDocumentFingerprint: String? = nil
     ) {
@@ -47,7 +47,7 @@ nonisolated struct GuideTargetFingerprint: Equatable, Sendable {
         self.windowTitleFingerprint = windowTitleFingerprint
         self.role = role
         self.identifier = identifier
-        self.label = label
+        self.labelFingerprint = labelFingerprint
         self.ancestry = ancestry
         self.tabOrDocumentFingerprint = tabOrDocumentFingerprint
     }
@@ -67,7 +67,7 @@ nonisolated struct GuideTargetFingerprint: Equatable, Sendable {
     private var hasAnyEvidence: Bool {
         processIdentifier != nil || bundleIdentifier != nil || windowIdentifier != nil
             || windowTitleFingerprint != nil || role != nil || identifier != nil
-            || label != nil || !ancestry.isEmpty || tabOrDocumentFingerprint != nil
+            || labelFingerprint != nil || !ancestry.isEmpty || tabOrDocumentFingerprint != nil
     }
 }
 
@@ -244,6 +244,8 @@ nonisolated enum GuidePointingAmbiguityReason: String, Equatable, Sendable {
 nonisolated enum GuidePointingUnavailableReason: String, Equatable, Sendable {
     case geometryOnly
     case missingSemanticIdentity
+    case missingForegroundObservation
+    case missingFocusedWindowObservation
     case missingCoordinateMetadata
     case invalidCoordinateMetadata
     case noCurrentDisplay
@@ -355,6 +357,11 @@ nonisolated enum GuidePointingFreshness {
               current.fingerprint.availability == .complete
         else { return .unavailable(.missingSemanticIdentity) }
 
+        let previousObservationVerdict = validateCurrentObservation(previous)
+        guard previousObservationVerdict == .fresh else { return previousObservationVerdict }
+        let currentObservationVerdict = validateCurrentObservation(current)
+        guard currentObservationVerdict == .fresh else { return currentObservationVerdict }
+
         guard let previousObservation = previous.observation,
               let currentObservation = current.observation,
               let previousCoordinates = previousObservation.coordinateMetadata,
@@ -391,6 +398,42 @@ nonisolated enum GuidePointingFreshness {
             return .stale(.displayTopologyChanged)
         }
         return previous.rectangle == current.rectangle ? .fresh : .movedSameTarget
+    }
+
+    /// Validate the foreground process and focused window captured alongside a
+    /// target. This is intentionally checked on the initial result as well as
+    /// on a later comparison, so background or changed-window evidence never
+    /// becomes a highlight merely because its rectangle is visible.
+    static func validateCurrentObservation(_ evidence: GuideTargetEvidence) -> GuidePointingFreshnessVerdict {
+        guard evidence.fingerprint.availability == .complete else {
+            return .unavailable(.missingSemanticIdentity)
+        }
+        guard let observation = evidence.observation else {
+            return .unavailable(.missingForegroundObservation)
+        }
+        guard let foregroundPID = observation.frontmostProcessIdentifier else {
+            return .unavailable(.missingForegroundObservation)
+        }
+        guard let foregroundBundle = observation.frontmostBundleIdentifier else {
+            return .unavailable(.missingForegroundObservation)
+        }
+        if evidence.fingerprint.processIdentifier != foregroundPID {
+            return .stale(.processChanged)
+        }
+        if evidence.fingerprint.bundleIdentifier != foregroundBundle {
+            return .stale(.bundleChanged)
+        }
+        guard let focusedWindow = observation.focusedWindow else {
+            return .unavailable(.missingFocusedWindowObservation)
+        }
+        if focusedWindow.processIdentifier != evidence.fingerprint.processIdentifier
+            || focusedWindow.bundleIdentifier != evidence.fingerprint.bundleIdentifier {
+            return .stale(.processChanged)
+        }
+        if focusedWindow.windowIdentifier != evidence.fingerprint.windowIdentifier {
+            return .stale(.windowChanged)
+        }
+        return .fresh
     }
 
     static func explicitScreenNumberIsValid(_ screenNumber: Int?, captureCount: Int) -> Bool {

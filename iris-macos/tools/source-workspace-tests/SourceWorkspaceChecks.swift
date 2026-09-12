@@ -130,6 +130,16 @@ struct SourceWorkspaceChecks {
         )
         try require(largeOutput.outputWasTruncated,
                     "large Git-like output was not bounded")
+        for index in 0..<100 {
+            let token = "exact-output-" + String(index)
+            let expected = token + "\n"
+            let fastOutput = try await executor.run(
+                executable: URL(fileURLWithPath: "/bin/echo"), arguments: [token],
+                workingDirectory: URL(fileURLWithPath: "/Users/Shared"), deadline: 2
+            )
+            try require(fastOutput.output == expected && !fastOutput.outputWasTruncated,
+                        "fast exact-output probe was lost or marked truncated at " + String(index))
+        }
         let hardStopStarted = Date()
         let ignoringSignal = try await executor.run(
             executable: URL(fileURLWithPath: "/bin/sh"),

@@ -407,12 +407,17 @@ nonisolated final class GuideSourceWorkspaceProcessExecutor: GuideSourceWorkspac
                             usleep(10_000)
                         }
                         child.waitUntilExit()
-                        // Closing our read end prevents a descendant that
-                        // inherited the write end from keeping this invocation
-                        // alive forever. The drain remains bounded by the same
-                        // grace interval and only retains a fixed prefix.
-                        outputPipe.fileHandleForReading.closeFile()
-                        _ = drainGroup.wait(timeout: .now() + Self.hardStopGrace)
+                        // Let a normal probe drain to EOF before closing its
+                        // read end. Closing first can discard a fast Git
+                        // response that the drain has not scheduled yet.
+                        // Only a drain that misses the bounded grace period is
+                        // forced closed, which also handles a descendant that
+                        // inherited the pipe's write end.
+                        let drainCompleted = drainGroup.wait(timeout: .now() + Self.hardStopGrace) == .success
+                        if !drainCompleted {
+                            outputPipe.fileHandleForReading.closeFile()
+                            _ = drainGroup.wait(timeout: .now() + Self.hardStopGrace)
+                        }
                         let outputText = output.string
                         self.lock.lock()
                         let wasCancelled = self.cancelledInvocations.remove(invocation) != nil
@@ -428,7 +433,7 @@ nonisolated final class GuideSourceWorkspaceProcessExecutor: GuideSourceWorkspac
                         } else {
                             continuation.resume(returning: GuideSourceWorkspaceCommandResult(
                                 exitCode: child.terminationStatus, output: outputText,
-                                outputWasTruncated: output.wasTruncated || recordedTimeout || timedOut
+                                outputWasTruncated: output.wasTruncated || recordedTimeout || timedOut || !drainCompleted
                             ))
                         }
                     } catch {

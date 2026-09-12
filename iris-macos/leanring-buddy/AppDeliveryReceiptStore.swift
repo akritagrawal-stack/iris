@@ -2,6 +2,14 @@ import Foundation
 import Darwin
 import CryptoKit
 
+private extension JSONEncoder {
+    static var acceptedCandidateEncoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+}
+
 /// Durable, path-bound metadata for one installed-app delivery. The receipt is
 /// recovery evidence, not proof that any path still contains the recorded app.
 nonisolated struct AppDeliveryReceipt: Codable, Equatable, Sendable {
@@ -419,6 +427,24 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
     enum StoreError: Error, Equatable {
         case invalidReceipt, alreadyExists, absent, corrupt, identityMismatch
         case invalidTransition, writeFailed
+    }
+
+    enum AcceptedCandidateLoadState: Equatable, Sendable {
+        case absent
+        case valid(AcceptedCandidateRecord)
+        case corrupt
+        case oversized
+        case symlink
+    }
+
+    enum AcceptedCandidateRevalidation: Equatable, Sendable {
+        case absent
+        case valid(AcceptedCandidateRecord)
+        case corrupt
+        case oversized
+        case symlink
+        case invalid(AcceptedCandidateRecord.ValidationFailure)
+        case storageFailure
     }
 
     /// A measured, non-destructive admission policy for the previous-app
@@ -1153,6 +1179,71 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         }
     }
 
+    var acceptedCandidatesDirectory: URL {
+        baseDirectory.appendingPathComponent("accepted-candidates", isDirectory: true)
+    }
+
+    func acceptedCandidateURL(for identifier: UUID) -> URL {
+        acceptedCandidatesDirectory.appendingPathComponent(identifier.uuidString + ".json")
+    }
+
+    /// Persist accepted-candidate metadata beside, and under the same lock as,
+    /// delivery receipts. The candidate payload is never copied into this
+    /// record, and publication is atomic through the existing store writer.
+    func saveAcceptedCandidate(_ record: AcceptedCandidateRecord) throws {
+        guard record.isValid else { throw StoreError.invalidReceipt }
+        let data = try JSONEncoder.acceptedCandidateEncoder.encode(record)
+        guard data.count <= Self.maximumRecordBytes else { throw StoreError.invalidReceipt }
+        try withExclusiveStoreLock {
+            try FileManager.default.createDirectory(at: acceptedCandidatesDirectory,
+                withIntermediateDirectories: true)
+            var candidateDirectoryMetadata = stat()
+            guard lstat(acceptedCandidatesDirectory.path, &candidateDirectoryMetadata) == 0,
+                  (candidateDirectoryMetadata.st_mode & S_IFMT) == S_IFDIR else {
+                throw StoreError.writeFailed
+            }
+            try publish(data, at: acceptedCandidateURL(for: record.candidateID), refusingExisting: true)
+        }
+    }
+
+    func loadAcceptedCandidate(_ identifier: UUID) -> AcceptedCandidateLoadState {
+        loadAcceptedCandidateUnlocked(identifier)
+    }
+
+    /// Re-read the record and all exact identities while holding the existing
+    /// receipt-store lock. This is a callable seam for a later coordinator;
+    /// it performs no generation, delivery, cleanup, or app launch.
+    func revalidateAcceptedCandidate(
+        _ identifier: UUID,
+        project: IrisTestProjectRegistry.Project,
+        receipt: AppDeliveryReceipt?,
+        expectedVerificationEvidenceID: UUID? = nil,
+        expectedReviewEvidenceID: UUID? = nil
+    ) -> AcceptedCandidateRevalidation {
+        do {
+            return try withExclusiveStoreLock {
+                switch loadAcceptedCandidateUnlocked(identifier) {
+                case .absent: return .absent
+                case .corrupt: return .corrupt
+                case .oversized: return .oversized
+                case .symlink: return .symlink
+                case .valid(let record):
+                    if let failure = record.failureAgainst(project: project, receipt: receipt,
+                        expectedVerificationEvidenceID: expectedVerificationEvidenceID,
+                        expectedReviewEvidenceID: expectedReviewEvidenceID) {
+                        return .invalid(failure)
+                    }
+                    guard record.artifactDigestMatchesFilesystem() else {
+                        return .invalid(.artifactDigestMismatch)
+                    }
+                    return .valid(record)
+                }
+            }
+        } catch {
+            return .storageFailure
+        }
+    }
+
     func load(_ identifier: UUID) -> LoadState {
         let destination = url(for: identifier)
         var metadata = stat()
@@ -1233,6 +1324,22 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         return data
     }
 
+    private func loadAcceptedCandidateUnlocked(_ identifier: UUID) -> AcceptedCandidateLoadState {
+        let destination = acceptedCandidateURL(for: identifier)
+        var metadata = stat()
+        guard lstat(destination.path, &metadata) == 0 else {
+            return errno == ENOENT ? .absent : .corrupt
+        }
+        let kind = metadata.st_mode & S_IFMT
+        if kind == S_IFLNK { return .symlink }
+        guard kind == S_IFREG else { return .corrupt }
+        guard metadata.st_size <= off_t(Self.maximumRecordBytes) else { return .oversized }
+        guard let data = try? boundedData(at: destination),
+              let record = try? JSONDecoder().decode(AcceptedCandidateRecord.self, from: data),
+              record.candidateID == identifier else { return .corrupt }
+        return .valid(record)
+    }
+
     private func boundedData(at url: URL) throws -> Data {
         let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW)
         guard descriptor >= 0 else { throw StoreError.corrupt }
@@ -1262,9 +1369,10 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
     }
 
     private func publish(_ data: Data, at destination: URL, refusingExisting: Bool) throws {
-        do { try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true) }
+        let stagingDirectory = destination.deletingLastPathComponent()
+        do { try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true) }
         catch { throw StoreError.writeFailed }
-        let temporary = baseDirectory.appendingPathComponent(".staging-" + UUID().uuidString)
+        let temporary = stagingDirectory.appendingPathComponent(".staging-" + UUID().uuidString)
         let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
         guard descriptor >= 0 else { throw StoreError.writeFailed }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
@@ -1280,7 +1388,7 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         } else if rename(temporary.path, destination.path) != 0 {
             throw StoreError.writeFailed
         }
-        let directory = open(baseDirectory.path, O_RDONLY | O_NOFOLLOW)
+        let directory = open(stagingDirectory.path, O_RDONLY | O_NOFOLLOW)
         guard directory >= 0 else { throw StoreError.writeFailed }
         defer { close(directory) }
         guard fsync(directory) == 0 else { throw StoreError.writeFailed }

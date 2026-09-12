@@ -42,7 +42,8 @@ const result = spawnSync('xcrun', ['swiftc', '-parse-as-library', ...flags, '-I'
   'iris-macos/tools/harness-feature-host/VerificationDiagnosticChecks.swift',
   'iris-macos/tools/harness-feature-host/RepairTestCheckpointChecks.swift',
   'iris-macos/tools/harness-feature-host/CommandFreshnessChecks.swift',
-  'iris-macos/tools/harness-feature-host/RepairWindowChecks.swift', '-o', executable],
+  'iris-macos/tools/harness-feature-host/RepairWindowChecks.swift',
+  'iris-macos/tools/harness-feature-host/AcceptedCandidateRecordChecks.swift', '-o', executable],
   {encoding: 'utf8', maxBuffer: 32 * 1024 * 1024});
 compilerOutput += (result.stdout ?? '') + (result.stderr ?? '');
 writeFileSync(path.join(destination, 'compiler.log'), compilerOutput);

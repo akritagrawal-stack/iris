@@ -268,6 +268,7 @@ struct HarnessFeatureHost {
         try await runRepairTestCheckpointChecks()
         try await runCommandFreshnessChecks()
         try await runRepairWindowChecks()
+        try runAcceptedCandidateRecordChecks()
     }
 
     @MainActor private static func checkExecutionContext() async throws {

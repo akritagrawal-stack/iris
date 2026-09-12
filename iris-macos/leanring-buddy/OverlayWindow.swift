@@ -596,6 +596,12 @@ struct BlueCursorView: View {
             // one-screen guard means it opens once.
             openTheInputBarFromTheSummonHotkey()
         }
+        .onChange(of: companionManager.onDemandEditPresentationRequestID) { _ in
+            // NotificationCenter is a one-shot signal and can be posted before
+            // a just-created SwiftUI overlay has installed its subscriptions.
+            // The published request is the replay-safe handoff for that case.
+            openPendingOnDemandEditIfNeeded()
+        }
         .onAppear {
             // Set initial cursor position immediately before starting animation
             let mouseLocation = NSEvent.mouseLocation
@@ -619,6 +625,14 @@ struct BlueCursorView: View {
             } else {
                 self.cursorOpacity = 1.0
             }
+
+            // `requestOnDemandEdit` can show a previously hidden overlay and
+            // post its notification before this view has mounted. Replay the
+            // pending request on the next turn so settings never strand the
+            // reader in the generic Ask composer.
+            DispatchQueue.main.async {
+                self.openPendingOnDemandEditIfNeeded()
+            }
         }
         .onDisappear {
             timer?.invalidate()
@@ -630,6 +644,10 @@ struct BlueCursorView: View {
             inputBarPanelManager?.hideInputBar()
         }
         .onChange(of: buddyIsVisibleOnThisScreen) { _, theEyeIsStillOnThisScreen in
+            if theEyeIsStillOnThisScreen {
+                openPendingOnDemandEditIfNeeded()
+                return
+            }
             // The pointer moved to another display, or a flight to an element
             // started. Either way this screen's eye is gone, and a bar hanging
             // under an eye that is not there is orphaned UI.
@@ -933,9 +951,23 @@ struct BlueCursorView: View {
     /// contradicts the sentence teaching it is worse than no shortcut.
     private func openTheInputBarFromTheSummonHotkey() {
         guard buddyIsVisibleOnThisScreen else { return }
-        guard !eyeActivation.theInputBarIsOpen else { return }
+        if eyeActivation.theInputBarIsOpen {
+            // The existing bar is already the consumer. This happens when a
+            // reader changes the selected app from Settings while composing;
+            // do not leave a replay request behind for a later remount.
+            companionManager.consumeOnDemandEditPresentationRequest()
+            return
+        }
         _ = eyeActivation.registerAClickOnTheEye()
         presentTheInputBar()
+    }
+
+    /// Replays a settings-panel edit request after this screen's SwiftUI view
+    /// has mounted. Hidden-screen overlays leave the request untouched so the
+    /// one whose eye is visible can consume it.
+    private func openPendingOnDemandEditIfNeeded() {
+        guard companionManager.onDemandEditPresentationRequestID != nil else { return }
+        openTheInputBarFromTheSummonHotkey()
     }
 
     /// Internal rather than private ON PURPOSE: this is the ONLY path a click on
@@ -949,6 +981,10 @@ struct BlueCursorView: View {
     /// function.
     func presentTheInputBar() {
         guard let inputBarPanelManager else { return }
+        // A direct eye click can be the first consumer when the notification
+        // raced view mounting; in that case the edit mode is already in the
+        // draft store and this prevents a later replay from opening a second bar.
+        companionManager.consumeOnDemandEditPresentationRequest()
         // THE OTHER HALF OF THE BADGE. Opening the bar puts the card that was
         // waiting directly in front of the reader — `OnDemandEditCard` renders
         // at the top of the bar for every phase except `.describe` — so the

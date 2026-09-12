@@ -880,11 +880,12 @@ struct OverlayEyeInputBarView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .clickyOnDemandEditRaised)) { _ in
             let store = companionManager.inputBarDraftStore
-            guard composerMode != store.mode else { return }
-            composerMode = store.mode
-            typedMessage = store.draft.text
-            editKind = store.draft.editKind
-            modelDetailsAreShowing = false
+            if composerMode != store.mode {
+                composerMode = store.mode
+                typedMessage = store.draft.text
+                editKind = store.draft.editKind
+                modelDetailsAreShowing = false
+            }
         }
         .onAppear {
             // The panel has to be key before the field can take focus, and it

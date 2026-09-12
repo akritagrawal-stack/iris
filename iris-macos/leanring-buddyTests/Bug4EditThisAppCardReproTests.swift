@@ -219,6 +219,46 @@ struct Bug4EditThisAppCardReproTests {
         )
     }
 
+    /// A settings click can rebuild the overlay before SwiftUI has mounted the
+    /// new `BlueCursorView`. The old one-shot notification was then lost and
+    /// the next eye click reopened a generic Ask bar. The request id is the
+    /// replayable handoff that the newly mounted view consumes.
+    @Test("a settings edit keeps a replayable handoff until the eye is mounted")
+    func settingsEditKeepsThePresentationHandoffForANewOverlay() async throws {
+        let scenario = try await Bug4FieldScenario.make()
+        defer { scenario.tearDown() }
+
+        let companionManager = scenario.companionManager
+        // This is the exact callback the real settings row invokes. Calling
+        // the shared entry point directly keeps the assertion before the next
+        // runloop turn, when a newly created eye may consume the request.
+        #expect(
+            companionManager.requestOnDemandEdit(
+                forSlug: scenario.appSlug,
+                name: Bug4FieldScenario.appName,
+                stack: companionManager.appStack(forSlug: scenario.appSlug),
+                preselectedKind: nil
+            ),
+            "the settings edit callback did not accept the installed app"
+        )
+        let requestID = try #require(
+            companionManager.onDemandEditPresentationRequestID,
+            "the settings click picked the app but left no replayable eye presentation request"
+        )
+        #expect(
+            companionManager.inputBarDraftStore.mode == .edit,
+            "the request must select Edit before the newly mounted bar is presented"
+        )
+        #expect(
+            companionManager.consumeOnDemandEditPresentationRequest(requestID),
+            "the pending request id was not consumable by the mounted eye"
+        )
+        #expect(
+            companionManager.onDemandEditPresentationRequestID == nil,
+            "the handoff must be one-shot after the eye consumes it"
+        )
+    }
+
     // MARK: 3. THE REPRO
 
     /// THE REPORTED BUG, end to end, in the state the reader was in.

@@ -708,6 +708,24 @@ final class CompanionManager: ObservableObject {
     /// honesty label and the commit trailer and must never be silently inferred.
     @Published private(set) var onDemandEditPreselectedKind: OnDemandEditKind?
 
+    /// A settings-panel edit request may arrive while the eye overlay is being
+    /// created. Notifications are transient, so a newly mounted `BlueCursorView`
+    /// could miss `clickyOnDemandEditRaised` and leave the reader with a generic
+    /// Ask bar. This request id is the durable-for-this-turn handoff: the visible
+    /// eye consumes it once it is mounted and can present the edit composer.
+    @Published private(set) var onDemandEditPresentationRequestID: UUID?
+
+    /// Consumes the settings-to-eye edit handoff. The optional id lets a view
+    /// prove it is consuming the request it observed; an absent id is useful to
+    /// the direct eye-click path, which can clear a pending request as it opens.
+    @discardableResult
+    func consumeOnDemandEditPresentationRequest(_ requestID: UUID? = nil) -> Bool {
+        guard let pendingRequestID = onDemandEditPresentationRequestID,
+              requestID == nil || requestID == pendingRequestID else { return false }
+        onDemandEditPresentationRequestID = nil
+        return true
+    }
+
     /// WHAT THE EYE IS ALLOWED TO SAY WHEN THE BAR IS GONE.
     ///
     /// The reader: "if I click off Iris and it reverts back to the eye, once
@@ -2080,6 +2098,10 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         }
+        // Unlike a notification, this survives the newly-created SwiftUI eye
+        // view's mount. The mounted view consumes it from `onAppear`/`onChange`
+        // and opens the already-selected Edit composer exactly once.
+        onDemandEditPresentationRequestID = UUID()
         NotificationCenter.default.post(name: .clickyOnDemandEditRaised, object: nil)
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
         return true

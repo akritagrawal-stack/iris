@@ -52,3 +52,53 @@ physical-phone acceptance remain separate evidence lanes.
 4. **Mobile hub:** validate malformed/duplicate IDs, non-HTTPS destinations, credential-shaped URLs, unsupported native claims, and absent routes. Browser acceptance proves route rendering and `Setup needed`; it does not prove a native install, signing, launch, or phone workflow.
 
 Only after these checks pass should integration proceed to one actual Iris Test candidate recheck/delivery/restart/Undo journey. A native installed-app result and a physical-phone result must be reported separately.
+
+## D0 compact-instruction review: pass with one correction
+
+Verified the three archived originals against their manifest SHA-256, byte, and
+word counts. The active rules retain the operative Test isolation, credential,
+consent, guide provenance, cancellation, UI, source identity, build,
+verification, recovery, and evidence distinctions. The required correction was
+added to the active macOS contract: pending recovery blocks affected
+edit/publish actions and uncertain bundle swaps are never automatically
+replayed. `manifest.json` now records the resulting active macOS count of
+7,547 bytes and 884 words; total active instructions are 12,027 bytes and
+1,426 words. These are development-context measurements only, not Iris runtime
+token savings. The original archives remain unchanged and hash-verified.
+
+## Harness-context correction: existing wiring, bounded remaining limit
+
+The earlier research note incorrectly described two already-landed fixes as
+missing. `FeatureEditRepositoryContext.collectReviewContext` already sends
+reverse local-import consumers after changed tests and changed paths. Both
+callers construct and pass the bounded `mappedSourcePaths` list:
+`MaintainTierCFixer` for phase-aware independent review and
+`MaintainSavedChangeRechecker` for saved-candidate review. Do not add another
+selector, repository walk, or coordination layer.
+
+`HarnessConversationProjection` also already preserves nonzero exits and
+explicit diagnostics while allowing source-like successful text such as
+`return false` and `throw new Error(...)` to compact. The harness test suite
+contains direct coverage for both the source-like success and an `Error:`
+diagnostic. The previously proposed reproduction is therefore not a valid
+first-wave defect.
+
+The real, intentionally bounded limit is narrower: consumer selection only
+examines the first 100 declaration-bearing files from the six-language repo
+map, and only static relative JS/TS-family imports. A real consumer can be
+outside that map, use an alias or dynamic import, have no recognized top-level
+declaration, or be in another language. Treat this as a selection hint, never
+as evidence of complete dependency coverage. First wave needs no generalized
+indexer: retain the stated ceilings and add a regression only for an observed
+miss in a supported static-relative import within the supplied map. A missing
+consumer outside that boundary must remain an explicit review limitation, not
+a claimed false-negative fix.
+
+## Guide-status evidence correction
+
+The current published Kneecap guide is external guide revision 5 with status
+`pilot` at source commit `fc48ba4`, according to the freshly fetched guide
+record. The local `docs/guides/ios-xcode-build.md` is a draft document and is
+not approval-status evidence for that published guide. Plans and acceptance
+records must label those as separate sources; neither establishes signing,
+native installation, launch, or phone acceptance.

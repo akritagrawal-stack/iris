@@ -16,8 +16,8 @@
       "sha256": "94e5f7b74500707f3124cc01cef0b811aa91ceab2fc31fe8e1bea3d8d60cface",
       "bytes": 102546,
       "words": 14742,
-      "activeBytes": 7450,
-      "activeWords": 872
+      "activeBytes": 7547,
+      "activeWords": 884
     },
     {
       "source": "iris-macos/leanring-buddy/AGENTS.md",

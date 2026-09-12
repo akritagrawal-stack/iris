@@ -906,6 +906,10 @@ final class GuideSessionController: ObservableObject {
     private let sourceWorkspaceService: GuideSourceWorkspaceService
     private var sourceWorkspaceRequest: GuideSourceWorkspaceRequest?
     private var sourceWorkspaceInspection: GuideSourceWorkspaceInspection?
+    /// Invalidates source setup completions that belonged to a cancelled,
+    /// closed, or superseded setup attempt. Guide identity alone is not enough:
+    /// two attempts for the same guide can legitimately overlap.
+    private var sourceWorkspaceGeneration = 0
 
     /// Notices when the reader has actually done the step they are on, so the
     /// guide moves without being told. It only ever runs for a step that
@@ -1186,6 +1190,7 @@ final class GuideSessionController: ObservableObject {
 
     func closeTheGuide() {
         guideSessionGeneration &+= 1
+        sourceWorkspaceGeneration &+= 1
         tearDownWhicheverGuideSessionIsCurrentlyOpen()
         loadState = .noGuideIsOpen
         guideBeingFollowed = nil
@@ -1201,21 +1206,36 @@ final class GuideSessionController: ObservableObject {
     }
 
     private func restorePersistedWorkspaceIfItBelongsTo(_ guide: IrisGuide) async {
+        let generation = sourceWorkspaceGeneration
         guard let persisted = selectedWorkspaceMemory.binding(),
               persisted.guideID == guide.appSlug,
               persisted.guideRevision == guide.version,
               let sourceCommit = guide.sourceCommit,
               persisted.expectedCommit == sourceCommit,
-              GuideSourceWorkspaceOrigin.parse("https://\(guide.sourceOwner)/\(guide.sourceRepo)") == persisted.expectedOrigin else {
+              Self.sourceOrigin(for: guide) == persisted.expectedOrigin else {
             return
         }
         selectedWorkspaceBinding = persisted
         guard await sourceWorkspaceService.validateBinding(persisted) else {
+            guard sourceWorkspaceGeneration == generation,
+                  selectedWorkspaceBinding == persisted else { return }
             selectedWorkspaceBinding = nil
             sourceWorkspaceSetupState = .failed("The saved source workspace is no longer valid. Choose setup again.")
             return
         }
+        guard sourceWorkspaceGeneration == generation,
+              selectedWorkspaceBinding == persisted else { return }
         sourceWorkspaceSetupState = .ready(persisted)
+    }
+
+    /// Guide metadata stores the GitHub owner and repository separately. The
+    /// origin parser expects a real host, so every controller admission uses
+    /// the same canonical HTTPS spelling; SSH and HTTPS checkout origins are
+    /// normalized by `GuideSourceWorkspaceOrigin.parse` before comparison.
+    private static func sourceOrigin(for guide: IrisGuide) -> GuideSourceWorkspaceOrigin? {
+        GuideSourceWorkspaceOrigin.parse(
+            "https://github.com/\(guide.sourceOwner)/\(guide.sourceRepo)"
+        )
     }
 
     /// Stops all work belonging to the currently open guide. Cancellation is
@@ -1271,6 +1291,7 @@ final class GuideSessionController: ObservableObject {
             return
         }
         guideSessionGeneration &+= 1
+        sourceWorkspaceGeneration &+= 1
         let generationForThisBranchSelection = guideSessionGeneration
         if autopilotIsRunning { stopAutopilot() }
         cancelAnyWorkFromThePreviousStep()
@@ -1312,9 +1333,7 @@ final class GuideSessionController: ObservableObject {
             sourceWorkspaceSetupState = .failed("this guide does not declare a pinned source")
             return failure
         }
-        guard let expectedOrigin = GuideSourceWorkspaceOrigin.parse(
-            "https://\(guide.sourceOwner)/\(guide.sourceRepo)"
-        ) else {
+        guard let expectedOrigin = Self.sourceOrigin(for: guide) else {
             let failure: Result<GuideSourceWorkspaceInspection, GuideSourceWorkspacePreparationError> =
                 .failure(.invalidRequest("this guide's source identity is invalid"))
             sourceWorkspaceSetupState = .failed("this guide's source identity is invalid")
@@ -1330,11 +1349,15 @@ final class GuideSessionController: ObservableObject {
             expectedCommit: sourceCommit,
             ownedProjectsRoot: ownedProjectsRoot
         )
+        sourceWorkspaceGeneration &+= 1
+        let generation = sourceWorkspaceGeneration
         sourceWorkspaceRequest = request
         sourceWorkspaceInspection = nil
         sourceWorkspaceSetupState = .inspecting
         let result = await sourceWorkspaceService.inspect(request)
-        guard guideBeingFollowed?.appSlug == guide.appSlug,
+        guard sourceWorkspaceGeneration == generation,
+              sourceWorkspaceRequest?.runID == request.runID,
+              guideBeingFollowed?.appSlug == guide.appSlug,
               guideBeingFollowed?.version == guide.version else {
             return .failure(.cancelled)
         }
@@ -1362,12 +1385,16 @@ final class GuideSessionController: ObservableObject {
             sourceWorkspaceSetupState = .failed("inspect the source before choosing a workspace")
             return failure
         }
+        sourceWorkspaceGeneration &+= 1
+        let generation = sourceWorkspaceGeneration
         sourceWorkspaceSetupState = .preparing(choice)
         do {
             let binding = try await sourceWorkspaceService.prepare(
                 request, from: inspection, choice: choice
             )
-            guard guideBeingFollowed?.appSlug == request.guideID,
+            guard sourceWorkspaceGeneration == generation,
+                  sourceWorkspaceRequest?.runID == request.runID,
+                  guideBeingFollowed?.appSlug == request.guideID,
                   guideBeingFollowed?.version == request.guideRevision else {
                 return .failure(.cancelled)
             }
@@ -1376,14 +1403,20 @@ final class GuideSessionController: ObservableObject {
             sourceWorkspaceSetupState = .ready(binding)
             return .success(binding)
         } catch let error as GuideSourceWorkspacePreparationError {
+            guard sourceWorkspaceGeneration == generation,
+                  sourceWorkspaceRequest?.runID == request.runID else { return .failure(.cancelled) }
             sourceWorkspaceSetupState = .failed(error.errorDescription ?? "workspace setup failed")
             return .failure(error)
         } catch is CancellationError {
+            guard sourceWorkspaceGeneration == generation,
+                  sourceWorkspaceRequest?.runID == request.runID else { return .failure(.cancelled) }
             sourceWorkspaceSetupState = .failed(
                 GuideSourceWorkspacePreparationError.cancelled.errorDescription ?? "workspace preparation cancelled"
             )
             return .failure(.cancelled)
         } catch {
+            guard sourceWorkspaceGeneration == generation,
+                  sourceWorkspaceRequest?.runID == request.runID else { return .failure(.cancelled) }
             let message = error.localizedDescription
             sourceWorkspaceSetupState = .failed(message)
             return .failure(.stagedWorkspaceVerificationFailed(message))
@@ -1391,6 +1424,7 @@ final class GuideSessionController: ObservableObject {
     }
 
     func cancelSourceWorkspaceSetup() {
+        sourceWorkspaceGeneration &+= 1
         sourceWorkspaceRequest = nil
         sourceWorkspaceInspection = nil
         sourceWorkspaceSetupState = .idle
@@ -1406,10 +1440,13 @@ final class GuideSessionController: ObservableObject {
               binding.guideRevision == guide.version,
               let commit = guide.sourceCommit,
               binding.expectedCommit == commit,
-              GuideSourceWorkspaceOrigin.parse("https://\(guide.sourceOwner)/\(guide.sourceRepo)") == binding.expectedOrigin else {
+              Self.sourceOrigin(for: guide) == binding.expectedOrigin else {
             return false
         }
+        let generation = sourceWorkspaceGeneration
         let valid = await sourceWorkspaceService.validateBinding(binding)
+        guard sourceWorkspaceGeneration == generation,
+              selectedWorkspaceBinding == binding else { return false }
         guard valid else {
             selectedWorkspaceBinding = nil
             sourceWorkspaceSetupState = .failed("The selected source workspace changed and needs setup again.")

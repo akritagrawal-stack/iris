@@ -227,7 +227,13 @@ struct GuideAutopilotRunnerTests {
         )
         let shell = FakeShellSession(outcomes: [.succeeded(workingDirectory: nested.path)])
         let workspace = try IrisGuideStepWorkspace(kind: .preparedProject, relativePath: "apps/mobile")
-        let runner = Self.runner(shell: shell, workspaceBinding: binding)
+        let runner = Self.runner(
+            shell: shell,
+            sourceOwner: "example",
+            sourceRepo: "project",
+            sourceCommit: identity.head,
+            workspaceBinding: binding
+        )
 
         let result = await runner.executeStepCommand(
             step: Self.step(command: "bun run build", workspace: workspace), stepIndex: 0, totalSteps: 1
@@ -236,6 +242,15 @@ struct GuideAutopilotRunnerTests {
         #expect(result == .succeeded)
         #expect(shell.commandsRun.first == "cd \(nested.resolvingSymlinksInPath().path)")
         #expect(shell.commandsRun.last == "bun run build")
+    }
+
+    @Test func githubHttpsGuideMetadataAcceptsAnEquivalentSshCheckoutOrigin() {
+        #expect(
+            GuideSourceWorkspaceOrigin.equivalent(
+                "https://github.com/example/project",
+                "git@github.com:example/project.git"
+            )
+        )
     }
 
     @Test func theRedButtonCancelsBothTheMainAndTheLongRunningSession() async {

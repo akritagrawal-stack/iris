@@ -1160,16 +1160,21 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         workingDirectory: String,
         preparedWorkspaceDirectory: String?
     ) async -> GuideAutopilotStepResult {
-        if let workspace = step.workspace,
-           await resolvePreparedWorkspace(workspace) == nil {
-            return refusePreparedWorkspace(workspace, command: command)
+        let currentPreparedWorkspaceDirectory: String?
+        if let workspace = step.workspace {
+            guard let directory = await resolvePreparedWorkspace(workspace) else {
+                return refusePreparedWorkspace(workspace, command: command)
+            }
+            currentPreparedWorkspaceDirectory = directory
+        } else {
+            currentPreparedWorkspaceDirectory = preparedWorkspaceDirectory
         }
         // Ahead of the ladder, and ahead of spending anything: a step that died
         // because a tool is missing, when the guide installs that tool itself,
         // is repaired from the guide rather than from a model.
         if let repairedFromTheGuide = await installTheMissingToolTheGuideInstallsItself(
             step: step, command: command, exitStatus: exitStatus,
-            preparedWorkspaceDirectory: preparedWorkspaceDirectory
+            preparedWorkspaceDirectory: currentPreparedWorkspaceDirectory
         ) {
             if repairedFromTheGuide == .succeeded {
                 consecutiveStepsTheLadderSpentOnWithoutGettingThemRunning = 0
@@ -1181,7 +1186,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         let result = await climbTheFixLadder(
             step: step, command: command,
             exitStatus: exitStatus, workingDirectory: workingDirectory,
-            preparedWorkspaceDirectory: preparedWorkspaceDirectory
+            preparedWorkspaceDirectory: currentPreparedWorkspaceDirectory
         )
         let theLadderSpentSomethingOnThisStep = modelCallsUsedThisGuide > modelCallsBeforeThisStepsLadder
         if result == .succeeded {
@@ -1272,10 +1277,22 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         }
 
         transcript.append(.commandFromTheGuide(text: command))
+        let retryDirectory: String
+        if let workspace = step.workspace {
+            guard let freshDirectory = await resolvePreparedWorkspace(workspace) else {
+                return refusePreparedWorkspace(workspace, command: command)
+            }
+            guard case .succeeded = await moveInto(freshDirectory, using: shellSession) else {
+                return .surfacedToReader
+            }
+            retryDirectory = freshDirectory
+        } else {
+            retryDirectory = preparedWorkspaceDirectory
+                ?? step.workingDirectory ?? shellSession.currentWorkingDirectory
+        }
         switch await runGuideCommand(
             command,
-            inWorkingDirectory: preparedWorkspaceDirectory
-                ?? step.workingDirectory ?? shellSession.currentWorkingDirectory
+            inWorkingDirectory: retryDirectory
         ) {
         case .succeeded: return .succeeded
         case .stopped: return .stopped
@@ -1408,15 +1425,22 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
                     guard fix.retryTheOriginalCommandAfterwards,
                           !theReaderAskedToStopThisStep else { continue }
                     transcript.append(.commandFromTheGuide(text: command))
-                    if let preparedWorkspaceDirectory {
-                        guard case .succeeded = await moveInto(preparedWorkspaceDirectory, using: shellSession) else {
+                    let retryDirectory: String
+                    if let workspace = step.workspace {
+                        guard let freshDirectory = await resolvePreparedWorkspace(workspace) else {
+                            return refusePreparedWorkspace(workspace, command: command)
+                        }
+                        guard case .succeeded = await moveInto(freshDirectory, using: shellSession) else {
                             continue
                         }
+                        retryDirectory = freshDirectory
+                    } else {
+                        retryDirectory = preparedWorkspaceDirectory
+                            ?? step.workingDirectory ?? shellSession.currentWorkingDirectory
                     }
                     let retry = await runGuideCommand(
                         command,
-                        inWorkingDirectory: preparedWorkspaceDirectory
-                            ?? step.workingDirectory ?? shellSession.currentWorkingDirectory
+                        inWorkingDirectory: retryDirectory
                     )
                     switch retry {
                     case .succeeded: return .succeeded
@@ -1458,7 +1482,8 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             searchedTheWeb: searchedTheWeb, whatItDoes: whatItDoes
         ))
         if let workspace {
-            guard await resolvePreparedWorkspace(workspace) == workingDirectory else {
+            guard let freshDirectory = await resolvePreparedWorkspace(workspace),
+                  freshDirectory == workingDirectory else {
                 return .skippedByReader
             }
         }
@@ -1615,7 +1640,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         }
         if let owner = guideContext.sourceOwner,
            let repo = guideContext.sourceRepo,
-           GuideSourceWorkspaceOrigin.parse("https://\(owner)/\(repo)") != binding.expectedOrigin {
+           GuideSourceWorkspaceOrigin.parse("https://github.com/\(owner)/\(repo)") != binding.expectedOrigin {
             return nil
         }
         if let commit = guideContext.sourceCommit, commit != binding.expectedCommit {

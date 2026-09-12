@@ -57,6 +57,20 @@ func runAcceptedCandidateRecordChecks() throws {
         verificationEvidenceID: UUID(), reviewEvidenceID: UUID(),
         uiAcceptedRunID: UUID(), uiAcceptedReceiptID: receipt.identifier
     )
+    do {
+        _ = try AcceptedCandidateRecord(
+            projectSlug: project.slug, bundleIdentifier: project.bundleIdentifier,
+            registeredProjectPath: project.clonePath,
+            registeredApplicationPath: project.applicationPath, artifactPath: artifact.path,
+            sourceIdentity: source, artifactDigest: artifactDigest,
+            verificationEvidenceID: UUID(), reviewEvidenceID: UUID(), uiAcceptedRunID: UUID()
+        )
+        throw AcceptedCandidateCheckFailure(message: "unpaired UI acceptance linkage was accepted")
+    } catch let error as AcceptedCandidateRecord.ValidationFailure {
+        guard error == .invalidRecord else { throw error }
+    } catch {
+        throw error
+    }
     let store = AppDeliveryReceiptStore(baseDirectory: root.appendingPathComponent("receipts"))
     do {
         try store.saveAcceptedCandidate(record)

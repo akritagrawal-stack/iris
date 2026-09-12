@@ -75,12 +75,15 @@ nonisolated struct AcceptedCandidateRecord: Codable, Equatable, Sendable {
             && Self.isSHA256Digest(artifactDigest)
             && Self.isNonzero(verificationEvidenceID)
             && Self.isNonzero(reviewEvidenceID)
+            && ((uiAcceptedRunID == nil) == (uiAcceptedReceiptID == nil))
             && (uiAcceptedRunID == nil || Self.isNonzero(uiAcceptedRunID!))
             && (uiAcceptedReceiptID == nil || Self.isNonzero(uiAcceptedReceiptID!))
     }
 
-    /// The registry and source checks are exact value checks. Filesystem
-    /// content is checked separately so callers can report which identity
+    /// The registry and source checks are exact value checks. The caller must
+    /// supply IDs that already refer to independently persisted positive
+    /// verifier/reviewer evidence; UUID shape alone never proves a review.
+    /// Filesystem content is checked separately so callers can report which identity
     /// became stale before any delivery action is considered.
     func failureAgainst(
         project: IrisTestProjectRegistry.Project,
@@ -130,11 +133,21 @@ nonisolated struct AcceptedCandidateRecord: Codable, Equatable, Sendable {
         case verificationEvidenceID, reviewEvidenceID, uiAcceptedRunID, uiAcceptedReceiptID
     }
 
+    private struct AnyCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawContainer = try decoder.container(keyedBy: AnyCodingKey.self)
         let knownKeys = Set(CodingKeys.allCases.map(\.stringValue))
-        let actualKeys = Set(container.allKeys.map(\.stringValue))
-        guard actualKeys.isSubset(of: knownKeys) else { throw ValidationFailure.invalidRecord }
+        guard rawContainer.allKeys.allSatisfy({ knownKeys.contains($0.stringValue) }) else {
+            throw ValidationFailure.invalidRecord
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decode(Int.self, forKey: .version)
         candidateID = try container.decode(UUID.self, forKey: .candidateID)
         projectSlug = try container.decode(String.self, forKey: .projectSlug)

@@ -32,6 +32,7 @@ struct SpatialGuidanceChecks {
     private static func run() async throws {
         try checkSanitizer()
         try checkSemanticFreshness()
+        try checkWindowIdentityFactory()
         try checkCoordinateTransforms()
         try await checkInitialEvidenceValidation()
         try await checkFocusedWindowWins()
@@ -43,6 +44,11 @@ struct SpatialGuidanceChecks {
 
     private static func require(_ condition: Bool, _ message: String) throws {
         guard condition else { throw SpatialGuidanceCheckError.failed(message) }
+    }
+
+    private static func requireValue<T>(_ value: T?, _ message: String) throws -> T {
+        guard let value else { throw SpatialGuidanceCheckError.failed(message) }
+        return value
     }
 
     private static func checkSanitizer() throws {
@@ -143,6 +149,66 @@ struct SpatialGuidanceChecks {
             from: .geometryOnly(first.rectangle), to: .geometryOnly(first.rectangle)
         ) == .unavailable(.missingSemanticIdentity), "geometry-only evidence was treated as fresh")
         print("PASS semantic freshness, foreground/focus validation, and uncertainty")
+    }
+
+    /// This calls the production AX-window factory. It must never turn window
+    /// geometry into an identity, and a missing AX identifier must not make
+    /// every titled AX window unavailable.
+    private static func checkWindowIdentityFactory() throws {
+        let title = "Untitled Project"
+        let titleFingerprint = try requireValue(
+            GuidePointingFreshness.privacyFingerprint(of: title),
+            "fixture title did not fingerprint"
+        )
+        let fallback = SystemGuideTargetLocator.windowFingerprint(
+            processIdentifier: 11,
+            bundleIdentifier: "com.example.app",
+            accessibilityIdentifier: nil,
+            title: title
+        )
+        try require(
+            fallback.windowIdentifier == "title-fingerprint:\(titleFingerprint)",
+            "window factory did not use the bounded title identity"
+        )
+        let explicit = SystemGuideTargetLocator.windowFingerprint(
+            processIdentifier: 11,
+            bundleIdentifier: "com.example.app",
+            accessibilityIdentifier: "window-42",
+            title: title
+        )
+        try require(explicit.windowIdentifier == "window-42",
+                    "window factory did not prefer the AX identifier")
+        let target = GuideTargetFingerprint(
+            processIdentifier: 11,
+            bundleIdentifier: "com.example.app",
+            windowIdentifier: fallback.windowIdentifier,
+            windowTitleFingerprint: fallback.titleFingerprint,
+            role: "AXWindow"
+        )
+        try require(target.availability == .complete,
+                    "titled AX window factory result remained unavailable")
+        let observedWindow = GuideTargetEvidence(
+            rectangle: CGRect(x: 40, y: 60, width: 100, height: 24),
+            fingerprint: target,
+            observation: GuideObservationSnapshot(
+                monotonicNanoseconds: 10,
+                frontmostProcessIdentifier: 11,
+                frontmostBundleIdentifier: "com.example.app",
+                focusedWindow: fallback,
+                coordinateMetadata: nil
+            )
+        )
+        try require(GuidePointingFreshness.validateCurrentObservation(observedWindow) == .fresh,
+                    "factory result did not satisfy the focused-window gate")
+        let missing = SystemGuideTargetLocator.windowFingerprint(
+            processIdentifier: 11,
+            bundleIdentifier: "com.example.app",
+            accessibilityIdentifier: nil,
+            title: nil
+        )
+        try require(missing.windowIdentifier == nil,
+                    "window factory invented an identity without AX evidence")
+        print("PASS production AX-window identity factory")
     }
 
     private static func checkCoordinateTransforms() throws {

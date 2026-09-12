@@ -708,6 +708,9 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
         var matchFromAnotherProcess: AccessibilityMatch?
         for application in applications {
             let element = AXUIElementCreateApplication(application.processIdentifier)
+            guard let focusedWindow = focusedWindowFingerprint(for: element, application: application) else {
+                continue
+            }
             var best: AccessibilityMatch?
             var foundEqualScoredCandidate = false
             var nodesVisited = 0
@@ -717,7 +720,7 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
                 stopWalkingAt: Date().addingTimeInterval(Self.longestTheWalkMayTake),
                 application: application,
                 topology: topology,
-                ancestors: [], window: nil,
+                ancestors: [], window: nil, focusedWindow: focusedWindow,
                 best: &best, foundEqualScoredCandidate: &foundEqualScoredCandidate,
                 nodesVisited: &nodesVisited
             )
@@ -769,11 +772,14 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
         guard let windowThatIsActuallyUp = windows.first(where: { !isMinimised($0) }) else {
             return .unavailable(.noCurrentDisplay)
         }
+        guard let focusedWindow = focusedWindowFingerprint(for: element, application: application) else {
+            return .unavailable(.missingSemanticIdentity)
+        }
         guard let rectangle = frame(of: windowThatIsActuallyUp),
               let evidence = evidence(
                 for: windowThatIsActuallyUp, rectangle: rectangle,
                 application: application, topology: GuideStepPointingCoordinator.currentDisplayTopology(),
-                ancestors: []
+                ancestors: [], focusedWindow: focusedWindow
               ) else { return .unavailable(.missingSemanticIdentity) }
         return .found(evidence)
     }
@@ -807,6 +813,7 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
             return .unavailable(.missingSemanticIdentity)
         }
         let focusedWindow = focusedWindowValue as! AXUIElement
+        let focusedFingerprint = windowFingerprint(for: focusedWindow, application: application)
         // A minimized focused window can retain its last geometry. It is not a
         // visible place for the eye to fly, so use the same non-minimized rule
         // as the bounded window-list fallback above.
@@ -815,7 +822,7 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
               let evidence = evidence(
                 for: focusedWindow, rectangle: rectangle,
                 application: application, topology: GuideStepPointingCoordinator.currentDisplayTopology(),
-                ancestors: []
+                ancestors: [], window: focusedFingerprint, focusedWindow: focusedFingerprint
               ) else { return .unavailable(.missingSemanticIdentity) }
         return .found(evidence)
     }
@@ -900,6 +907,7 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
         topology: GuideDisplayTopology,
         ancestors: [GuideAccessibilityAncestor],
         window: GuideWindowFingerprint?,
+        focusedWindow: GuideWindowFingerprint,
         best: inout AccessibilityMatch?,
         foundEqualScoredCandidate: inout Bool,
         nodesVisited: inout Int
@@ -915,11 +923,11 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
         let currentRole = stringValue(of: element, attribute: kAXRoleAttribute)
         let currentIdentifier = stringValue(of: element, attribute: kAXIdentifierAttribute)
         let currentWindow = currentRole == (kAXWindowRole as String)
-            ? GuideWindowFingerprint(
+            ? Self.windowFingerprint(
                 processIdentifier: application.processIdentifier,
                 bundleIdentifier: application.bundleIdentifier,
-                windowIdentifier: currentIdentifier,
-                titleFingerprint: GuidePointingFreshness.privacyFingerprint(of: currentLabel)
+                accessibilityIdentifier: currentIdentifier,
+                title: currentLabel
             )
             : window
 
@@ -943,7 +951,8 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
                    GuideStepPointingCoordinator.displayShowingTheMostOf(rectangle, among: displays) != nil,
                    let evidence = evidence(
                        for: element, rectangle: rectangle, application: application,
-                       topology: topology, ancestors: ancestors, window: currentWindow
+                       topology: topology, ancestors: ancestors, window: currentWindow,
+                       focusedWindow: focusedWindow
                    ) {
                     if let currentBest = best {
                         if score > currentBest.score {
@@ -981,7 +990,7 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
                         identifier: currentIdentifier,
                         labelFingerprint: GuidePointingFreshness.privacyFingerprint(of: currentLabel)
                     )
-                ], window: currentWindow,
+                    ], window: currentWindow, focusedWindow: focusedWindow,
                 best: &best, foundEqualScoredCandidate: &foundEqualScoredCandidate,
                 nodesVisited: &nodesVisited
             )
@@ -1017,7 +1026,8 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
         application: NSRunningApplication,
         topology: GuideDisplayTopology?,
         ancestors: [GuideAccessibilityAncestor],
-        window: GuideWindowFingerprint? = nil
+        window: GuideWindowFingerprint? = nil,
+        focusedWindow: GuideWindowFingerprint? = nil
     ) -> GuideTargetEvidence? {
         guard let topology,
               let displayID = topology.displays.first(where: { $0.frame.intersects(rectangle) })?.displayID
@@ -1025,11 +1035,19 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
         let role = stringValue(of: element, attribute: kAXRoleAttribute)
         let identifier = stringValue(of: element, attribute: kAXIdentifierAttribute)
         let label = label(of: element)
+        let resolvedWindow = window ?? (role == (kAXWindowRole as String)
+            ? Self.windowFingerprint(
+                processIdentifier: application.processIdentifier,
+                bundleIdentifier: application.bundleIdentifier,
+                accessibilityIdentifier: identifier,
+                title: label
+            )
+            : nil)
         let fingerprint = GuideTargetFingerprint(
             processIdentifier: application.processIdentifier,
             bundleIdentifier: application.bundleIdentifier,
-            windowIdentifier: window?.windowIdentifier,
-            windowTitleFingerprint: window?.titleFingerprint,
+            windowIdentifier: resolvedWindow?.windowIdentifier,
+            windowTitleFingerprint: resolvedWindow?.titleFingerprint,
             role: role,
             identifier: identifier,
             labelFingerprint: GuidePointingFreshness.privacyFingerprint(of: label),
@@ -1045,13 +1063,60 @@ struct SystemGuideTargetLocator: GuideTargetLocating, GuideTargetEvidenceLocatin
             monotonicNanoseconds: DispatchTime.now().uptimeNanoseconds,
             frontmostProcessIdentifier: NSWorkspace.shared.frontmostApplication?.processIdentifier,
             frontmostBundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-            focusedWindow: window,
+            focusedWindow: focusedWindow,
             coordinateMetadata: coordinates
         )
         return GuideTargetEvidence(
             rectangle: rectangle,
             fingerprint: fingerprint,
             observation: snapshot
+        )
+    }
+
+    /// AXWindowNumber is not a portable AX attribute. Use an explicit AX
+    /// identifier when available; otherwise the title's bounded fingerprint
+    /// remains the only non-geometric identity this source actually provides.
+    /// Missing both stays explicit uncertainty rather than a made-up window ID.
+    nonisolated static func windowFingerprint(
+        processIdentifier: Int32,
+        bundleIdentifier: String?,
+        accessibilityIdentifier: String?,
+        title: String?
+    ) -> GuideWindowFingerprint {
+        let titleFingerprint = GuidePointingFreshness.privacyFingerprint(of: title)
+        return GuideWindowFingerprint(
+            processIdentifier: processIdentifier,
+            bundleIdentifier: bundleIdentifier,
+            windowIdentifier: accessibilityIdentifier
+                ?? titleFingerprint.map { "title-fingerprint:\($0)" },
+            titleFingerprint: titleFingerprint
+        )
+    }
+
+    private func focusedWindowFingerprint(
+        for applicationElement: AXUIElement,
+        application: NSRunningApplication
+    ) -> GuideWindowFingerprint? {
+        var focusedWindowValue: AnyObject?
+        guard
+            AXUIElementCopyAttributeValue(
+                applicationElement, kAXFocusedWindowAttribute as CFString, &focusedWindowValue
+            ) == .success,
+            let focusedWindowValue,
+            CFGetTypeID(focusedWindowValue) == AXUIElementGetTypeID()
+        else { return nil }
+        return windowFingerprint(for: focusedWindowValue as! AXUIElement, application: application)
+    }
+
+    private func windowFingerprint(
+        for window: AXUIElement,
+        application: NSRunningApplication
+    ) -> GuideWindowFingerprint {
+        Self.windowFingerprint(
+            processIdentifier: application.processIdentifier,
+            bundleIdentifier: application.bundleIdentifier,
+            accessibilityIdentifier: stringValue(of: window, attribute: kAXIdentifierAttribute),
+            title: label(of: window)
         )
     }
 

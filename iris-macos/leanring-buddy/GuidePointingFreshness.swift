@@ -60,7 +60,11 @@ nonisolated struct GuideTargetFingerprint: Equatable, Sendable {
         else {
             return hasAnyEvidence ? .partial : .unavailable
         }
+        // AX windows are targets in their own right. They often omit a control
+        // identifier, but their bounded window identity is still semantic
+        // evidence. Other controls need their own identifier or ancestry.
         let hasControlIdentity = identifier != nil || !ancestry.isEmpty
+            || (role == "AXWindow" && windowIdentifier != nil)
         return hasControlIdentity ? .complete : .partial
     }
 

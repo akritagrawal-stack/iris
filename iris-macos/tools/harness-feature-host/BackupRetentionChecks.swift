@@ -498,6 +498,19 @@ struct BackupRetentionChecks {
         try fixture.store.savePrepared(prepared)
         let installed = try fixture.store.transition(prepared, to: .installed)
         _ = try fixture.store.transition(installed, to: .restored)
+        let older = fixture.backupRoot
+            .appendingPathComponent("com.fixture.retention/older/Retention.app", isDirectory: true)
+        try makeBundle(at: older, identifier: identifier, payload: "base")
+        let olderReceipt = AppDeliveryReceipt(
+            bundleIdentifier: identifier, installedPath: fixture.installed.path,
+            sourceArtifactPath: fixture.replacement.path, backupPath: older.path,
+            startedAt: Date(timeIntervalSince1970: 1_500_000_000), phase: .prepared,
+            sourceIdentity: sourceIdentity, installedBundleIdentity: installedIdentity,
+            replacementBundleIdentity: replacementIdentity, backupBundleIdentity: backupIdentity
+        )
+        try fixture.store.savePrepared(olderReceipt)
+        let olderInstalled = try fixture.store.transition(olderReceipt, to: .installed)
+        _ = try fixture.store.transition(olderInstalled, to: .restored)
 
         let destination = fixture.backupRoot
             .appendingPathComponent("com.fixture.retention/new/Retention.app", isDirectory: true)
@@ -506,9 +519,32 @@ struct BackupRetentionChecks {
             sourcePath: fixture.installed.path, destinationPath: destination.path,
             policy: fixture.policy, recoveryStore: fixture.recoveryStore
         ), !admission.inventory.protectedBackupPaths.contains(backup.path),
-              admission.inventory.previewEligibleBackupPaths == [backup.path] else {
+              admission.inventory.previewEligibleBackupPaths == [backup.path, older.path].sorted() else {
             throw BackupRetentionCheckError.failed("restored receipt was not isolated as preview-eligible")
         }
+        let selectedProject = cleanupProject(fixture: fixture, identifier: identifier)
+        let preview = try IrisTestAppDelivery.previewObsoleteBackups(
+            project: selectedProject, backupDirectory: fixture.backupRoot,
+            receiptStore: fixture.store, recoveryStore: fixture.recoveryStore
+        )
+        try require(preview.protectedBackupPaths == [backup.path]
+            && preview.previewEligibleBackupPaths == [older.path]
+            && preview.protectedLogicalBytes > 0
+            && preview.previewEligibleLogicalBytes > 0
+            && preview.allocatedBytes >= preview.previewEligibleLogicalBytes,
+            "read-only retention preview did not protect newest and report the older eligible payload")
+        let unknown = fixture.backupRoot
+            .appendingPathComponent("com.fixture.retention/unknown/Retention.app", isDirectory: true)
+        try makeBundle(at: unknown, identifier: identifier, payload: "unreferenced")
+        let unknownPreview = try IrisTestAppDelivery.previewObsoleteBackups(
+            project: selectedProject, backupDirectory: fixture.backupRoot,
+            receiptStore: fixture.store, recoveryStore: fixture.recoveryStore
+        )
+        try require(unknownPreview.protectedBackupPaths.contains(unknown.path)
+            && unknownPreview.protectedBackupPaths.contains(backup.path)
+            && unknownPreview.previewEligibleBackupPaths == [older.path],
+            "unreferenced backup was not protected as unknown")
+        print("PASS read-only selected-project retention preview reports logical/allocated bytes and protects unknown payloads")
 
         let alias = AppDeliveryReceipt(
             bundleIdentifier: identifier, installedPath: fixture.root.appendingPathComponent("alias-installed.app").path,

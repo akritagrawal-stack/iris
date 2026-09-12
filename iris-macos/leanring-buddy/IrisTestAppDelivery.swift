@@ -10,6 +10,12 @@ enum IrisTestAppDelivery {
         case failed(AppDeliveryReceiptStore.CleanupError)
     }
 
+    enum BackupRetentionPreviewOutcome: Equatable, Sendable {
+        case previewed(AppDeliveryReceiptStore.BackupRetentionInventory)
+        case refused(String)
+        case failed(AppDeliveryReceiptStore.RetentionError)
+    }
+
     static func install(
         project: IrisTestProjectRegistry.Project,
         artifactPath: String,
@@ -98,6 +104,41 @@ enum IrisTestAppDelivery {
         }.value
     }
 
+    /// Explicit Test-runtime read-only entrypoint. It is bound to one selected
+    /// registered project and shares the receipt classifier with cleanup.
+    /// There is intentionally no settings or all-project UI route here.
+    static func previewObsoleteBackups(
+        project: IrisTestProjectRegistry.Project,
+        service: AppRelaunchService,
+        policy: AppDeliveryReceiptStore.BackupCleanupPolicy = .init()
+    ) async -> BackupRetentionPreviewOutcome {
+        guard IrisTestEnvironment.isEnabled,
+              permitsCleanup(project),
+              NSRunningApplication.runningApplications(withBundleIdentifier: project.bundleIdentifier).isEmpty else {
+            return .refused("Iris Test could not confirm its stopped, registered test copy. No retention data was changed.")
+        }
+        let store = service.deliveryReceiptStore
+        return await Task.detached(priority: .utility) {
+            guard permitsCleanup(project),
+                  NSRunningApplication.runningApplications(withBundleIdentifier: project.bundleIdentifier).isEmpty else {
+                return .refused("The Test project changed or started before the retention preview. No data was changed.")
+            }
+            do {
+                return .previewed(try previewObsoleteBackups(
+                    project: project,
+                    backupDirectory: backupDirectory,
+                    receiptStore: store,
+                    recoveryStore: DeliveredEditUndoRecoveryStore(),
+                    policy: policy
+                ))
+            } catch let error as AppDeliveryReceiptStore.RetentionError {
+                return .failed(error)
+            } catch {
+                return .refused("Retention preview could not be completed safely. No data was changed.")
+            }
+        }.value
+    }
+
     /// Fixture-injectable cleanup seam. It deliberately does not discover a
     /// project or use default Application Support; the runtime entrypoint above
     /// owns those Test-only gates.
@@ -115,6 +156,31 @@ enum IrisTestAppDelivery {
             throw AppDeliveryReceiptStore.CleanupError.invalidPolicy
         }
         return try receiptStore.cleanupRestoredBackups(
+            bundleIdentifier: project.bundleIdentifier,
+            backupRoot: backupDirectory,
+            recoveryStore: recoveryStore,
+            protectedPaths: [project.applicationPath, project.buildArtifactPath, project.clonePath],
+            policy: policy
+        )
+    }
+
+    /// Fixture-injectable, read-only retention seam. No project discovery or
+    /// filesystem mutation occurs here; the runtime entrypoint owns Test
+    /// registration and stopped-app checks.
+    nonisolated static func previewObsoleteBackups(
+        project: IrisTestProjectRegistry.Project,
+        backupDirectory: URL,
+        receiptStore: AppDeliveryReceiptStore,
+        recoveryStore: DeliveredEditUndoRecoveryStore,
+        policy: AppDeliveryReceiptStore.BackupCleanupPolicy = .init()
+    ) throws -> AppDeliveryReceiptStore.BackupRetentionInventory {
+        guard project.applicationPath != project.buildArtifactPath,
+              isCanonicalPath(project.applicationPath),
+              isCanonicalPath(project.buildArtifactPath),
+              isCanonicalPath(backupDirectory.path) else {
+            throw AppDeliveryReceiptStore.RetentionError.invalidPolicy
+        }
+        return try receiptStore.previewRestoredBackups(
             bundleIdentifier: project.bundleIdentifier,
             backupRoot: backupDirectory,
             recoveryStore: recoveryStore,

@@ -447,6 +447,14 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         case storageFailure
     }
 
+    enum AcceptedCandidateEvidenceLoadState: Equatable, Sendable {
+        case absent
+        case valid(AcceptedCandidateEvidenceRecord)
+        case corrupt
+        case oversized
+        case symlink
+    }
+
     /// A measured, non-destructive admission policy for the previous-app
     /// snapshot. The default scope is Iris's own delivery-backup directory;
     /// callers may inject a strict root and a small logical-byte limit for
@@ -541,6 +549,9 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
 
     struct BackupRetentionInventory: Equatable, Sendable {
         let logicalBytes: UInt64
+        let allocatedBytes: UInt64
+        let protectedLogicalBytes: UInt64
+        let previewEligibleLogicalBytes: UInt64
         let protectedBackupPaths: [String]
         let previewEligibleBackupPaths: [String]
         let receiptCount: Int
@@ -625,6 +636,76 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         return BackupRetentionAdmission(
             inventory: inventory, candidateLogicalBytes: candidateLogicalBytes
         )
+    }
+
+    /// Read-only retention preview for one registered Test project. The
+    /// receipt classifier is shared with admission and cleanup, while this
+    /// method performs no deletion and never discovers projects itself.
+    func previewRestoredBackups(
+        bundleIdentifier: String,
+        backupRoot: URL,
+        recoveryStore: DeliveredEditUndoRecoveryStore,
+        protectedPaths: [String] = [],
+        policy: BackupCleanupPolicy = .init()
+    ) throws -> BackupRetentionInventory {
+        guard !bundleIdentifier.isEmpty,
+              AppDeliveryReceipt.isSafeMetadataText(bundleIdentifier),
+              policy.now.timeIntervalSinceReferenceDate.isFinite,
+              policy.recentRollbackWindow.isFinite,
+              policy.recentRollbackWindow >= 0,
+              AppDeliveryReceipt.isCanonicalAbsolutePath(backupRoot.path),
+              protectedPaths.allSatisfy(AppDeliveryReceipt.isCanonicalAbsolutePath),
+              protectedPaths.allSatisfy({ pathHasNoSymlinkComponents($0, allowMissing: false) }) else {
+            throw RetentionError.invalidPolicy
+        }
+        return try withExclusiveStoreLock {
+            let inventory = try backupRetentionInventory(
+                backupRoot: backupRoot,
+                recoveryStore: recoveryStore,
+                bundleIdentifier: bundleIdentifier,
+                additionalProtectedPaths: protectedPaths
+            )
+            let selectedPrefix = backupRoot.appendingPathComponent(bundleIdentifier, isDirectory: true)
+                .standardizedFileURL.path + "/"
+            let allSelectedEligible = inventory.previewEligibleBackupPaths.filter {
+                $0.hasPrefix(selectedPrefix)
+            }
+            let selectedReceipts = try retentionReceipts().filter {
+                $0.bundleIdentifier == bundleIdentifier
+                    && $0.phase == .restored
+                    && allSelectedEligible.contains(URL(fileURLWithPath: $0.backupPath).standardizedFileURL.path)
+            }
+            let newestID = selectedReceipts.max {
+                if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
+                return $0.identifier.uuidString < $1.identifier.uuidString
+            }?.identifier
+            let cutoff = policy.now.addingTimeInterval(-policy.recentRollbackWindow)
+            let rollbackProtected = Set(selectedReceipts.compactMap { receipt -> String? in
+                guard receipt.identifier == newestID || receipt.startedAt >= cutoff else { return nil }
+                return URL(fileURLWithPath: receipt.backupPath).standardizedFileURL.path
+            })
+            let eligible = allSelectedEligible.filter { !rollbackProtected.contains($0) }
+            let eligibleLogical = try measuredBytes(for: eligible, allocated: false)
+            let eligibleAllocated = try measuredBytes(for: eligible, allocated: true)
+            let selectedProtected = Set(inventory.protectedBackupPaths.filter {
+                $0.hasPrefix(selectedPrefix)
+            }).union(rollbackProtected).sorted()
+            let protectedLogical = try measuredBytes(for: selectedProtected, allocated: false)
+            let protectedAllocated = try measuredBytes(for: selectedProtected, allocated: true)
+            guard protectedLogical <= UInt64.max - eligibleLogical,
+                  protectedAllocated <= UInt64.max - eligibleAllocated else {
+                throw RetentionError.unreadableMeasurement
+            }
+            return BackupRetentionInventory(
+                logicalBytes: protectedLogical + eligibleLogical,
+                allocatedBytes: protectedAllocated + eligibleAllocated,
+                protectedLogicalBytes: protectedLogical,
+                previewEligibleLogicalBytes: eligibleLogical,
+                protectedBackupPaths: selectedProtected,
+                previewEligibleBackupPaths: eligible,
+                receiptCount: inventory.receiptCount
+            )
+        }
     }
 
     /// Remove only obsolete, receipt-owned restored backups. This is an owner
@@ -974,10 +1055,14 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         backupRoot: URL,
         recoveryStore: DeliveredEditUndoRecoveryStore,
         allowingPreparedReceiptIdentifier: UUID? = nil,
-        allowingPreparedDestination: String? = nil
+        allowingPreparedDestination: String? = nil,
+        bundleIdentifier: String? = nil,
+        additionalProtectedPaths: [String] = []
     ) throws -> BackupRetentionInventory {
         let receipts = try retentionReceipts()
-        var protected = Set<String>()
+        var protected = Set(additionalProtectedPaths.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        })
         var previewEligible = Set<String>()
         let logicalBytes: UInt64
         var rootMetadata = stat()
@@ -1004,6 +1089,10 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
             guard isWithin(receipt.backupPath, root: backupRoot.path),
                   pathHasNoSymlinkComponents(receipt.backupPath, allowMissing: true) else {
                 throw RetentionError.unsafePath
+            }
+            if let bundleIdentifier, receipt.bundleIdentifier != bundleIdentifier {
+                protected.insert(URL(fileURLWithPath: receipt.backupPath).standardizedFileURL.path)
+                continue
             }
             var metadata = stat()
             if lstat(receipt.backupPath, &metadata) == 0 {
@@ -1043,17 +1132,82 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         for record in archived.records {
             try addRecoveryReference(record.backupPath, root: backupRoot, protected: &protected)
         }
+        // A payload with no receipt is an unknown reference, not an obsolete
+        // version. Keep it protected so preview and later cleanup cannot infer
+        // authority from a directory name or arbitrary UUID.
+        for payloadPath in try backupPayloadPaths(backupRoot) {
+            if !receipts.contains(where: { URL(fileURLWithPath: $0.backupPath).standardizedFileURL.path == payloadPath }) {
+                protected.insert(payloadPath)
+            }
+        }
         // A restored receipt is only a preview candidate while no live or
         // archived recovery record, nor another non-restored receipt, aliases
         // the same backup path.
-        previewEligible.subtract(protected)
+        previewEligible = Set(previewEligible.filter { candidate in
+            !protected.contains { pathsOverlap(candidate, $0) }
+        })
 
+        let protectedPaths = protected.sorted()
+        let eligiblePaths = previewEligible.sorted()
+        let allocatedBytes: UInt64
+        if rootExists {
+            guard let measured = AppDeliveryReceipt.allocatedByteCount(atPath: backupRoot.path) else {
+                throw RetentionError.unreadableMeasurement
+            }
+            allocatedBytes = measured
+        } else {
+            allocatedBytes = 0
+        }
         return BackupRetentionInventory(
             logicalBytes: logicalBytes,
-            protectedBackupPaths: protected.sorted(),
-            previewEligibleBackupPaths: previewEligible.sorted(),
+            allocatedBytes: allocatedBytes,
+            protectedLogicalBytes: try measuredBytes(for: protectedPaths, allocated: false),
+            previewEligibleLogicalBytes: try measuredBytes(for: eligiblePaths, allocated: false),
+            protectedBackupPaths: protectedPaths,
+            previewEligibleBackupPaths: eligiblePaths,
             receiptCount: receipts.count
         )
+    }
+
+    private func backupPayloadPaths(_ root: URL) throws -> [String] {
+        var metadata = stat()
+        guard lstat(root.path, &metadata) == 0 else {
+            if errno == ENOENT { return [] }
+            throw RetentionError.unreadableInventory
+        }
+        guard (metadata.st_mode & S_IFMT) == S_IFDIR else { throw RetentionError.unsafePath }
+        var payloads: [String] = []
+        for bundleGroup in try safeDirectoryEntries(at: root) {
+            for delivery in try safeDirectoryEntries(at: bundleGroup) {
+                for payload in try safeDirectoryEntries(at: delivery) {
+                    let path = payload.standardizedFileURL.path
+                    guard pathHasNoSymlinkComponents(path, allowMissing: false) else {
+                        throw RetentionError.unsafePath
+                    }
+                    payloads.append(path)
+                }
+            }
+        }
+        return payloads.sorted()
+    }
+
+    private func measuredBytes(for paths: [String], allocated: Bool) throws -> UInt64 {
+        var total: UInt64 = 0
+        for path in paths {
+            var metadata = stat()
+            guard lstat(path, &metadata) == 0 else {
+                guard errno == ENOENT else { throw RetentionError.unreadableMeasurement }
+                continue
+            }
+            let bytes = allocated
+                ? AppDeliveryReceipt.allocatedByteCount(atPath: path)
+                : AppDeliveryReceipt.logicalByteCount(atPath: path, rejectingSymlinks: false)
+            guard let bytes, total <= UInt64.max - bytes else {
+                throw RetentionError.unreadableMeasurement
+            }
+            total += bytes
+        }
+        return total
     }
 
     private func validateBackupNamespace(_ root: URL) throws {
@@ -1183,8 +1337,16 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         baseDirectory.appendingPathComponent("accepted-candidates", isDirectory: true)
     }
 
+    var acceptedCandidateEvidenceDirectory: URL {
+        acceptedCandidatesDirectory.appendingPathComponent("evidence", isDirectory: true)
+    }
+
     func acceptedCandidateURL(for identifier: UUID) -> URL {
         acceptedCandidatesDirectory.appendingPathComponent(identifier.uuidString + ".json")
+    }
+
+    func acceptedCandidateEvidenceURL(for identifier: UUID) -> URL {
+        acceptedCandidateEvidenceDirectory.appendingPathComponent(identifier.uuidString + ".json")
     }
 
     /// Persist accepted-candidate metadata beside, and under the same lock as,
@@ -1213,6 +1375,66 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
 
     func loadAcceptedCandidate(_ identifier: UUID) -> AcceptedCandidateLoadState {
         loadAcceptedCandidateUnlocked(identifier)
+    }
+
+    func loadAcceptedCandidateEvidence(_ identifier: UUID) -> AcceptedCandidateEvidenceLoadState {
+        loadAcceptedCandidateEvidenceUnlocked(identifier)
+    }
+
+    /// Store one bounded, persisted evidence fact only when it is already
+    /// linked to the candidate record. This keeps UUIDs as references rather
+    /// than proof and prevents an evidence file from becoming delivery
+    /// authority on its own.
+    func saveAcceptedCandidateEvidence(_ evidence: AcceptedCandidateEvidenceRecord) throws {
+        guard evidence.isValid else { throw StoreError.invalidReceipt }
+        try withExclusiveStoreLock {
+            guard pathHasNoSymlinkComponents(baseDirectory.path, allowMissing: false),
+                  pathHasNoSymlinkComponents(acceptedCandidatesDirectory.path, allowMissing: true) else {
+                throw StoreError.writeFailed
+            }
+            guard case .valid(let candidate) = loadAcceptedCandidateUnlocked(evidence.candidateID) else {
+                throw StoreError.identityMismatch
+            }
+            guard evidence.sourceIdentity == candidate.sourceIdentity,
+                  evidence.artifactDigest == candidate.artifactDigest else {
+                throw StoreError.identityMismatch
+            }
+            switch evidence.kind {
+            case .verification:
+                guard evidence.evidenceID == candidate.verificationEvidenceID,
+                      evidence.result == .passed else { throw StoreError.identityMismatch }
+            case .review:
+                guard evidence.evidenceID == candidate.reviewEvidenceID,
+                      evidence.result == .passed else { throw StoreError.identityMismatch }
+            case .uiAcceptance:
+                guard evidence.result == .passed,
+                      evidence.runIdentifier == candidate.uiAcceptedRunID,
+                      evidence.receiptIdentifier == candidate.uiAcceptedReceiptID,
+                      let receiptIdentifier = evidence.receiptIdentifier,
+                      case .valid(let receipt) = loadUnlocked(receiptIdentifier),
+                      receipt.phase == .installed || receipt.phase == .restored,
+                      receipt.bundleIdentifier == candidate.bundleIdentifier,
+                      receipt.sourceArtifactPath == candidate.artifactPath,
+                      receipt.sourceIdentity == candidate.sourceIdentity,
+                      receipt.replacementBundleIdentity?.bundleIdentifier == candidate.bundleIdentifier,
+                      receipt.replacementBundleIdentity?.contentDigest == candidate.artifactDigest
+                else { throw StoreError.identityMismatch }
+            }
+            try FileManager.default.createDirectory(
+                at: acceptedCandidateEvidenceDirectory, withIntermediateDirectories: true
+            )
+            var metadata = stat()
+            guard lstat(acceptedCandidateEvidenceDirectory.path, &metadata) == 0,
+                  (metadata.st_mode & S_IFMT) == S_IFDIR,
+                  pathHasNoSymlinkComponents(acceptedCandidateEvidenceDirectory.path, allowMissing: false) else {
+                throw StoreError.writeFailed
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(evidence)
+            guard data.count <= Self.maximumRecordBytes else { throw StoreError.invalidReceipt }
+            try publish(data, at: acceptedCandidateEvidenceURL(for: evidence.evidenceID), refusingExisting: true)
+        }
     }
 
     /// Re-read the record and all exact identities while holding the existing
@@ -1249,7 +1471,108 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         }
     }
 
+    /// Strict reuse gate. It resolves the receipt and all three positive
+    /// evidence records from this store while holding its lock. No caller
+    /// supplied UUID, receipt, or reviewer prose can satisfy this route.
+    /// Current Git/source probing remains an explicit coordinator seam and is
+    /// intentionally not inferred here.
+    func revalidateAcceptedCandidateUsingPersistedEvidence(
+        _ identifier: UUID,
+        project: IrisTestProjectRegistry.Project
+    ) -> AcceptedCandidateRevalidation {
+        do {
+            return try withExclusiveStoreLock {
+                guard case .valid(let candidate) = loadAcceptedCandidateUnlocked(identifier) else {
+                    switch loadAcceptedCandidateUnlocked(identifier) {
+                    case .absent: return .absent
+                    case .corrupt: return .corrupt
+                    case .oversized: return .oversized
+                    case .symlink: return .symlink
+                    case .valid: return .corrupt
+                    }
+                }
+                guard let uiRunID = candidate.uiAcceptedRunID,
+                      let uiReceiptID = candidate.uiAcceptedReceiptID else {
+                    return .invalid(.liveEvidenceMissing)
+                }
+                guard case .valid(let receipt) = loadUnlocked(uiReceiptID) else {
+                    return .invalid(.receiptMissing)
+                }
+                guard receipt.phase == .installed || receipt.phase == .restored else {
+                    return .invalid(.receiptMismatch)
+                }
+                if let failure = candidate.failureAgainst(project: project, receipt: receipt) {
+                    return .invalid(failure)
+                }
+                guard candidate.artifactDigestMatchesFilesystem() else {
+                    return .invalid(.artifactDigestMismatch)
+                }
+                switch persistedEvidenceFailure(
+                    candidate: candidate,
+                    kind: .verification,
+                    expectedIdentifier: candidate.verificationEvidenceID
+                ) {
+                case .none: break
+                case .failure(let failure): return .invalid(failure)
+                }
+                switch persistedEvidenceFailure(
+                    candidate: candidate,
+                    kind: .review,
+                    expectedIdentifier: candidate.reviewEvidenceID
+                ) {
+                case .none: break
+                case .failure(let failure): return .invalid(failure)
+                }
+                guard case .valid(let liveEvidence) = loadAcceptedCandidateEvidenceUnlocked(uiRunID),
+                      liveEvidence.kind == .uiAcceptance,
+                      liveEvidence.result == .passed,
+                      liveEvidence.candidateID == candidate.candidateID,
+                      liveEvidence.runIdentifier == uiRunID,
+                      liveEvidence.receiptIdentifier == uiReceiptID,
+                      liveEvidence.sourceIdentity == candidate.sourceIdentity,
+                      liveEvidence.artifactDigest == candidate.artifactDigest,
+                      liveEvidence.observedBundleIdentity == receipt.replacementBundleIdentity else {
+                    return .invalid(.liveEvidenceMismatch)
+                }
+                return .valid(candidate)
+            }
+        } catch {
+            return .storageFailure
+        }
+    }
+
+    private enum EvidenceFailure {
+        case none
+        case failure(AcceptedCandidateRecord.ValidationFailure)
+    }
+
+    private func persistedEvidenceFailure(
+        candidate: AcceptedCandidateRecord,
+        kind: AcceptedCandidateEvidenceRecord.Kind,
+        expectedIdentifier: UUID
+    ) -> EvidenceFailure {
+        switch loadAcceptedCandidateEvidenceUnlocked(expectedIdentifier) {
+        case .absent, .oversized, .symlink, .corrupt:
+            return .failure(kind == .verification ? .verificationEvidenceMissing : .reviewEvidenceMissing)
+        case .valid(let evidence):
+            guard evidence.isValid,
+                  evidence.kind == kind,
+                  evidence.evidenceID == expectedIdentifier,
+                  evidence.candidateID == candidate.candidateID,
+                  evidence.sourceIdentity == candidate.sourceIdentity,
+                  evidence.artifactDigest == candidate.artifactDigest,
+                  evidence.result == .passed else {
+                return .failure(.evidenceMismatch)
+            }
+            return .none
+        }
+    }
+
     func load(_ identifier: UUID) -> LoadState {
+        loadUnlocked(identifier)
+    }
+
+    private func loadUnlocked(_ identifier: UUID) -> LoadState {
         let destination = url(for: identifier)
         var metadata = stat()
         guard lstat(destination.path, &metadata) == 0 else {
@@ -1347,6 +1670,30 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
               let record = try? JSONDecoder().decode(AcceptedCandidateRecord.self, from: data),
               record.candidateID == identifier else { return .corrupt }
         return .valid(record)
+    }
+
+    private func loadAcceptedCandidateEvidenceUnlocked(
+        _ identifier: UUID
+    ) -> AcceptedCandidateEvidenceLoadState {
+        guard pathHasNoSymlinkComponents(baseDirectory.path, allowMissing: true),
+              pathHasNoSymlinkComponents(acceptedCandidatesDirectory.path, allowMissing: true),
+              pathHasNoSymlinkComponents(acceptedCandidateEvidenceDirectory.path, allowMissing: true) else {
+            return .corrupt
+        }
+        let destination = acceptedCandidateEvidenceURL(for: identifier)
+        var metadata = stat()
+        guard lstat(destination.path, &metadata) == 0 else {
+            return errno == ENOENT ? .absent : .corrupt
+        }
+        let kind = metadata.st_mode & S_IFMT
+        if kind == S_IFLNK { return .symlink }
+        guard kind == S_IFREG else { return .corrupt }
+        guard metadata.st_size <= off_t(Self.maximumRecordBytes) else { return .oversized }
+        guard let data = try? boundedData(at: destination),
+              let evidence = try? JSONDecoder().decode(
+                AcceptedCandidateEvidenceRecord.self, from: data
+              ), evidence.evidenceID == identifier else { return .corrupt }
+        return .valid(evidence)
     }
 
     private func boundedData(at url: URL) throws -> Data {

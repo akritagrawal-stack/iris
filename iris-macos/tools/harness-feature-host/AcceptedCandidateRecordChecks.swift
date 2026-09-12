@@ -85,6 +85,62 @@ func runAcceptedCandidateRecordChecks() throws {
     guard case .valid = store.revalidateAcceptedCandidate(record.candidateID, project: project, receipt: receipt) else {
         throw AcceptedCandidateCheckFailure(message: "current exact identities did not revalidate")
     }
+    guard case .invalid(.receiptMissing) = store.revalidateAcceptedCandidateUsingPersistedEvidence(
+        record.candidateID, project: project
+    ) else {
+        throw AcceptedCandidateCheckFailure(message: "caller-supplied receipt was treated as persisted evidence")
+    }
+    let preparedReceipt = AppDeliveryReceipt(
+        identifier: receipt.identifier, bundleIdentifier: receipt.bundleIdentifier,
+        installedPath: receipt.installedPath, sourceArtifactPath: receipt.sourceArtifactPath,
+        backupPath: receipt.backupPath, startedAt: receipt.startedAt, phase: .prepared,
+        sourceIdentity: receipt.sourceIdentity, installedBundleIdentity: receipt.installedBundleIdentity,
+        replacementBundleIdentity: receipt.replacementBundleIdentity,
+        backupBundleIdentity: receipt.backupBundleIdentity
+    )
+    try store.savePrepared(preparedReceipt)
+    _ = try store.transition(preparedReceipt, to: .installed)
+    guard case .invalid(.verificationEvidenceMissing) = store.revalidateAcceptedCandidateUsingPersistedEvidence(
+        record.candidateID, project: project
+    ) else {
+        throw AcceptedCandidateCheckFailure(message: "UUID-only evidence was accepted as persisted evidence")
+    }
+    let reviewEvidence = try AcceptedCandidateEvidenceRecord(
+        evidenceID: record.reviewEvidenceID, candidateID: record.candidateID, kind: .review,
+        sourceIdentity: source, artifactDigest: artifactDigest, result: .passed
+    )
+    // The verifier ID was intentionally supplied above as a random UUID. The
+    // persisted record must use the candidate's exact reference.
+    let persistedVerification = try AcceptedCandidateEvidenceRecord(
+        evidenceID: record.verificationEvidenceID, candidateID: record.candidateID,
+        kind: .verification, sourceIdentity: source, artifactDigest: artifactDigest,
+        result: .passed
+    )
+    try store.saveAcceptedCandidateEvidence(persistedVerification)
+    try store.saveAcceptedCandidateEvidence(reviewEvidence)
+    let liveEvidence = try AcceptedCandidateEvidenceRecord(
+        evidenceID: record.uiAcceptedRunID!, candidateID: record.candidateID,
+        kind: .uiAcceptance, sourceIdentity: source, artifactDigest: artifactDigest,
+        result: .passed, receiptIdentifier: record.uiAcceptedReceiptID,
+        runIdentifier: record.uiAcceptedRunID, observedBundleIdentity: artifactIdentity
+    )
+    try store.saveAcceptedCandidateEvidence(liveEvidence)
+    guard case .valid = store.revalidateAcceptedCandidateUsingPersistedEvidence(
+        record.candidateID, project: project
+    ) else {
+        throw AcceptedCandidateCheckFailure(message: "persisted receipt and evidence did not revalidate")
+    }
+    let forgedReview = try AcceptedCandidateEvidenceRecord(
+        evidenceID: UUID(), candidateID: record.candidateID, kind: .review,
+        sourceIdentity: source, artifactDigest: artifactDigest, result: .passed
+    )
+    do {
+        try store.saveAcceptedCandidateEvidence(forgedReview)
+        throw AcceptedCandidateCheckFailure(message: "unlinked review evidence was persisted")
+    } catch let error as AppDeliveryReceiptStore.StoreError {
+        guard error == .identityMismatch else { throw error }
+    }
+    print("PASS persisted candidate receipt, verifier, reviewer and live evidence gate; UUID-only records refused")
     guard case .invalid(.evidenceMismatch) = store.revalidateAcceptedCandidate(
         record.candidateID, project: project, receipt: receipt,
         expectedVerificationEvidenceID: UUID(), expectedReviewEvidenceID: record.reviewEvidenceID

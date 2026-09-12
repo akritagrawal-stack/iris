@@ -17,6 +17,10 @@ nonisolated struct AcceptedCandidateRecord: Codable, Equatable, Sendable {
         case artifactDigestMismatch
         case receiptMissing
         case receiptMismatch
+        case verificationEvidenceMissing
+        case reviewEvidenceMissing
+        case liveEvidenceMissing
+        case liveEvidenceMismatch
     }
 
     let version: Int

@@ -363,6 +363,8 @@ struct BlueCursorView: View {
             Color.black.opacity(0.001)
                 .allowsHitTesting(false)
 
+            guideTargetOutlineOnThisScreen
+
             // Welcome speech bubble (first launch only)
             if isCursorOnThisScreen && showWelcome && !welcomeText.isEmpty {
                 Text(welcomeText)
@@ -653,6 +655,29 @@ struct BlueCursorView: View {
             }
 
             startNavigatingToElement(screenLocation: screenLocation)
+        }
+    }
+
+    /// A small visual boundary around the exact target Iris has freshly
+    /// resolved. This remains in the overlay's click-through surface, so the
+    /// reader still clicks the underlying app directly.
+    @ViewBuilder
+    private var guideTargetOutlineOnThisScreen: some View {
+        if let target = companionManager.guideTargetOutline,
+           screenFrame.intersects(target.rectangle) {
+            let localRectangle = CGRect(
+                x: target.rectangle.minX - screenFrame.minX,
+                y: screenFrame.maxY - target.rectangle.maxY,
+                width: target.rectangle.width,
+                height: target.rectangle.height
+            )
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .stroke(DS.Colors.overlayCursorBlue.opacity(0.92), lineWidth: 2)
+                .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.35), radius: 6)
+                .frame(width: localRectangle.width, height: localRectangle.height)
+                .position(x: localRectangle.midX, y: localRectangle.midY)
+                .accessibilityHidden(true)
+                .allowsHitTesting(false)
         }
     }
 

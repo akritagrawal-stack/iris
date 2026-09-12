@@ -413,6 +413,11 @@ final class GuideSessionController: ObservableObject {
     /// controller knowing anything about overlays or windows.
     var sendTheEyeTo: ((CGPoint, CGRect, String) -> Void)?
     var stopPointingTheEye: (() -> Void)?
+    /// The click-through outline is deliberately separate from the eye flight.
+    /// A legacy rectangle can still guide the eye, but only fresh semantic
+    /// evidence may draw an outline around a real control.
+    var showGuideTargetOutline: ((GuideTargetEvidence) -> Void)?
+    var clearGuideTargetOutline: (() -> Void)?
 
     /// Fired exactly once, the moment the reader reaches the completion card, so
     /// `CompanionManager` can open the freshly installed app and refresh the
@@ -547,6 +552,10 @@ final class GuideSessionController: ObservableObject {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.theReaderCanSeeTheGuideStepRightNow else { return }
+                // The previous target may belong to the app that just lost
+                // focus. Clear it before the debounced re-resolution rather
+                // than letting a stale outline remain visible during a switch.
+                self.clearGuideTargetOutline?()
                 self.refreshPointingOnceAppActivationsHaveSettled()
             }
         }
@@ -737,6 +746,11 @@ final class GuideSessionController: ObservableObject {
                 )
             self.pointingDecisionForTheOpenStep = outcome.decision
             if let location = outcome.screenLocation, let displayFrame = outcome.displayFrame {
+                if outcome.freshness == .fresh, let evidence = outcome.targetEvidence {
+                    self.showGuideTargetOutline?(evidence)
+                } else {
+                    self.clearGuideTargetOutline?()
+                }
                 // Same step, same place, same words — the eye is already
                 // saying it, so saying it again is noise, not help. Anything
                 // that is genuinely new (the step moved on, the window moved,

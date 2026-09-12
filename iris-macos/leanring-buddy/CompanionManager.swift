@@ -24,6 +24,14 @@ enum CompanionAssistantState {
     case pointing
 }
 
+/// A semantically verified guide target that the overlay may outline. The
+/// overlay is visual-only and never receives mouse events, so it cannot turn
+/// a guide hint into an unintended click.
+struct GuideTargetOutline: Equatable {
+    let rectangle: CGRect
+    let fingerprint: GuideTargetFingerprint
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var assistantState: CompanionAssistantState = .idle
@@ -126,6 +134,10 @@ final class CompanionManager: ObservableObject {
     /// Custom speech bubble text for the pointing animation. When set,
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
+    /// Nil unless the latest guide lookup carries fresh semantic evidence.
+    /// Geometry-only and stale results can move the eye but cannot outline a
+    /// control, because a rectangle alone does not identify what it contains.
+    @Published var guideTargetOutline: GuideTargetOutline?
 
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
@@ -1336,6 +1348,7 @@ final class CompanionManager: ObservableObject {
         detectedElementScreenLocation = nil
         detectedElementDisplayFrame = nil
         detectedElementBubbleText = nil
+        guideTargetOutline = nil
         // The buddy has flown back to the cursor — pointing is over.
         if assistantState == .pointing {
             assistantState = .idle
@@ -1383,11 +1396,26 @@ final class CompanionManager: ObservableObject {
             self.detectedElementDisplayFrame = displayFrame
         }
 
+        guideSessionController.showGuideTargetOutline = { [weak self] evidence in
+            guard let self,
+                  GuidePointingFreshness.validateCurrentObservation(evidence) == .fresh
+            else { return }
+            self.guideTargetOutline = GuideTargetOutline(
+                rectangle: evidence.rectangle,
+                fingerprint: evidence.fingerprint
+            )
+        }
+
+        guideSessionController.clearGuideTargetOutline = { [weak self] in
+            self?.guideTargetOutline = nil
+        }
+
         guideSessionController.stopPointingTheEye = { [weak self] in
             guard let self else { return }
             self.detectedElementScreenLocation = nil
             self.detectedElementDisplayFrame = nil
             self.detectedElementBubbleText = nil
+            self.guideTargetOutline = nil
             // Only stand down if the eye was pointing *for the guide*. A model
             // answer mid-flight has its own reason to be pointing.
             if self.assistantState == .pointing { self.assistantState = .idle }
@@ -1738,6 +1766,8 @@ final class CompanionManager: ObservableObject {
         hangProbeTimer = nil
         guideSessionController.sendTheEyeTo = nil
         guideSessionController.stopPointingTheEye = nil
+        guideSessionController.showGuideTargetOutline = nil
+        guideSessionController.clearGuideTargetOutline = nil
         guideSessionController.onGuideCompleted = nil
         guideSessionController.surfaceTheGuideCardAtTheEye = nil
         guideSessionController.onAutopilotDidStart = nil

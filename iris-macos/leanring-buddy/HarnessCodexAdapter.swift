@@ -178,6 +178,7 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
     private var replayableEditInputBytes: UInt64?
     private var replayableEditReservationID: HarnessRunReservationID?
     private var replayableEditImageBytes: UInt64 = 0
+    private var replayableEditImageCount: UInt64 = 0
     private var replayableEditImageWasRetired = false
     private var reservedReviewCalls: UInt64 = 1
     private var initialCorrectionReserveCalls: UInt64 = 0
@@ -278,6 +279,7 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
               !replayableEditImageWasRetired,
               let reservationID = replayableEditReservationID,
               replayableEditImageBytes == rawImageBytes,
+              replayableEditImageCount == 1,
               let settled = workflow.modelSession.ledger.settledCalls.first(where: {
                   $0.reservation.id == reservationID
               }),
@@ -454,6 +456,7 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
                 replayableEditReservationID = reservation.id
                 replayableEditInputBytes = reservation.inputBytesReserved
                 replayableEditImageBytes = workflow.modelSession.lastAdmittedInputCounts?.rawImageBytes ?? 0
+                replayableEditImageCount = workflow.modelSession.lastAdmittedInputCounts?.imageCount ?? 0
                 replayableEditImageWasRetired = false
             }
             throw error
@@ -463,6 +466,7 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
             replayableEditReservationID = reservation.id
             replayableEditInputBytes = reservation.inputBytesReserved
             replayableEditImageBytes = workflow.modelSession.lastAdmittedInputCounts?.rawImageBytes ?? 0
+            replayableEditImageCount = workflow.modelSession.lastAdmittedInputCounts?.imageCount ?? 0
             replayableEditImageWasRetired = false
         }
         if phase == .review && reviewPurpose != .nativeCodeAdmission {

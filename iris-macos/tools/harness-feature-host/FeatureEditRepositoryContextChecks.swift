@@ -5,6 +5,81 @@ import Foundation
 struct FeatureEditRepositoryContextChecks {
     enum Failure: Error { case assertion(String) }
 
+    // Recorded from the production repo-map call-site for the recovered Nitro
+    // tree. The fixture remains portable and does not read a live user path.
+    static let recordedNitroCandidateOrder: [String] = [
+            "electron/transfer-native-oracle/transfer-fixture.mjs",
+            "src/lib/types.ts",
+            "server/ollama.mjs",
+            "src/lib/markdown.ts",
+            "src/lib/ingest/youtube.ts",
+            "src/pages/Dashboard.tsx",
+            "src-tauri/src/lib.rs",
+            "src/lib/generation/index.ts",
+            "electron/transfer-native-oracle/transfer.test.mjs",
+            "src/lib/engine/types.ts",
+            "src/lib/transfer.ts",
+            "src/components/BlockEditor.tsx",
+            "src/components/QuizView.tsx",
+            "src/lib/prompts/index.ts",
+            "src/components/Assistant.tsx",
+            "src/pages/Settings.tsx",
+            "server/httpServer.mjs",
+            "src/lib/study/fsrs.ts",
+            "electron/main.mjs",
+            "electron/transfer-native-oracle/cases.mjs",
+            "src/components/FlashcardsView.tsx",
+            "src/lib/app.tsx",
+            "src/lib/db/db.test.ts",
+            "src/lib/export.ts",
+            "src/lib/generation/pipeline.ts",
+            "server/ytdlp.mjs",
+            "src/components/CreateNoteModal.tsx",
+            "src/components/PodcastPanel.tsx",
+            "src/lib/engine/keys.ts",
+            "src/lib/ingest/index.ts",
+            "src/lib/localSetup.ts",
+            "src/pages/NoteView.tsx",
+            "src/lib/engine/anthropic.ts",
+            "src/lib/engine/local.ts",
+            "src/lib/engine/openai.ts",
+            "src/lib/engine/resilient.ts",
+            "src/lib/generation/chunk.ts",
+            "src/lib/theme.ts",
+            "src/pages/Onboarding.tsx",
+            "electron/persistence.mjs",
+            "server/ollama.test.mjs",
+            "src/lib/engine/engine.test.ts",
+            "src/lib/engine/index.ts",
+            "src/lib/engine/router.ts",
+            "src/lib/ingest/docx.ts",
+            "src/lib/ingest/pdf.ts",
+            "src/lib/localSetup.test.ts",
+            "src/lib/prefs.ts",
+            "src/lib/study/mastery.ts",
+            "src/lib/study/study.test.ts",
+            "vite.youtube-plugin.ts",
+            "electron/persistence.test.mjs",
+            "src/lib/db/index.ts",
+            "src/lib/db/memory.ts",
+            "src/lib/engine/cli.ts",
+            "src/lib/generation/generation.test.ts",
+            "src/lib/ingest/text.ts",
+            "src/lib/markdown.test.ts",
+            "electron/persistence-fixture.mjs",
+            "src-tauri/build.rs",
+            "src-tauri/src/main.rs",
+            "src/App.tsx",
+            "src/components/AppShell.tsx",
+            "src/components/CreateNoteModal.test.tsx",
+            "src/components/LocalSetupModal.tsx",
+            "src/lib/db/idb.ts",
+            "src/lib/engine/resilient.test.ts",
+            "src/lib/ingest/url.ts",
+            "src/lib/transfer.test.ts",
+            "src/pages/Dashboard.test.tsx",
+    ]
+
     @MainActor static func require(_ value: Bool, _ message: String) throws {
         if !value { throw Failure.assertion(message) }
     }
@@ -36,13 +111,49 @@ struct FeatureEditRepositoryContextChecks {
         print("PASS review context: depth-two user-facing consumer traversal is bounded")
         try preservesRealNitroConsumerBodiesThroughNativeReviewContext()
         print("PASS review context: recorded Nitro save/download bodies reach native evidence and reviewer prompt")
+        try refusesOversizedMandatoryBodyWithoutPartialAcceptance()
+        print("PASS review context: oversized mandatory body is omitted without partial acceptance")
         try prioritizesUserFacingConsumersAndHelpersOverGenericLibraryFallbacks()
         print("PASS review context: user-facing callers and their helpers win bounded review context")
         try refusesUnsafeConsumerCandidatesAndBoundsDiscovery()
         print("PASS review context: consumer candidates remain confined and count-bounded")
         try boundsConsumerDiscoveryBytes()
         print("PASS review context: reverse-source scan has a separate local byte ceiling")
-        print("FEATURE EDIT REPOSITORY CONTEXT CHECKS PASS: 16 groups")
+        print("FEATURE EDIT REPOSITORY CONTEXT CHECKS PASS: 17 groups")
+    }
+
+    @MainActor static func refusesOversizedMandatoryBodyWithoutPartialAcceptance() throws {
+        let root = try makeFixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oversizedByteCount = FeatureEditRepositoryContext.maximumPermittedByteBudget + 1
+        try writePaddedSource(
+            "src/oversized.ts",
+            body: "export const mandatory = true;\n",
+            byteCount: oversizedByteCount,
+            under: root
+        )
+        let context = FeatureEditRepositoryContext.collectReviewContext(
+            repoRootPath: root.path,
+            changedTestPaths: [],
+            declaredNativeTestPaths: [],
+            changedPaths: ["src/oversized.ts"],
+            sameDirectoryNeighborPaths: [],
+            maxFileCount: 24,
+            maxBytes: FeatureEditRepositoryContext.maximumPermittedByteBudget
+        )
+        try require(
+            context.files.isEmpty && context.omittedFileCount == 1
+                && context.unrequestedPathCount == 0,
+            "oversized mandatory source was partially accepted or misreported"
+        )
+        let diff = "diff --git a/src/oversized.ts b/src/oversized.ts\n+export const mandatory = true;"
+        try require(
+            HarnessNativeVerificationSequence.NativeAdmissionEvidence.capture(
+                diff: diff,
+                context: context
+            ) == nil,
+            "native admission accepted context missing an oversized mandatory body"
+        )
     }
 
     @MainActor static func preservesRealNitroConsumerBodiesThroughNativeReviewContext() throws {
@@ -108,10 +219,7 @@ struct FeatureEditRepositoryContextChecks {
             declaredNativeTestPaths: [],
             changedPaths: changedPaths,
             sameDirectoryNeighborPaths: [],
-            candidateSourcePaths: [
-                "src/lib/markdown.ts", "src/pages/Dashboard.tsx", "src/lib/app.tsx",
-                "src/lib/export.ts", "src/pages/NoteView.tsx",
-            ],
+            candidateSourcePaths: recordedNitroCandidateOrder,
             isNativeFinalReview: true,
             maxFileCount: 24,
             maxBytes: FeatureEditRepositoryContext.maximumPermittedByteBudget
@@ -738,6 +846,11 @@ struct FeatureEditRepositoryContextChecks {
         ]), "a fallback neighbor displaced a required dependency")
         try require(Set(paths).count == paths.count, "final context contains duplicate paths")
         try require(context.includedByteCount <= 4096, "final context exceeded byte bound")
+        try require(
+            context.unrequestedPathCount == 10
+                && context.promptSection.contains("10 discovered candidate path(s)"),
+            "bounded candidate paths were not reported separately from requested omissions"
+        )
     }
 
     @MainActor static func makeFixtureRoot() throws -> URL {

@@ -39,9 +39,25 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
     /// their names back to a model.
     let omittedFileCount: Int
 
+    /// Count of discovered candidate paths outside the final bounded request.
+    /// Discovery is a ranking hint; these paths were not included or reviewed.
+    let unrequestedPathCount: Int
+
     /// The effective byte budget used by the collector. It is capped even when
     /// a caller supplies an unexpectedly large value.
     let maxBytes: Int
+
+    init(
+        files: [FeatureEditRepositoryContextFile],
+        omittedFileCount: Int,
+        unrequestedPathCount: Int = 0,
+        maxBytes: Int
+    ) {
+        self.files = files
+        self.omittedFileCount = omittedFileCount
+        self.unrequestedPathCount = unrequestedPathCount
+        self.maxBytes = maxBytes
+    }
 
     /// Bytes of complete file contents included in `files`.
     var includedByteCount: Int {
@@ -81,11 +97,17 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
         if omittedFileCount > 0 {
             lines.append(
                 "\(omittedFileCount) requested file(s) were not included by the safety or byte bounds. "
-                    + "Paths not shown were not inspected and their absence is not evidence that a guard is missing."
+                    + "Their bodies are unseen final-review evidence; their absence is not evidence that a guard is missing."
             )
         } else {
             lines.append(
-                "Only the selected files above were inspected; this is not a complete repository snapshot."
+                "Only the selected files above are supplied as final-review evidence; this is not a complete repository snapshot."
+            )
+        }
+        if unrequestedPathCount > 0 {
+            lines.append(
+                "\(unrequestedPathCount) discovered candidate path(s) were outside the final bounded request "
+                    + "and were not included or reviewed."
             )
         }
         return lines.joined(separator: "\n")
@@ -106,6 +128,7 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
             return FeatureEditRepositoryContext(
                 files: [],
                 omittedFileCount: normalizedRelativePaths.count,
+                unrequestedPathCount: 0,
                 maxBytes: effectiveMaxBytes
             )
         }
@@ -142,6 +165,7 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
         return FeatureEditRepositoryContext(
             files: files,
             omittedFileCount: omittedFileCount,
+            unrequestedPathCount: 0,
             maxBytes: effectiveMaxBytes
         )
     }
@@ -217,7 +241,7 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
             preferredDependencySourceByPath: preferredDependencySourceByPath
         )
         let sharedUserFacingDependencies = consumerDiscovery.sharedDependencyPaths(
-            from: userFacingDependencies
+            from: userFacingDependencies.filter { !normalizedChangedPaths.contains($0) }
         )
         let scannedCandidatePaths = Set(consumerDiscovery.importedPathsByCandidate.keys)
         let unscannedUserFacingDependencies = userFacingDependencies.filter {
@@ -230,6 +254,28 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
         let userFacingConsumers = userFacingChangedPaths.isEmpty
             ? []
             : userFacingPaths(in: consumerPaths)
+        let sharedDependencySet = Set(sharedUserFacingDependencies)
+        let linkedUserFacingConsumers = userFacingConsumers.filter {
+            !sharedDependencySet.isDisjoint(
+                with: consumerDiscovery.importedPathsByCandidate[$0, default: []]
+            )
+        }.sorted {
+            let leftSharedCount = sharedDependencySet.intersection(
+                consumerDiscovery.importedPathsByCandidate[$0, default: []]
+            ).count
+            let rightSharedCount = sharedDependencySet.intersection(
+                consumerDiscovery.importedPathsByCandidate[$1, default: []]
+            ).count
+            if leftSharedCount != rightSharedCount { return leftSharedCount > rightSharedCount }
+            let leftBytes = consumerDiscovery.byteCountByCandidate[$0] ?? Int.max
+            let rightBytes = consumerDiscovery.byteCountByCandidate[$1] ?? Int.max
+            if leftBytes != rightBytes { return leftBytes < rightBytes }
+            return $0 < $1
+        }
+        let unlinkedUserFacingConsumers = userFacingConsumers.filter {
+            !linkedUserFacingConsumers.contains($0)
+        }
+        let orderedUserFacingConsumers = linkedUserFacingConsumers + unlinkedUserFacingConsumers
         let orderedPaths = deduplicatedRelativePaths(
             (isNativeFinalReview
                 ? declaredNativeTestPaths + changedTestPaths
@@ -238,14 +284,18 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
                 + normalizedChangedPaths
                 + sharedUserFacingDependencies
                 + unscannedUserFacingDependencies
-                + userFacingConsumers
+                + orderedUserFacingConsumers
                 + userFacingDependencies
                 + consumerPaths
                 + allDirectDependencyPaths
                 + sameDirectoryNeighborPaths
         )
 
-        let selectedPaths = Array(orderedPaths.prefix(effectiveFileCount))
+        // The final collector request is itself bounded to the caller's file
+        // limit. Candidate discovery may inspect more paths to rank consumers,
+        // but those paths are explicitly outside this review request.
+        let boundedOrderedPaths = Array(orderedPaths.prefix(effectiveFileCount))
+        let selectedPaths = boundedOrderedPaths
         let collected = collect(
             repoRootPath: repoRootPath,
             relativePaths: selectedPaths,
@@ -253,7 +303,8 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
         )
         return FeatureEditRepositoryContext(
             files: collected.files,
-            omittedFileCount: collected.omittedFileCount + (orderedPaths.count - selectedPaths.count),
+            omittedFileCount: collected.omittedFileCount,
+            unrequestedPathCount: orderedPaths.count - boundedOrderedPaths.count,
             maxBytes: collected.maxBytes
         )
     }
@@ -324,6 +375,7 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
     private struct ConsumerDiscovery {
         let paths: [String]
         let importedPathsByCandidate: [String: Set<String>]
+        let byteCountByCandidate: [String: Int]
 
         /// Promote only a small number of changed-file dependencies that are
         /// shared by page/UI sources in the already-scanned candidate set.
@@ -332,7 +384,8 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
         func sharedDependencyPaths(from dependencyPaths: [String]) -> [String] {
             let scored = dependencyPaths.enumerated().compactMap { index, path -> (String, Int, Int)? in
                 let pageConsumerCount = importedPathsByCandidate.reduce(into: 0) { count, entry in
-                    if entry.key != path,
+                    if paths.contains(entry.key),
+                       entry.key != path,
                        FeatureEditRepositoryContext.userFacingPaths(in: [entry.key]).isEmpty == false,
                        entry.value.contains(path) {
                         count += 1
@@ -381,7 +434,7 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
     ) -> ConsumerDiscovery {
         let changed = Set(changedPaths.filter(isEligibleRelativePath))
         guard !changed.isEmpty else {
-            return ConsumerDiscovery(paths: [], importedPathsByCandidate: [:])
+            return ConsumerDiscovery(paths: [], importedPathsByCandidate: [:], byteCountByCandidate: [:])
         }
         var remainingScanBytes = maximumConsumerScanBytes
         let candidatePaths = Array(
@@ -389,6 +442,7 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
         )
         let candidateSet = Set(candidatePaths.filter(isEligibleRelativePath))
         var importedPathsByCandidate: [String: Set<String>] = [:]
+        var byteCountByCandidate: [String: Int] = [:]
         for path in candidatePaths {
             guard remainingScanBytes > 0 else { break }
             guard !changed.contains(path),
@@ -400,6 +454,7 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
             )
             guard let source = context.files.first else { continue }
             remainingScanBytes -= source.utf8ByteCount
+            byteCountByCandidate[path] = source.utf8ByteCount
             let importedPaths = Set(localModuleSpecifiers(
                 in: source.utf8Text, limit: maximumDependencySpecifierCount
             ).flatMap { specifier in
@@ -431,7 +486,8 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
         return ConsumerDiscovery(
             paths: userFacingConsumerPaths
                 + consumerPaths.filter { !userFacingSet.contains($0) },
-            importedPathsByCandidate: importedPathsByCandidate
+            importedPathsByCandidate: importedPathsByCandidate,
+            byteCountByCandidate: byteCountByCandidate
         )
     }
 

@@ -29,6 +29,9 @@ import Testing
         for request in [
             "Add export and import for notes and folders",
             "Fix screen rendering after relaunch",
+            "Add image import and export",
+            "Export photos to a folder",
+            "Rename screenshot.png when saving",
             "Fix the settings command so it persists after relaunch",
             "Make the build finish without the missing dependency",
             "Add a keyboard shortcut for opening the project picker",
@@ -47,6 +50,7 @@ import Testing
             "The screenshot shows the bug",
             "Why is this wrong on screen?",
             "Fix what is visible in the current view",
+            "Can you change what you see here?",
         ] {
             #expect(
                 OnDemandEditCoordinator.requestExplicitlyReferencesVisualContext(request),

@@ -525,16 +525,15 @@ final class OnDemandEditCoordinator: ObservableObject {
         let words = request
             .lowercased()
             .split { !$0.isLetter && !$0.isNumber }
-        let visualWords: Set<String> = [
-            "image", "images", "screenshot", "screenshots", "picture", "pictures", "photo", "photos"
+        let visualPhrases: Set<String> = [
+            "this screenshot", "that screenshot", "the screenshot", "screenshot shows",
+            "this image", "that image", "the image", "image says", "image shows",
+            "this picture", "that picture", "the picture", "picture shows",
+            "this photo", "that photo", "the photo", "photo shows",
+            "what you see", "current view", "on screen", "my screen", "this screen", "the screen",
         ]
-        if words.contains(where: { visualWords.contains(String($0)) }) {
-            return true
-        }
-        let visualPhrases: Set<String> = ["current view", "on screen", "my screen", "this screen", "the screen"]
-        return zip(words, words.dropFirst()).contains { first, second in
-            visualPhrases.contains("\(first) \(second)")
-        }
+        let normalizedRequest = words.map(String.init).joined(separator: " ")
+        return visualPhrases.contains { normalizedRequest.contains($0) }
     }
 
     /// Shared by the Apps panel and the coordinator itself. Keeping this as a

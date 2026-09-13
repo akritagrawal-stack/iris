@@ -247,4 +247,17 @@ struct OnDemandEditInterruptedRunRecoveryTests {
             .init(path: "with space.rs", isUntracked: false),
         ])
     }
+
+    // MARK: - 5. Failed native-review retention gates
+
+    @Test func failedReviewRetentionAcceptsOnlySafeRelativeSourcePaths() {
+        #expect(MaintainTierCFixer.isSafeRetainedPath("src/feature.swift"))
+        #expect(MaintainTierCFixer.isSafeRetainedPath("Sources/My File.swift"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath("/tmp/foreign.swift"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath("../foreign.swift"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath("src/../foreign.swift"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath(".git/index"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath("src/\nforeign.swift"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath(""))
+    }
 }

@@ -448,7 +448,9 @@ enum MaintainSavedChangeRechecker {
                 verification.verificationEvidence = nil
                 progress?(.verificationCompleted(receipt: verification.editReceipt))
                 return .couldNotComplete(
-                    reason: "the saved candidate failed declared desktop verification; source remains for review"
+                    reason: "the saved candidate failed declared desktop verification at "
+                        + (nativeOutcome.blockedStage ?? "an unknown native stage")
+                        + "; source remains for review"
                 )
             }
             guard provider.behaviorAssessment?.permitsAutomaticDelivery(

@@ -651,6 +651,12 @@ final class OnDemandEditCoordinator: ObservableObject {
     private var harnessWorkflow: HarnessFeatureWorkflow?
     @Published private var editTask: Task<Void, Never>?
     private var activeEditRunID: UUID?
+    /// Set only for the current Test feature run's native-review retention
+    /// attempt. A failed callback is cleared after the fixer confirms the
+    /// existing cleanup made the source clean; a successful one must survive
+    /// into the review-held recovery record.
+    private var failedReviewRetentionAttempted = false
+    private var failedReviewRetentionSucceeded = false
     private var flowGeneration = UUID()
     private var unverifiedTestCandidateIsAvailable = false
     private var unverifiedTestCandidateRegistryProject: IrisTestProjectRegistry.Project?
@@ -1243,6 +1249,7 @@ final class OnDemandEditCoordinator: ObservableObject {
 
     private static func harnessPerformer(workflow: HarnessFeatureWorkflow,
         existingCandidate: PendingEditCandidateIdentity? = nil,
+        failedReviewRetention: MaintainTierCFailedReviewRetention? = nil,
         assessment: @escaping (HarnessBehaviorAssessment?) -> Void) -> OnDemandEditPerformer {
         { clonePath, slug, stack, changeID, request, kind, progress, cancellation, evidence, sections, approval in
             let provider = HarnessWorkflowMaintainProvider(workflow: workflow)
@@ -1275,7 +1282,8 @@ final class OnDemandEditCoordinator: ObservableObject {
                 additionalPromptSections: sections, manifestChangeApproval: approval,
                 priorAttemptsDidNotCureTheComplaint:
                     OnDemandEditRunLog.priorAttemptsDidNotCureTheComplaint(
-                        forAppSlug: slug, request: request, kind: kind))
+                        forAppSlug: slug, request: request, kind: kind),
+                failedReviewRetention: failedReviewRetention)
             assessment(provider.behaviorAssessment)
             return result
         }
@@ -1958,6 +1966,8 @@ final class OnDemandEditCoordinator: ObservableObject {
         adversarialReviewIssues = []
         deliveryProgress = EditDeliveryProgress()
         readerAskedToStopTheRun = false
+        failedReviewRetentionAttempted = false
+        failedReviewRetentionSucceeded = false
         // A previous attempt's dirty-clone refusal is about a tree that is
         // being re-read right now — the offer must not survive into a run.
         dirtyCloneRefusal = nil
@@ -2235,7 +2245,17 @@ final class OnDemandEditCoordinator: ObservableObject {
         var runAssessment: HarnessBehaviorAssessment?
         if let workflow {
             harnessBehaviorAssessment = nil
-            performer = Self.harnessPerformer(workflow: workflow, existingCandidate: recheckIdentity) { [weak self] assessment in
+            let retainFailedReview: MaintainTierCFailedReviewRetention? = { [weak self] request in
+                guard let self else { return false }
+                return await self.retainFailedReviewCandidate(
+                    request, workflow: workflow, runID: runID
+                )
+            }
+            performer = Self.harnessPerformer(
+                workflow: workflow,
+                existingCandidate: recheckIdentity,
+                failedReviewRetention: retainFailedReview
+            ) { [weak self] assessment in
                 guard let self, self.activeEditRunID == runID else { return }
                 runAssessment = assessment
                 self.harnessBehaviorAssessment = assessment
@@ -2393,6 +2413,16 @@ final class OnDemandEditCoordinator: ObservableObject {
                 && finalStatus?.outputTail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true
             let failureMessage = Self.sourceAwareFailureMessage(mapped: mapped.userFacing,
                 reason: reason, status: finalStatus)
+            // A retention attempt may have written the review-required marker
+            // before a later identity or staging gate refused it. If the
+            // fixer's ordinary cleanup confirms a clean source, that marker is
+            // no longer useful and must not strand the next run behind a stale
+            // review card. A dirty/unknown result deliberately keeps it.
+            if failedReviewRetentionAttempted,
+               !failedReviewRetentionSucceeded,
+               sourceConfirmedClean {
+                OnDemandEditInterruptedRunRecovery.forget()
+            }
             if !sourceConfirmedClean {
                 rememberTheUncommittedEditsInCaseIrisGoesAway(waitingOn: "Review incomplete edit before retrying")
                 if var recovery = OnDemandEditInterruptedRunRecovery.recordOnDisk(),
@@ -5302,6 +5332,165 @@ final class OnDemandEditCoordinator: ObservableObject {
         statusLine = reason
     }
 
+    /// Preserve a failed native review as a checked, staged Test candidate.
+    /// This is intentionally the only writer for this seam: the fixer supplies
+    /// the model-owned path set, while this coordinator rechecks Test identity,
+    /// the active run, Git HEAD/ref and the registry snapshot before writing
+    /// `requiresReviewBeforeRecovery`. It stages only those exact paths and
+    /// returns true only after `PendingEditCandidateIdentity` and the persisted
+    /// record both round-trip and still match. No install, native command or
+    /// acceptance claim happens here.
+    private func retainFailedReviewCandidate(
+        _ request: MaintainFailedReviewRetentionRequest,
+        workflow: HarnessFeatureWorkflow,
+        runID: UUID
+    ) async -> Bool {
+        failedReviewRetentionAttempted = true
+
+        guard IrisTestEnvironment.isEnabled,
+              request.kind == .feature,
+              request.blockedStage == "native-review-required"
+                || request.blockedStage == "native-final-review",
+              request.receipt.nativeTestsRequired,
+              request.receipt.failureStage == request.blockedStage,
+              activeEditRunID == runID,
+              phase == .running,
+              harnessWorkflow === workflow,
+              workflow.state != nil,
+              activeAppSlug == request.appSlug,
+              resolvedClonePath == request.clonePath,
+              let baseCommit = originalHeadCommit,
+              let branchName = originalHeadRef,
+              branchName != "HEAD",
+              let scrubbedRequest = scrubbedRequest,
+              request.changedPaths == request.modelOwnedPaths,
+              !request.changedPaths.isEmpty,
+              request.changedPaths == Array(Set(request.changedPaths)).sorted(),
+              request.changedPaths.allSatisfy(MaintainTierCFixer.isSafeRetainedPath),
+              MaintainBuildScriptGuard.buildScriptFilePaths(
+                  inChangedPaths: request.changedPaths
+              ).isEmpty,
+              let project = IrisTestProjectRegistry.project(slug: request.appSlug),
+              project.clonePath == request.clonePath,
+              let runner = try? MaintainShellRunner(repoRootPath: request.clonePath),
+              runner.isTestProcessPolicy,
+              MaintainSandbox.canonicalExistingDirectory(request.clonePath) == request.clonePath,
+              runner.repoRootPath == request.clonePath else {
+            return false
+        }
+
+        func readPaths(_ command: String) async -> [String]? {
+            guard let result = try? await runner.run(command, deadline: 30),
+                  result.succeeded, result.bytesDroppedBeforeTail == 0 else { return nil }
+            guard !result.outputTail.isEmpty else { return [] }
+            guard result.outputTail.utf8.last == 0 else { return nil }
+            let paths = result.outputTail
+                .split(separator: "\0", omittingEmptySubsequences: true)
+                .map(String.init)
+            guard Set(paths).count == paths.count,
+                  paths.allSatisfy(MaintainTierCFixer.isSafeRetainedPath) else { return nil }
+            return paths.sorted()
+        }
+
+        func quote(_ path: String) -> String {
+            "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+
+        func unstage(_ paths: [String]) async {
+            guard !paths.isEmpty else { return }
+            _ = try? await runner.run(
+                "git -c core.hooksPath=/dev/null -c core.fsmonitor=false reset --quiet HEAD -- "
+                    + paths.map(quote).joined(separator: " "),
+                deadline: 60
+            )
+        }
+
+        // Re-read the source after all gates and before creating the marker;
+        // an extra foreign file or a model/tool race is a refusal, not a reason
+        // to broaden the staged set.
+        guard let currentBeforeRecord = await readPaths(
+            "git diff --name-only --no-renames -z HEAD"
+        ),
+        let currentUntrackedBeforeRecord = await readPaths(
+            "git ls-files --others --exclude-standard -z"
+        ),
+        Array(Set(currentBeforeRecord + currentUntrackedBeforeRecord)).sorted()
+            == request.modelOwnedPaths else { return false }
+
+        // Verify the current base and branch once before persisting metadata.
+        // PendingEditCandidateIdentity repeats these checks after staging.
+        guard let head = try? await runner.run(
+            "git rev-parse --verify HEAD^{commit}", deadline: 30
+        ), head.succeeded,
+        head.outputTail.trimmingCharacters(in: .whitespacesAndNewlines) == baseCommit,
+        let ref = try? await runner.run(
+            "git symbolic-ref --quiet HEAD", deadline: 30
+        ), ref.succeeded,
+        ref.outputTail.trimmingCharacters(in: .whitespacesAndNewlines)
+            == "refs/heads/\(branchName)" else { return false }
+
+        // Persist the review-required marker BEFORE touching the index. A
+        // readback failure makes the retention attempt ineligible and the
+        // caller falls through to the existing cleanup path.
+        let existing = OnDemandEditInterruptedRunRecovery.recordOnDisk()
+        if let existing {
+            guard existing.appSlug == request.appSlug,
+                  existing.clonePath == request.clonePath,
+                  existing.baseCommit == baseCommit,
+                  existing.requiresReviewBeforeRecovery != true,
+                  existing.pendingCandidate == nil else { return false }
+        }
+        var held = existing ?? OnDemandEditInFlightRecord(
+            appSlug: request.appSlug,
+            clonePath: request.clonePath,
+            baseCommit: baseCommit,
+            pathsIrisEdited: request.modelOwnedPaths,
+            startedAt: Date(),
+            runLogPath: runLog?.filePath,
+            whatIrisWasWaitingFor: nil
+        )
+        held.pathsIrisEdited = request.modelOwnedPaths
+        held.whatIrisWasWaitingFor = "Review incomplete edit before retrying"
+        held.requiresReviewBeforeRecovery = true
+        held.pendingCandidate = nil
+        held.recheckRequest = scrubbedRequest
+        OnDemandEditInterruptedRunRecovery.remember(held)
+        guard OnDemandEditInterruptedRunRecovery.recordOnDisk() == held else { return false }
+
+        // Stage exactly the verified model-owned paths; never `git add -A` or
+        // `git add .`. Candidate capture will reject symlink components,
+        // foreign staged paths, dirty worktree state and a moving HEAD/ref.
+        let addCommand = "git -c core.hooksPath=/dev/null -c core.fsmonitor=false add -- "
+            + request.modelOwnedPaths.map(quote).joined(separator: " ")
+        guard let added = try? await runner.run(addCommand, deadline: 60),
+              added.succeeded else {
+            return false
+        }
+
+        guard let candidate = try? await PendingEditCandidateIdentity.capture(
+            record: held, project: project, runner: runner
+        ) else {
+            await unstage(request.modelOwnedPaths)
+            return false
+        }
+
+        held.pathsIrisEdited = candidate.changedPaths
+        held.pendingCandidate = candidate
+        held.requiresReviewBeforeRecovery = true
+        OnDemandEditInterruptedRunRecovery.remember(held)
+        guard OnDemandEditInterruptedRunRecovery.recordOnDisk() == held,
+              await candidate.stillMatches(record: held, project: project, runner: runner) else {
+            await unstage(candidate.changedPaths)
+            return false
+        }
+
+        failedReviewRetentionSucceeded = true
+        runLog?.record(
+            "failed native review retained as a staged Test candidate (\(request.blockedStage)); source remains for fresh recheck"
+        )
+        return true
+    }
+
     /// The on-disk footprint of this run's uncommitted edits, refreshed each
     /// time the engine reports more of them and each time the run parks on a
     /// card. `OnDemandEditInterruptedRunRecovery` reads it at the next launch
@@ -5379,6 +5568,8 @@ final class OnDemandEditCoordinator: ObservableObject {
 
     private func resetInFlightState() {
         pendingUnverifiedTestDeliveryProject = nil
+        failedReviewRetentionAttempted = false
+        failedReviewRetentionSucceeded = false
         guard editTask == nil else { return }
         pendingRecheckIdentity = nil
         isRecheckingSavedChanges = false

@@ -1019,6 +1019,73 @@ struct OnDemandEditHarnessPlanningTests {
         #expect(fixture.coordinator.presentedPlan != nil)
     }
 
+    /// A re-submission replaces the planner immediately, without waiting for
+    /// its watchdog. The old session must become terminal before the new
+    /// workflow is installed, and its late transport settlement cannot alter
+    /// the new workflow's plan or ledger.
+    @Test func rapidResubmitRetiresThePriorPlannerLedger() async throws {
+        let recorder = PlannerProbeRecorder()
+        let firstRequest = "add the stale dark mode toggle"
+        let secondRequest = "add the replacement dark mode toggle"
+        let firstPlan = try Self.encodedPlan(
+            for: firstRequest,
+            desiredOutcome: "STALE RESUBMIT PLAN - must never be shown"
+        )
+        let secondPlan = try Self.encodedPlan(
+            for: secondRequest,
+            desiredOutcome: "REPLACEMENT PLAN - the current plan"
+        )
+        var factoryCalls = 0
+        var firstWorkflow: HarnessFeatureWorkflow?
+        var secondWorkflow: HarnessFeatureWorkflow?
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                factoryCalls += 1
+                if factoryCalls == 1 {
+                    let workflow = try Self.makeWorkflow { _ in
+                        _ = recorder.recordCall()
+                        return await Self.delayedReplyIgnoringCancellation(
+                            reply: firstPlan,
+                            delayNanoseconds: 250_000_000,
+                            recorder: recorder
+                        )
+                    }
+                    firstWorkflow = workflow
+                    return workflow
+                }
+                let workflow = try Self.makeWorkflow { _ in
+                    _ = recorder.recordCall()
+                    return HarnessModelReply(text: secondPlan)
+                }
+                secondWorkflow = workflow
+                return workflow
+            },
+            watchdogNanoseconds: 1_000_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest(firstRequest, kind: .feature))
+        #expect(await Self.waitUntil { recorder.callCount == 1 })
+        #expect(fixture.coordinator.describeRequest(secondRequest, kind: .feature))
+        #expect(firstWorkflow?.modelSession.ledger.snapshot.status == .stopped(.cancelled))
+        #expect(await Self.waitUntil {
+            fixture.coordinator.phase == .presentingPlan
+                && fixture.coordinator.presentedPlan?.approachSummary
+                    .contains("REPLACEMENT PLAN - the current plan") == true
+        })
+        #expect(factoryCalls == 2)
+        #expect(secondWorkflow?.modelSession.ledger.snapshot.status == .running)
+        let secondSnapshot = fixture.coordinator.harnessRunSnapshot
+
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(firstWorkflow?.modelSession.ledger.snapshot.status == .stopped(.cancelled))
+        #expect(firstWorkflow?.modelSession.ledger.snapshot.admittedCallCount == 1)
+        #expect(fixture.coordinator.harnessRunSnapshot == secondSnapshot)
+    }
+
     /// The first planner transport deliberately ignores cancellation: it
     /// settles after the watchdog and after the reader submits an immediate
     /// retry. The retry must own the visible plan, workflow state and ledger;

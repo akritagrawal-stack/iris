@@ -1480,8 +1480,12 @@ final class OnDemandEditCoordinator: ObservableObject {
         // runtime shape — are read live from the derived recipe at advance
         // time, so the "unknown stack" case still ASKS how to build (turning
         // the old wall into a capability) instead of hard-refusing.
+        let retiringHarnessWorkflow = harnessWorkflow
         requestProbeTask?.cancel()
         requestProbeWatchdog?.cancel()
+        if makeHarnessWorkflow != nil {
+            finishHarnessWorkflowIfCurrent(retiringHarnessWorkflow, reason: .cancelled)
+        }
         requestProbeGeneration += 1
         let probeGeneration = requestProbeGeneration
         isAssessingRequest = true

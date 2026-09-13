@@ -68,6 +68,9 @@ struct OnDemandEditInFlightRecord: Codable, Equatable {
     /// Shown for confirmation on recheck. Older records ask for the request
     /// again rather than reconstructing authority from a diagnostic log.
     var recheckRequest: String? = nil
+    /// The accepted pre-execution contract for a held candidate. Older records
+    /// omit this field and must take the ordinary fresh-planning path.
+    var savedFeatureContract: HarnessSavedFeatureContract? = nil
 }
 
 enum OnDemandEditInterruptedRunRecovery {

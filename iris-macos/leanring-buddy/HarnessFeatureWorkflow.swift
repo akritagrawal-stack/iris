@@ -171,6 +171,26 @@ final class HarnessFeatureWorkflow {
         self.maximumClarificationRounds = max(1, maximumClarificationRounds)
     }
 
+    /// Restore only the user-approved contract for a review-only recheck. No
+    /// planner response is involved; the caller has already bound the record
+    /// to the exact staged candidate and revalidates that binding before use.
+    func restoreSavedContract(_ contract: HarnessSavedFeatureContract) throws {
+        let restored = try contract.restoredState()
+        state = restored
+        pendingScopeReconciliation = nil
+        freeTextQuestionsAwaitingResolution = []
+        pendingResolvedQuestionIDs = []
+        clarificationRoundCount = 1
+        invalidatePendingPlanning()
+    }
+
+    func savedFeatureContract(candidateBindingDigest: String) throws -> HarnessSavedFeatureContract {
+        guard let state else { throw WorkflowError.missingPlan }
+        return try HarnessSavedFeatureContract(
+            state: state, candidateBindingDigest: candidateBindingDigest
+        )
+    }
+
     func plan(request: String, repositorySummary: String) async throws -> HarnessTaskBrief {
         state = nil
         pendingScopeReconciliation = nil

@@ -332,6 +332,7 @@ final class OnDemandEditCoordinator: ObservableObject {
     @Published private(set) var isPreparingSavedChangeRecheck = false
     @Published private(set) var isRecheckingSavedChanges = false
     private var pendingRecheckIdentity: PendingEditCandidateIdentity?
+    private var pendingRecheckContract: HarnessSavedFeatureContract?
 
     var canRecheckSavedChanges: Bool {
         guard IrisTestEnvironment.isEnabled, makeHarnessWorkflow != nil,
@@ -391,6 +392,15 @@ final class OnDemandEditCoordinator: ObservableObject {
                     throw CocoaError(.fileWriteUnknown)
                 }
                 self.pendingRecheckIdentity = identity
+                if let contract = record.savedFeatureContract {
+                    guard let previousRequest,
+                          contract.isBound(to: identity, request: previousRequest) else {
+                        self.phase = .failed(reason: "The saved change's approved contract no longer matches its source identity. Review the saved files before continuing.")
+                        self.statusLine = self.phaseReason
+                        return
+                    }
+                    self.pendingRecheckContract = contract
+                }
                 self.isRecheckingSavedChanges = true
                 self.classifiedKind = .feature
                 self.describePrefillText = previousRequest
@@ -1496,6 +1506,24 @@ final class OnDemandEditCoordinator: ObservableObject {
             do {
                 let workflow = try makeHarnessWorkflow()
                 harnessWorkflow = workflow
+                if isRecheckingSavedChanges,
+                   let contract = pendingRecheckContract,
+                   contract.brief.userRequest == scrubbed {
+                    do {
+                        try workflow.restoreSavedContract(contract)
+                    } catch {
+                        pendingRecheckContract = nil
+                        harnessWorkflow = nil
+                        isAssessingRequest = false
+                        statusLine = "The saved contract is no longer valid. Iris will need to plan this recheck again."
+                        return true
+                    }
+                    requestProbeTask = nil
+                    requestProbeWatchdog = nil
+                    isAssessingRequest = false
+                    buildAndPresentPlan(kind: kind)
+                    return true
+                }
                 let summary = clonePathForProbe.map {
                     FeatureEditRepoMap.summarize(repoRootPath: $0, tokenBudget: 2400)
                 } ?? "No repository summary is available."
@@ -5525,6 +5553,13 @@ final class OnDemandEditCoordinator: ObservableObject {
         held.pathsIrisEdited = candidate.changedPaths
         held.pendingCandidate = candidate
         held.requiresReviewBeforeRecovery = true
+        guard let contract = try? workflow.savedFeatureContract(
+            candidateBindingDigest: candidate.bindingDigest
+        ) else {
+            await unstage(candidate.changedPaths)
+            return false
+        }
+        held.savedFeatureContract = contract
         OnDemandEditInterruptedRunRecovery.remember(held)
         guard OnDemandEditInterruptedRunRecovery.recordOnDisk() == held,
               await candidate.stillMatches(record: held, project: project, runner: runner) else {
@@ -5568,6 +5603,12 @@ final class OnDemandEditCoordinator: ObservableObject {
         if let pendingRecheckIdentity {
             recordToWrite.pendingCandidate = pendingRecheckIdentity
             recordToWrite.requiresReviewBeforeRecovery = true
+            if let workflow = harnessWorkflow,
+               let contract = try? workflow.savedFeatureContract(
+                   candidateBindingDigest: pendingRecheckIdentity.bindingDigest
+               ) {
+                recordToWrite.savedFeatureContract = contract
+            }
         }
         if let waitingOn {
             recordToWrite.whatIrisWasWaitingFor = waitingOn
@@ -5621,6 +5662,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         failedReviewRetentionSucceeded = false
         guard editTask == nil else { return }
         pendingRecheckIdentity = nil
+        pendingRecheckContract = nil
         isRecheckingSavedChanges = false
         isPreparingSavedChangeRecheck = false
         flowGeneration = UUID()

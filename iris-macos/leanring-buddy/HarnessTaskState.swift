@@ -542,6 +542,91 @@ public nonisolated struct HarnessTaskState: Codable, Equatable, Sendable {
     }
 }
 
+/// The durable, pre-execution portion of a feature contract. A recovery record
+/// may carry this projection so a held candidate can be independently reviewed
+/// after relaunch without asking the planner to recreate the user's decisions.
+/// Evidence and model conversation remain run-local and are intentionally not
+/// persisted here.
+nonisolated struct HarnessSavedFeatureContract: Codable, Equatable, Sendable {
+    static let currentVersion = 1
+    static let maximumEncodedBytes = 32_000
+
+    let version: Int
+    let brief: HarnessTaskBrief
+    let activeRevisionID: String
+    let userDecisions: [HarnessUserDecision]
+    let resolvedAcceptanceCriterionIDs: [String]
+    let candidateBindingDigest: String
+
+    init(state: HarnessTaskState, candidateBindingDigest: String) throws {
+        self.version = Self.currentVersion
+        self.brief = state.brief
+        self.activeRevisionID = state.activeRevisionID
+        self.userDecisions = state.userDecisions
+        self.resolvedAcceptanceCriterionIDs = state.resolvedAcceptanceCriterionIDs
+        self.candidateBindingDigest = candidateBindingDigest
+        try validate()
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try container.decode(Int.self, forKey: .version)
+        self.brief = try container.decode(HarnessTaskBrief.self, forKey: .brief)
+        self.activeRevisionID = try container.decode(String.self, forKey: .activeRevisionID)
+        self.userDecisions = try container.decode([HarnessUserDecision].self, forKey: .userDecisions)
+        self.resolvedAcceptanceCriterionIDs = try container.decode(
+            [String].self, forKey: .resolvedAcceptanceCriterionIDs
+        )
+        self.candidateBindingDigest = try container.decode(String.self, forKey: .candidateBindingDigest)
+        guard Set(container.allKeys.map(\.stringValue)) == Set(CodingKeys.allCases.map(\.stringValue)) else {
+            throw HarnessTaskStateError.malformedJSON
+        }
+        try validate()
+    }
+
+    func restoredState() throws -> HarnessTaskState {
+        try HarnessTaskState(
+            brief: brief,
+            activeRevisionID: activeRevisionID,
+            userDecisions: userDecisions,
+            evidence: [],
+            resolvedAcceptanceCriterionIDs: resolvedAcceptanceCriterionIDs
+        )
+    }
+
+    func isBound(to candidate: PendingEditCandidateIdentity, request: String) -> Bool {
+        brief.userRequest == request && candidateBindingDigest == candidate.bindingDigest
+    }
+
+    private func validate() throws {
+        guard version == Self.currentVersion,
+              candidateBindingDigest.utf8.count == 64,
+              candidateBindingDigest.allSatisfy({ $0.isHexDigit }),
+              !activeRevisionID.isEmpty,
+              activeRevisionID.utf8.count <= HarnessTaskStateLimits.default.maxStringUTF8Bytes,
+              resolvedAcceptanceCriterionIDs.count <= HarnessTaskStateLimits.default.maxResolvedAcceptanceCount,
+              Set(resolvedAcceptanceCriterionIDs).count == resolvedAcceptanceCriterionIDs.count else {
+            throw HarnessTaskStateError.malformedJSON
+        }
+        _ = try restoredState()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(self) else {
+            throw HarnessTaskStateError.malformedJSON
+        }
+        guard data.count <= Self.maximumEncodedBytes else {
+            throw HarnessTaskStateError.oversizedRecord(
+                actualBytes: data.count, maximumBytes: Self.maximumEncodedBytes
+            )
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case version, brief, activeRevisionID, userDecisions
+        case resolvedAcceptanceCriterionIDs, candidateBindingDigest
+    }
+}
+
 public nonisolated enum HarnessTaskBriefParser {
     public static func parse(
         _ data: Data,

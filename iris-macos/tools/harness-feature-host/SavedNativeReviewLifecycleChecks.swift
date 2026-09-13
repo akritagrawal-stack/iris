@@ -136,7 +136,9 @@ struct SavedNativeReviewLifecycleChecks {
             verificationCommandsOverride: fixture.verificationCommands,
             runsAnIndependentReview: true,
             failedReviewRetention: { request in
-                await retainCandidate(request, fixture: fixture, observation: observation)
+                await retainCandidate(
+                    request, fixture: fixture, observation: observation, workflow: firstWorkflow
+                )
             }
         )
 
@@ -216,7 +218,7 @@ struct SavedNativeReviewLifecycleChecks {
             observation.recheckRequests.append(request)
             switch request.phase {
             case .intake:
-                return HarnessModelReply(text: fixture.briefJSON)
+                throw CheckFailure(message: "saved recheck unexpectedly entered intake planning")
             case .review:
                 return HarnessModelReply(text: """
                 ISSUE: the saved candidate still does not establish the requested behavior.
@@ -227,9 +229,15 @@ struct SavedNativeReviewLifecycleChecks {
             }
         }
         let recheckWorkflow = HarnessFeatureWorkflow(modelSession: recheckSession)
-        _ = try await recheckWorkflow.plan(
-            request: fixture.brief.userRequest,
-            repositorySummary: "the saved candidate is staged in a disposable Test fixture"
+        guard let savedContract = heldRecord.savedFeatureContract else {
+            throw CheckFailure(message: "retained candidate did not persist its feature contract")
+        }
+        let originalContractContext = try firstWorkflow.implementationContext()
+        try recheckWorkflow.restoreSavedContract(savedContract)
+        let restoredContractContext = try recheckWorkflow.implementationContext()
+        try require(
+            restoredContractContext == originalContractContext,
+            "restored contract changed the brief, decisions or acceptance criteria"
         )
         let recheckPlanningCount = observation.recheckRequests.count
         let recheckProvider = HarnessWorkflowMaintainProvider(workflow: recheckWorkflow)
@@ -261,6 +269,8 @@ struct SavedNativeReviewLifecycleChecks {
         }
         let recheckPhases = observation.recheckRequests
             .dropFirst(recheckPlanningCount).map(\.phase)
+        try require(recheckPlanningCount == 0,
+                    "saved recheck made an unexpected planning call")
         try require(recheckPhases == [.review],
                     "saved recheck phases were not review-only: \(recheckPhases)")
         try require(!recheckPhases.contains(.edit) && !recheckPhases.contains(.repair),
@@ -272,6 +282,49 @@ struct SavedNativeReviewLifecycleChecks {
                     "denying saved recheck changed the held candidate")
         try require(OnDemandEditInterruptedRunRecovery.recordOnDisk() == heldRecord,
                     "denying saved recheck removed or changed the held identity")
+        try require(savedContract.isBound(to: heldCandidate, request: fixture.brief.userRequest),
+                    "saved contract did not remain bound to the held candidate")
+        let tamperedContract = try HarnessSavedFeatureContract(
+            state: try savedContract.restoredState(),
+            candidateBindingDigest: String(repeating: "0", count: 64)
+        )
+        try require(!tamperedContract.isBound(to: heldCandidate, request: fixture.brief.userRequest),
+                    "tampered contract binding was accepted")
+        let malformed = try? JSONDecoder().decode(
+            HarnessSavedFeatureContract.self, from: Data("{}".utf8)
+        )
+        try require(malformed == nil, "malformed saved contract was accepted")
+        let oversizedBrief = try HarnessTaskBrief(
+            userRequest: fixture.brief.userRequest,
+            desiredOutcome: String(repeating: "x", count: 8_000),
+            acceptanceCriteria: (0..<4).map {
+                HarnessAcceptanceCriterion(
+                    id: "oversized-\($0)", statement: String(repeating: "y", count: 7_000)
+                )
+            },
+            targetedQuestions: fixture.brief.targetedQuestions,
+            milestones: fixture.brief.milestones,
+            modelAssumptions: fixture.brief.modelAssumptions
+        )
+        let oversizedState = try HarnessTaskState(
+            brief: oversizedBrief, activeRevisionID: savedContract.activeRevisionID,
+            userDecisions: savedContract.userDecisions,
+            resolvedAcceptanceCriterionIDs: savedContract.resolvedAcceptanceCriterionIDs
+        )
+        let oversizedContract = try? HarnessSavedFeatureContract(
+            state: oversizedState, candidateBindingDigest: heldCandidate.bindingDigest
+        )
+        try require(oversizedContract == nil, "oversized saved contract was accepted")
+        let legacyRecord = OnDemandEditInFlightRecord(
+            appSlug: heldRecord.appSlug, clonePath: heldRecord.clonePath,
+            baseCommit: heldRecord.baseCommit, pathsIrisEdited: heldRecord.pathsIrisEdited,
+            startedAt: heldRecord.startedAt, runLogPath: heldRecord.runLogPath,
+            whatIrisWasWaitingFor: heldRecord.whatIrisWasWaitingFor,
+            requiresReviewBeforeRecovery: true, pendingCandidate: heldRecord.pendingCandidate,
+            recheckRequest: heldRecord.recheckRequest
+        )
+        try require(legacyRecord.savedFeatureContract == nil,
+                    "legacy record unexpectedly acquired a contract")
         print("PASS native denial retained exact staged candidate; recheck reviewed once without maker/native execution")
 
         OnDemandEditInterruptedRunRecovery.forget()
@@ -281,7 +334,8 @@ struct SavedNativeReviewLifecycleChecks {
     private static func retainCandidate(
         _ request: MaintainFailedReviewRetentionRequest,
         fixture: Fixture,
-        observation: Observation
+        observation: Observation,
+        workflow: HarnessFeatureWorkflow
     ) async -> Bool {
         func fail(_ reason: String) -> Bool {
             observation.retentionFailure = reason
@@ -329,9 +383,13 @@ struct SavedNativeReviewLifecycleChecks {
         guard let candidate = try? await PendingEditCandidateIdentity.capture(
             record: record, project: project, runner: fixture.runner
         ) else { return fail("candidate identity capture refused") }
+        guard let contract = try? workflow.savedFeatureContract(
+            candidateBindingDigest: candidate.bindingDigest
+        ) else { return fail("saved feature contract could not be created") }
         var held = record
         held.pathsIrisEdited = candidate.changedPaths
         held.pendingCandidate = candidate
+        held.savedFeatureContract = contract
         OnDemandEditInterruptedRunRecovery.remember(held)
         guard OnDemandEditInterruptedRunRecovery.recordOnDisk() == held,
               await candidate.stillMatches(record: held, project: project, runner: fixture.runner)

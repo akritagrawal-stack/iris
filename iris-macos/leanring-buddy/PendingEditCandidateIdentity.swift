@@ -18,6 +18,15 @@ nonisolated struct PendingEditCandidateIdentity: Codable, Equatable, Sendable {
     /// The net staged paths, sorted and captured from Git rather than inferred.
     let changedPaths: [String]
 
+    /// Stable binding used to prevent a saved contract from being replayed
+    /// against a different staged tree or registered Test project.
+    var bindingDigest: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = (try? encoder.encode(self)) ?? Data()
+        return HarnessFrozenComparison.digest(data)
+    }
+
     /// Capture a candidate left by a failed commit. The caller supplies the
     /// review-held interruption record and the exact current registry project.
     /// No source or commit is changed by these probes.

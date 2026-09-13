@@ -943,7 +943,7 @@ final class MaintainTierCFixer {
             let expectedPaths = modelOwnedPaths.sorted()
             guard !currentPaths.isEmpty,
                   currentPaths == expectedPaths,
-                  Self.retainedPathsAreSafe(currentPaths) else { return false }
+                  currentPaths.allSatisfy(Self.isSafeRetainedPath) else { return false }
 
             let request = MaintainFailedReviewRetentionRequest(
                 appSlug: appSlug,

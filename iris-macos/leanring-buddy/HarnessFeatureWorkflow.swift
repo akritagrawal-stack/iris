@@ -614,12 +614,19 @@ final class HarnessFeatureWorkflow {
             .joined(separator: " ")
         let transferIntentWords: Set<String> = [
             "paste", "type", "send", "insert", "move", "transfer", "open", "switch",
-            "put", "write", "copy",
+            "put", "write",
         ]
         let words = normalized.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        // "Copy" also means "keep a second local version." Treat it as a
+        // cross-surface action only when the request names a surface Iris can
+        // target; otherwise an import/backup request must not be diverted into
+        // a tab-selection interview.
+        let copyNeedsCrossSurfaceTarget = words.contains("copy") && words.contains(where: {
+            ["tab", "window", "browser", "app", "screen", "page", "document"].contains(String($0))
+        })
         guard let transferIntentIndex = words.firstIndex(where: {
             transferIntentWords.contains(String($0))
-        }) else { return false }
+        }) ?? (copyNeedsCrossSurfaceTarget ? words.firstIndex(of: "copy") : nil) else { return false }
 
         let explicitSelectionLanguage = [
             "current app", "this app", "selected app", "active app", "focused app",

@@ -238,6 +238,9 @@ func destinationGuardRecognizesNoviceWordingButNotGenericDestinations() {
         "Copy my notes to Gmail"
     ))
     #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+        "Keep changed content as a separate copy and never overwrite existing work"
+    ))
+    #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
         "Move the panel to the right side"
     ))
 }

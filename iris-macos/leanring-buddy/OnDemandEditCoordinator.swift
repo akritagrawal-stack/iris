@@ -1514,10 +1514,11 @@ final class OnDemandEditCoordinator: ObservableObject {
                         )
                     }
                 }
+                let watchdogNanoseconds = harnessPlanningWatchdogNanoseconds
                 requestProbeWatchdog = Task { [weak self] in
                     do {
                         try await Task.sleep(
-                            nanoseconds: self.harnessPlanningWatchdogNanoseconds
+                            nanoseconds: watchdogNanoseconds
                         )
                     }
                     catch { return }

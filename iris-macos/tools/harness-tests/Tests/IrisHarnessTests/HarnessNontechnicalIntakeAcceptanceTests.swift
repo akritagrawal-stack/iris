@@ -241,6 +241,9 @@ func destinationGuardRecognizesNoviceWordingButNotGenericDestinations() {
         "Keep changed content as a separate copy and never overwrite existing work"
     ))
     #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+        "Keep changed content as a separate copy and still work after restarting the app"
+    ))
+    #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
         "Move the panel to the right side"
     ))
 }

@@ -621,9 +621,21 @@ final class HarnessFeatureWorkflow {
         // cross-surface action only when the request names a surface Iris can
         // target; otherwise an import/backup request must not be diverted into
         // a tab-selection interview.
-        let copyNeedsCrossSurfaceTarget = words.contains("copy") && words.contains(where: {
-            ["tab", "window", "browser", "app", "screen", "page", "document"].contains(String($0))
-        })
+        let copyNeedsCrossSurfaceTarget: Bool = {
+            guard let copyIndex = words.firstIndex(of: "copy") else { return false }
+            for marker in ["into", "to", "in"] {
+                guard let markerIndex = words[words.index(after: copyIndex)...].firstIndex(of: Substring(marker)) else {
+                    continue
+                }
+                let suffix = words[words.index(after: markerIndex)...].prefix(3)
+                if suffix.contains(where: {
+                    ["tab", "window", "browser", "app", "screen", "page", "document"].contains(String($0))
+                }) {
+                    return true
+                }
+            }
+            return false
+        }()
         guard let transferIntentIndex = words.firstIndex(where: {
             transferIntentWords.contains(String($0))
         }) ?? (copyNeedsCrossSurfaceTarget ? words.firstIndex(of: "copy") : nil) else { return false }

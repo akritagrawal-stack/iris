@@ -190,30 +190,71 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
             relativePaths: Array(normalizedChangedPaths.prefix(maximumDependencySourceFileCount)),
             maxBytes: maximumPermittedByteBudget
         )
-        let directDependencyPaths = directDependencyPaths(
+        let allDirectDependencyPaths = directDependencyPaths(
             from: changedSourceContext.files,
             repoRootPath: repoRootPath,
             preferredDependencySourceByPath: preferredDependencySourceByPath
         )
-        let consumerPaths = potentialConsumerPaths(
+        let consumerDiscovery = potentialConsumerPaths(
             of: normalizedChangedPaths,
             candidateSourcePaths: candidateSourcePaths,
             repoRootPath: repoRootPath
         )
+        let consumerPaths = consumerDiscovery.paths
+        // A reviewer needs to see the surface where a person invokes a change,
+        // plus its immediate production helper, before generic library callers
+        // consume the fixed packet. This is still only a bounded ranking of
+        // already-safe paths: it neither expands the source scan nor grants a
+        // path any authority. The complete diff remains the source of truth for
+        // changed files that do not fit.
+        let userFacingChangedPaths = userFacingPaths(in: normalizedChangedPaths)
+        let userFacingChangedSet = Set(userFacingChangedPaths)
+        let userFacingDependencies = directDependencyPaths(
+            from: changedSourceContext.files.filter {
+                userFacingChangedSet.contains($0.repoRelativePath)
+            },
+            repoRootPath: repoRootPath,
+            preferredDependencySourceByPath: preferredDependencySourceByPath
+        )
+        let sharedUserFacingDependencies = consumerDiscovery.sharedDependencyPaths(
+            from: userFacingDependencies
+        )
+        let scannedCandidatePaths = Set(consumerDiscovery.importedPathsByCandidate.keys)
+        let unscannedUserFacingDependencies = userFacingDependencies.filter {
+            !scannedCandidatePaths.contains($0)
+        }
+        // When a changed UI entry point exists, promote all page/component
+        // consumers of the changed set as user-facing evidence. A pure
+        // low-level change keeps changed source bytes first, then appends the
+        // bounded reverse graph in its ordinary order.
+        let userFacingConsumers = userFacingChangedPaths.isEmpty
+            ? []
+            : userFacingPaths(in: consumerPaths)
         let orderedPaths = deduplicatedRelativePaths(
             (isNativeFinalReview
                 ? declaredNativeTestPaths + changedTestPaths
                 : changedTestPaths + declaredNativeTestPaths)
+                + userFacingChangedPaths
                 + normalizedChangedPaths
+                + sharedUserFacingDependencies
+                + unscannedUserFacingDependencies
+                + userFacingConsumers
+                + userFacingDependencies
                 + consumerPaths
-                + directDependencyPaths
+                + allDirectDependencyPaths
                 + sameDirectoryNeighborPaths
         )
 
-        return collect(
+        let selectedPaths = Array(orderedPaths.prefix(effectiveFileCount))
+        let collected = collect(
             repoRootPath: repoRootPath,
-            relativePaths: Array(orderedPaths.prefix(effectiveFileCount)),
+            relativePaths: selectedPaths,
             maxBytes: maxBytes
+        )
+        return FeatureEditRepositoryContext(
+            files: collected.files,
+            omittedFileCount: collected.omittedFileCount + (orderedPaths.count - selectedPaths.count),
+            maxBytes: collected.maxBytes
         )
     }
 
@@ -276,6 +317,58 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
     private static let maximumResolvedDependencyCount = 24
     private static let maximumConsumerCandidateCount = 100
     private static let maximumConsumerScanBytes = 512 * 1024
+    private static let maximumConsumerTraversalDepth = 2
+    private static let maximumConsumerFanoutPerDepth = 24
+    private static let maximumSharedUserFacingDependencyCount = 2
+
+    private struct ConsumerDiscovery {
+        let paths: [String]
+        let importedPathsByCandidate: [String: Set<String>]
+
+        /// Promote only a small number of changed-file dependencies that are
+        /// shared by page/UI sources in the already-scanned candidate set.
+        /// This keeps a repository facade or export helper available without
+        /// expanding the source walk or the final context budget.
+        func sharedDependencyPaths(from dependencyPaths: [String]) -> [String] {
+            let scored = dependencyPaths.enumerated().compactMap { index, path -> (String, Int, Int)? in
+                let pageConsumerCount = importedPathsByCandidate.reduce(into: 0) { count, entry in
+                    if entry.key != path,
+                       FeatureEditRepositoryContext.userFacingPaths(in: [entry.key]).isEmpty == false,
+                       entry.value.contains(path) {
+                        count += 1
+                    }
+                }
+                guard pageConsumerCount > 0 else { return nil }
+                return (path, pageConsumerCount, index)
+            }
+            return scored
+                .sorted { left, right in
+                    if left.1 != right.1 { return left.1 > right.1 }
+                    return left.2 < right.2
+                }
+                .prefix(FeatureEditRepositoryContext.maximumSharedUserFacingDependencyCount)
+                .map(\.0)
+        }
+    }
+
+    /// UI entry points have a stronger review value than a generic library
+    /// caller: they connect a request to the actual user-visible behavior.
+    /// This is a narrow path-name heuristic used only to order an already
+    /// bounded, local source set. It never reads an extra path and falls back
+    /// to the ordinary order for repositories with different conventions.
+    private static func userFacingPaths(in paths: [String]) -> [String] {
+        let userFacingDirectoryNames: Set<String> = [
+            "components", "pages", "screens", "ui", "views",
+        ]
+        return paths.filter { path in
+            let directories = path
+                .split(separator: "/", omittingEmptySubsequences: true)
+                .dropLast()
+                .map { $0.lowercased() }
+            guard !directories.contains("api"), !directories.contains("server") else { return false }
+            return directories.contains { userFacingDirectoryNames.contains($0) }
+        }
+    }
 
     /// Local import spelling is a selection hint, not proof of runtime wiring.
     /// Reuse the caller's existing bounded repo map instead of walking the tree
@@ -285,12 +378,18 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
         of changedPaths: [String],
         candidateSourcePaths: [String],
         repoRootPath: String
-    ) -> [String] {
+    ) -> ConsumerDiscovery {
         let changed = Set(changedPaths.filter(isEligibleRelativePath))
-        guard !changed.isEmpty else { return [] }
+        guard !changed.isEmpty else {
+            return ConsumerDiscovery(paths: [], importedPathsByCandidate: [:])
+        }
         var remainingScanBytes = maximumConsumerScanBytes
-        var consumerPaths: [String] = []
-        for path in deduplicatedRelativePaths(candidateSourcePaths).prefix(maximumConsumerCandidateCount) {
+        let candidatePaths = Array(
+            deduplicatedRelativePaths(candidateSourcePaths).prefix(maximumConsumerCandidateCount)
+        )
+        let candidateSet = Set(candidatePaths.filter(isEligibleRelativePath))
+        var importedPathsByCandidate: [String: Set<String>] = [:]
+        for path in candidatePaths {
             guard remainingScanBytes > 0 else { break }
             guard !changed.contains(path),
                   supportedModuleExtensions.contains((path as NSString).pathExtension.lowercased()) else { continue }
@@ -301,17 +400,39 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
             )
             guard let source = context.files.first else { continue }
             remainingScanBytes -= source.utf8ByteCount
-            let referencesChangedPath = localModuleSpecifiers(
+            let importedPaths = Set(localModuleSpecifiers(
                 in: source.utf8Text, limit: maximumDependencySpecifierCount
-            ).contains { specifier in
-                moduleCandidates(for: specifier, importingPath: path).contains { changed.contains($0) }
-            }
-            if referencesChangedPath {
-                consumerPaths.append(path)
-                if consumerPaths.count == maximumPermittedReviewFileCount { break }
-            }
+            ).flatMap { specifier in
+                moduleCandidates(for: specifier, importingPath: path)
+            }.filter { changed.contains($0) || candidateSet.contains($0) })
+            importedPathsByCandidate[path] = importedPaths
         }
-        return consumerPaths
+
+        // Traverse only the files read above. At most two bounded frontiers
+        // are followed so a broad utility fanout cannot turn this hint into a
+        // repository walk. A page/component consumer is ordered first within
+        // those same bounds to preserve its complete body under byte pressure.
+        var frontier = changed
+        var discovered = changed
+        var consumerPaths: [String] = []
+        for _ in 0..<maximumConsumerTraversalDepth {
+            let level = candidatePaths.filter { path in
+                !discovered.contains(path)
+                    && importedPathsByCandidate[path, default: []].isDisjoint(with: frontier) == false
+            }.prefix(maximumConsumerFanoutPerDepth)
+            guard !level.isEmpty else { break }
+            let levelPaths = Array(level)
+            consumerPaths.append(contentsOf: levelPaths)
+            discovered.formUnion(levelPaths)
+            frontier = Set(levelPaths)
+        }
+        let userFacingConsumerPaths = userFacingPaths(in: consumerPaths)
+        let userFacingSet = Set(userFacingConsumerPaths)
+        return ConsumerDiscovery(
+            paths: userFacingConsumerPaths
+                + consumerPaths.filter { !userFacingSet.contains($0) },
+            importedPathsByCandidate: importedPathsByCandidate
+        )
     }
 
     /// The source extensions understood by the repo map, plus common authored

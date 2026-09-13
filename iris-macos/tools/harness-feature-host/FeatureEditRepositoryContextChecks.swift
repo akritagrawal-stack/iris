@@ -32,11 +32,187 @@ struct FeatureEditRepositoryContextChecks {
         print("PASS review context: duplicate paths removed and 24-file bound enforced")
         try prioritizesCrossDirectoryConsumersWithoutIncreasingThePromptBudget()
         print("PASS review context: cross-directory consumers fit before unrelated dependencies")
+        try followsOnlyTwoReverseConsumerHopsWithinTheScannedCandidateSet()
+        print("PASS review context: depth-two user-facing consumer traversal is bounded")
+        try preservesRealNitroConsumerBodiesThroughNativeReviewContext()
+        print("PASS review context: recorded Nitro save/download bodies reach native evidence and reviewer prompt")
+        try prioritizesUserFacingConsumersAndHelpersOverGenericLibraryFallbacks()
+        print("PASS review context: user-facing callers and their helpers win bounded review context")
         try refusesUnsafeConsumerCandidatesAndBoundsDiscovery()
         print("PASS review context: consumer candidates remain confined and count-bounded")
         try boundsConsumerDiscoveryBytes()
         print("PASS review context: reverse-source scan has a separate local byte ceiling")
-        print("FEATURE EDIT REPOSITORY CONTEXT CHECKS PASS: 13 groups")
+        print("FEATURE EDIT REPOSITORY CONTEXT CHECKS PASS: 16 groups")
+    }
+
+    @MainActor static func preservesRealNitroConsumerBodiesThroughNativeReviewContext() throws {
+        let root = try makeFixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // These are the seven recovered changed-file byte sizes. Their bodies
+        // are represented by recorded source snippets plus deterministic
+        // padding; no app source is executed or read from a live user path.
+        let changedSizes: [(String, Int)] = [
+            ("src/lib/db/idb.ts", 2900), ("src/lib/db/index.ts", 4640),
+            ("src/lib/db/memory.ts", 2674), ("src/lib/transfer.test.ts", 6225),
+            ("src/lib/transfer.ts", 4917), ("src/lib/types.ts", 4350),
+            ("src/pages/Settings.tsx", 20207),
+        ]
+        for (path, size) in changedSizes {
+            try writePaddedSource(path, body: "export const recovered = true;\n", byteCount: size, under: root)
+        }
+        try writePaddedSource("src/pages/Settings.tsx", body: """
+        import { useApp } from "../lib/app";
+        import { exportMarkdown, downloadText } from "../lib/export";
+        import type { EngineMode } from "../lib/types";
+        export const Settings = () => useApp() && downloadText && (null as EngineMode | null);
+        """, byteCount: 20207, under: root)
+
+        let noteSaveBody = """
+        import { useApp } from "../lib/app";
+        import { downloadText } from "../lib/export";
+        import type { Block, Note } from "../lib/types";
+        export function persist(note: Note, patch: Partial<Note>, onNote: (n: Note) => void) {
+            const next = { ...note, ...patch, updatedAt: now() };
+            onNote(next);
+            if (saveTimer.current) clearTimeout(saveTimer.current);
+            saveTimer.current = setTimeout(() => repo?.putNote(next), 400);
+        }
+        export const saveBody = "repo?.putNote(next)";
+        """
+        let downloadBody = """
+        import type { Block, Note } from "./types";
+        export function downloadText(filename: string, text: string, mime = "text/plain"): void {
+            if (typeof window === "undefined" || typeof document === "undefined") return;
+            const blob = new Blob([text], { type: mime });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+        """
+        try writePaddedSource("src/pages/NoteView.tsx", body: noteSaveBody, byteCount: 8605, under: root)
+        try writePaddedSource("src/lib/export.ts", body: downloadBody, byteCount: 4588, under: root)
+        try writePaddedSource("src/lib/app.tsx", body: "import { Repo } from \"./db\"; export const app = Repo;\n", byteCount: 3843, under: root)
+        try writePaddedSource("src/pages/Dashboard.tsx", body: "import { useApp } from \"../lib/app\"; export const dashboard = useApp;\n", byteCount: 19715, under: root)
+        try writePaddedSource("src/lib/markdown.ts", body: "import type { Note } from \"./types\"; export const markdown = true;\n", byteCount: 12607, under: root)
+
+        let changedPaths = changedSizes.map(\.0)
+        let context = FeatureEditRepositoryContext.collectReviewContext(
+            repoRootPath: root.path,
+            changedTestPaths: ["src/lib/transfer.test.ts"],
+            declaredNativeTestPaths: [],
+            changedPaths: changedPaths,
+            sameDirectoryNeighborPaths: [],
+            candidateSourcePaths: [
+                "src/lib/markdown.ts", "src/pages/Dashboard.tsx", "src/lib/app.tsx",
+                "src/lib/export.ts", "src/pages/NoteView.tsx",
+            ],
+            isNativeFinalReview: true,
+            maxFileCount: 24,
+            maxBytes: FeatureEditRepositoryContext.maximumPermittedByteBudget
+        )
+        let note = context.files.first { $0.repoRelativePath == "src/pages/NoteView.tsx" }
+        let download = context.files.first { $0.repoRelativePath == "src/lib/export.ts" }
+        try require(note?.utf8Text.contains("repo?.putNote(next)") == true
+            && download?.utf8Text.contains("const blob = new Blob([text]") == true,
+            "recorded NoteView save or export download body was omitted or partial")
+        try require(context.includedByteCount == 62949,
+            "recorded Nitro context changed size: expected 62,949 complete UTF-8 bytes")
+        try require(context.includedByteCount <= FeatureEditRepositoryContext.maximumPermittedByteBudget
+            && context.omittedFileCount > 0,
+            "real-shaped context escaped its unchanged byte ceiling or hid omitted sources")
+
+        let diff = "diff --git a/src/lib/transfer.ts b/src/lib/transfer.ts\n+export const changed = true;"
+        guard let evidence = HarnessNativeVerificationSequence.NativeAdmissionEvidence.capture(
+            diff: diff, context: context
+        ), let handoff = evidence.matchingPrompt(forDiff: diff, repoRootPath: root.path) else {
+            throw Failure.assertion("real-shaped context could not form a native admission handoff")
+        }
+        let nativeNote = evidence.selectedFiles.first { $0.path == "src/pages/NoteView.tsx" }
+        let nativeDownload = evidence.selectedFiles.first { $0.path == "src/lib/export.ts" }
+        try require(nativeNote?.bytes == note?.utf8ByteCount
+            && nativeNote?.sha256 == note.map { HarnessFrozenComparison.digest(Data($0.utf8Text.utf8)) }
+            && nativeDownload?.bytes == download?.utf8ByteCount
+            && nativeDownload?.sha256 == download.map { HarnessFrozenComparison.digest(Data($0.utf8Text.utf8)) }
+            && handoff.contains("FINAL NATIVE BEHAVIOR REVIEW HANDOFF"),
+            "native admission evidence lost required consumer body identity")
+        let reviewer = FeatureEditAdversarialReviewer.reviewPrompt(
+            request: "Add notes and folders export/import",
+            kind: .feature,
+            unifiedDiff: diff,
+            evidenceLog: ["native checks: passed"],
+            repositoryContext: context
+        )
+        try require(reviewer.user.contains("repo?.putNote(next)")
+            && reviewer.user.contains("const blob = new Blob([text]"),
+            "reviewer prompt received paths but not the required consumer bodies")
+    }
+
+    @MainActor static func followsOnlyTwoReverseConsumerHopsWithinTheScannedCandidateSet() throws {
+        let root = try makeFixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("src/data/store.ts", "export const store = true;", under: root)
+        try write("src/state/storeFacade.ts", "import { store } from '../data/store'; export const facade = store;", under: root)
+        try write("src/pages/Editor.tsx", "import { facade } from '../state/storeFacade'; export const save = () => facade;", under: root)
+        try write("src/pages/TooFar.tsx", "import { save } from './Editor'; export const tooFar = save;", under: root)
+        try write("src/data/neighbor.ts", "export const unrelated = true;", under: root)
+
+        let context = FeatureEditRepositoryContext.collectReviewContext(
+            repoRootPath: root.path,
+            changedTestPaths: [],
+            declaredNativeTestPaths: [],
+            changedPaths: ["src/data/store.ts"],
+            sameDirectoryNeighborPaths: ["src/data/neighbor.ts"],
+            candidateSourcePaths: [
+                "src/state/storeFacade.ts", "src/pages/Editor.tsx", "src/pages/TooFar.tsx",
+            ],
+            maxBytes: 4096
+        )
+
+        let paths = context.files.map(\.repoRelativePath)
+        try require(paths.contains("src/state/storeFacade.ts") && paths.contains("src/pages/Editor.tsx"),
+            "two reverse consumer hops were not discovered")
+        try require(!paths.contains("src/pages/TooFar.tsx"),
+            "reverse consumer discovery exceeded its depth-two bound")
+        try require(paths.last == "src/data/neighbor.ts",
+            "generic same-directory fallback displaced a bounded consumer")
+        try require(context.files.first(where: { $0.repoRelativePath == "src/pages/Editor.tsx" })?.utf8Text.contains("facade") == true,
+            "transitive user-facing body was not included completely")
+        try require(context.includedByteCount <= 4096 && context.omittedFileCount == 0,
+            "depth-two traversal changed byte or omission accounting")
+    }
+
+    @MainActor static func prioritizesUserFacingConsumersAndHelpersOverGenericLibraryFallbacks() throws {
+        let root = try makeFixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("src/lib/types.ts", "export type Note = { id: string };", under: root)
+        try write("src/pages/Settings.tsx", "import { downloadText } from '../lib/export'; export const save = () => downloadText('library.json');", under: root)
+        try write("src/pages/NoteView.tsx", "import type { Note } from '../lib/types'; export const view = (_: Note) => null;", under: root)
+        try write("src/lib/markdown.ts", "import type { Note } from './types'; export const markdown = (_: Note) => '';", under: root)
+        try write("src/lib/export.ts", "export const downloadText = (_: string) => undefined;", under: root)
+
+        let context = FeatureEditRepositoryContext.collectReviewContext(
+            repoRootPath: root.path, changedTestPaths: [], declaredNativeTestPaths: [],
+            changedPaths: ["src/lib/types.ts", "src/pages/Settings.tsx"],
+            sameDirectoryNeighborPaths: [],
+            candidateSourcePaths: ["src/lib/markdown.ts", "src/pages/NoteView.tsx"],
+            maxBytes: 16 * 1024
+        )
+
+        try require(context.files.map(\.repoRelativePath) == [
+            "src/pages/Settings.tsx",
+            "src/lib/types.ts",
+            "src/lib/export.ts",
+            "src/pages/NoteView.tsx",
+            "src/lib/markdown.ts",
+        ], "review context did not prioritize the user-facing caller, its helper, and user-facing consumer: \(context.files.map(\.repoRelativePath))")
+        try require(context.includedByteCount <= 16 * 1024,
+            "user-facing context ranking raised the model prompt budget")
     }
 
     @MainActor static func prioritizesCrossDirectoryConsumersWithoutIncreasingThePromptBudget() throws {
@@ -585,6 +761,19 @@ struct FeatureEditRepositoryContextChecks {
         under root: URL
     ) throws {
         try write(relativePath, String(repeating: "x", count: byteCount), under: root)
+    }
+
+    @MainActor static func writePaddedSource(
+        _ relativePath: String,
+        body: String,
+        byteCount: Int,
+        under root: URL
+    ) throws {
+        let bodyByteCount = body.utf8.count
+        guard bodyByteCount <= byteCount else {
+            throw Failure.assertion("fixture body exceeds its recorded byte size: \(relativePath)")
+        }
+        try write(relativePath, body + String(repeating: "x", count: byteCount - bodyByteCount), under: root)
     }
 
     @MainActor static func byteCount(of relativePath: String, under root: URL) throws -> Int {

@@ -210,6 +210,30 @@ nonisolated enum GuideSourceWorkspacePath {
         return true
     }
 
+    /// Validate a destination after a worktree has been created. The creation
+    /// check above intentionally requires the path to be absent; this check
+    /// covers the other side of that boundary and rejects a replacement
+    /// parent, symlink, regular-file destination, or a worktree that escaped
+    /// the one owned directory after the Git process returned.
+    static func validateExistingOwnedDestination(_ destination: URL, within root: URL) -> Bool {
+        let fileManager = FileManager.default
+        let rootURL = root.standardizedFileURL
+        let destinationURL = destination.standardizedFileURL
+        guard rootURL.path != "/",
+              destinationURL.deletingLastPathComponent().path == rootURL.path,
+              isContained(destinationURL, within: rootURL),
+              rootURL.path == rootURL.resolvingSymlinksInPath().standardizedFileURL.path,
+              destinationURL.path == destinationURL.resolvingSymlinksInPath().standardizedFileURL.path,
+              fileManager.fileExists(atPath: destinationURL.path),
+              let values = try? destinationURL.resourceValues(forKeys: [.isDirectoryKey]),
+              values.isDirectory == true else {
+            return false
+        }
+        let parent = destinationURL.deletingLastPathComponent()
+        return fileManager.fileExists(atPath: parent.path)
+            && parent.path == parent.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
     static func isContained(_ candidate: URL, within root: URL) -> Bool {
         let rootComponents = root.pathComponents
         let candidateComponents = candidate.pathComponents
@@ -546,6 +570,12 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
     private let executor: any GuideSourceWorkspaceCommandExecuting
     private let store: any GuideSourceWorkspaceRecording
     private let destinationIsOwned: @Sendable (URL) -> Bool
+    /// There is one fixed-argv process lane. Keeping operation identity here
+    /// lets a controller cancel exactly the stale setup it superseded without
+    /// terminating a newer retry that has already acquired the lane.
+    private let operationLock = NSLock()
+    private var activeOperationID: UUID?
+    private var cancelledOperationIDs = Set<UUID>()
 
     init(
         executor: any GuideSourceWorkspaceCommandExecuting = GuideSourceWorkspaceProcessExecutor(),
@@ -557,9 +587,30 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
         self.destinationIsOwned = destinationIsOwned
     }
 
+    /// Cancel a setup operation that is currently inspecting or staging. The
+    /// in-memory identity guard alone is not enough: without stopping the
+    /// executor, a cancelled inspection can keep probing and a cancelled
+    /// staging attempt can still create a worktree after the user has pressed
+    /// Cancel. A call for an already-finished operation is harmless.
+    func cancel(runID: UUID) {
+        operationLock.lock()
+        cancelledOperationIDs.insert(runID)
+        let ownsExecutor = activeOperationID == runID
+        operationLock.unlock()
+        if ownsExecutor {
+            executor.cancelRunningProcess()
+        }
+    }
+
     func inspect(_ request: GuideSourceWorkspaceRequest) async -> Result<GuideSourceWorkspaceInspection, GuideSourceWorkspacePreparationError> {
+        guard await beginOperation(request.runID) else {
+            return .failure(.invalidRequest("another workspace operation is already in progress"))
+        }
+        defer { endOperation(request.runID) }
         do {
+            try throwIfOperationWasCancelled(request.runID)
             let identity = try await inspectIdentity(request)
+            try throwIfOperationWasCancelled(request.runID)
             if identity.isDirty || identity.head != request.expectedCommit {
                 return .success(.isolatedCopyOffered(identity))
             }
@@ -578,7 +629,14 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
         from inspection: GuideSourceWorkspaceInspection,
         choice: GuideSourceWorkspaceSetupChoice
     ) async throws -> GuideSourceWorkspaceBinding {
+        guard await beginOperation(request.runID) else {
+            throw GuideSourceWorkspacePreparationError.invalidRequest(
+                "another workspace operation is already in progress"
+            )
+        }
+        defer { endOperation(request.runID) }
         do {
+            try throwIfOperationWasCancelled(request.runID)
             return try await prepareImpl(request, from: inspection, choice: choice)
         } catch is CancellationError {
             throw GuideSourceWorkspacePreparationError.cancelled
@@ -589,13 +647,20 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
     /// Persisted bindings are only hints: a changed checkout, replaced staged
     /// directory, guide revision, or missing ready record invalidates them.
     func revalidate(_ binding: GuideSourceWorkspaceBinding) async -> Result<GuideSourceWorkspaceBinding, GuideSourceWorkspacePreparationError> {
+        guard await beginOperation(binding.runID) else {
+            return .failure(.invalidRequest("another workspace operation is already in progress"))
+        }
+        defer { endOperation(binding.runID) }
         do {
             guard binding.guideID.isEmpty == false,
                   binding.guideRevision >= 0,
-                  binding.projectID.isEmpty == false,
+                  isSafeIdentifier(binding.guideID),
+                  isSafeIdentifier(binding.projectID),
                   binding.originalPath.hasPrefix("/"),
                   binding.stagedPath.hasPrefix("/"),
-                  binding.expectedOrigin == binding.original.origin else {
+                  binding.expectedOrigin == binding.original.origin,
+                  binding.original.commonGitDirectory == binding.commonGitDirectory,
+                  binding.staged.commonGitDirectory == binding.commonGitDirectory else {
                 throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("workspace binding metadata is inconsistent")
             }
             let originalRequest = GuideSourceWorkspaceRequest(
@@ -612,6 +677,17 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                 )
             }
             let stagedURL = URL(fileURLWithPath: binding.stagedPath, isDirectory: true).standardizedFileURL
+            if binding.isIsolated {
+                let ownedRoot = stagedURL.deletingLastPathComponent()
+                let expectedDestinationName = "\(binding.projectID)-\(binding.runID.uuidString)"
+                guard destinationIsOwned(ownedRoot),
+                      stagedURL.lastPathComponent == expectedDestinationName,
+                      GuideSourceWorkspacePath.validateExistingOwnedDestination(
+                          stagedURL, within: ownedRoot
+                      ) else {
+                    throw GuideSourceWorkspacePreparationError.destinationNotOwned
+                }
+            }
             guard stagedURL.path == stagedURL.resolvingSymlinksInPath().standardizedFileURL.path,
                   FileManager.default.fileExists(atPath: stagedURL.path) else {
                 throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("staged workspace directory is unavailable")
@@ -625,6 +701,7 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                       record.projectID == binding.projectID,
                       record.originalPath == binding.originalPath,
                       record.stagedPath == binding.stagedPath,
+                      record.expectedOrigin == "https://\(binding.expectedOrigin.host)/\(binding.expectedOrigin.path)",
                       record.expectedCommit == binding.expectedCommit,
                       record.ownershipMarker == binding.ownershipMarker else {
                     throw GuideSourceWorkspacePreparationError.destinationNotOwned
@@ -646,6 +723,12 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                   staged.head == binding.expectedCommit,
                   !staged.isDirty else {
                 throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("staged workspace identity changed")
+            }
+            let linkedGitDirectory = try await readGitDirectory(in: stagedURL)
+            guard linkedGitDirectory == binding.linkedWorktreeGitDirectory else {
+                throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed(
+                    "linked worktree identity changed"
+                )
             }
             return .success(binding)
         } catch let error as GuideSourceWorkspacePreparationError {
@@ -669,7 +752,9 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
         from inspection: GuideSourceWorkspaceInspection,
         choice: GuideSourceWorkspaceSetupChoice
     ) async throws -> GuideSourceWorkspaceBinding {
+        try throwIfOperationWasCancelled(request.runID)
         let freshIdentity = try await inspectIdentity(request)
+        try throwIfOperationWasCancelled(request.runID)
         let inspectedIdentity: GuideSourceWorkspaceIdentity
         switch inspection {
         case .existingClean(let identity), .isolatedCopyOffered(let identity):
@@ -686,7 +771,7 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                     expected: request.expectedCommit, observed: freshIdentity.head
                 )
             }
-            return makeExistingBinding(request: request, identity: freshIdentity)
+            return try await makeExistingBinding(request: request, identity: freshIdentity)
         case (.existingClean, .createIsolatedWorktree):
             return try await stage(request: request, identity: freshIdentity)
         case (.isolatedCopyOffered, .useExistingCleanCheckout):
@@ -697,6 +782,7 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
     }
 
     private func inspectIdentity(_ request: GuideSourceWorkspaceRequest) async throws -> GuideSourceWorkspaceIdentity {
+        try throwIfOperationWasCancelled(request.runID)
         guard isSafeIdentifier(request.guideID),
               isSafeIdentifier(request.projectID),
               request.guideRevision >= 0,
@@ -714,9 +800,13 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
         // The executor owns one child process. Keep these probes serial so a
         // stop request always owns and terminates the active child.
         let headResult = try await runGit(["rev-parse", "--verify", "HEAD^{commit}"], in: source)
+        try throwIfOperationWasCancelled(request.runID)
         let originResult = try await runGit(["remote", "get-url", "origin"], in: source)
+        try throwIfOperationWasCancelled(request.runID)
         let statusResult = try await runGit(["status", "--porcelain=v1", "--untracked-files=all", "-z"], in: source)
+        try throwIfOperationWasCancelled(request.runID)
         let expectedResult = try await runGit(["rev-parse", "--verify", "\(request.expectedCommit)^{commit}"], in: source)
+        try throwIfOperationWasCancelled(request.runID)
         let commonResult = try await runGit(["rev-parse", "--git-common-dir"], in: source)
         guard headResult.exitCode == 0 else {
             throw GuideSourceWorkspacePreparationError.sourceUnavailable("HEAD could not be read")
@@ -747,6 +837,7 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
         let workingTreeFingerprint = try fingerprint(
             source: source, porcelain: statusResult.output
         )
+        try throwIfOperationWasCancelled(request.runID)
         let commonText = commonResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
         let commonURL = URL(fileURLWithPath: commonText, relativeTo: source).standardizedFileURL
         guard commonURL.path == commonURL.resolvingSymlinksInPath().standardizedFileURL.path else {
@@ -767,6 +858,7 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
         request: GuideSourceWorkspaceRequest,
         identity: GuideSourceWorkspaceIdentity
     ) async throws -> GuideSourceWorkspaceBinding {
+        try throwIfOperationWasCancelled(request.runID)
         let root = request.ownedProjectsRoot.standardizedFileURL
         guard destinationIsOwned(root) else {
             throw GuideSourceWorkspacePreparationError.destinationNotOwned
@@ -790,24 +882,23 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
         }
 
         do {
+            try throwIfOperationWasCancelled(request.runID)
             let result = try await runGit([
                 "worktree", "add", "--detach", destination.path, request.expectedCommit
             ], in: URL(fileURLWithPath: identity.canonicalPath, isDirectory: true))
             guard result.exitCode == 0 else {
-                do {
-                    try saveRecord(GuideSourceWorkspaceRecord(
-                    runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
-                    projectID: request.projectID, originalPath: identity.canonicalPath, stagedPath: destination.path,
-                    expectedOrigin: request.expectedOrigin, expectedCommit: request.expectedCommit,
-                    ownershipMarker: marker, state: .failed
-                    ))
-                } catch {
-                    throw GuideSourceWorkspacePreparationError.recoveryRecordCouldNotBeSaved
-                }
                 throw GuideSourceWorkspacePreparationError.worktreeCommandFailed(
                     exitCode: result.exitCode, output: result.output
                 )
             }
+            guard GuideSourceWorkspacePath.validateExistingOwnedDestination(
+                destination, within: root
+            ) else {
+                throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed(
+                    "created worktree is not inside the Test-owned destination"
+                )
+            }
+            try throwIfOperationWasCancelled(request.runID)
             let stagedIdentity = try await inspectIdentity(
                 GuideSourceWorkspaceRequest(
                     runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
@@ -816,10 +907,20 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                     ownedProjectsRoot: request.ownedProjectsRoot
                 )
             )
+            try throwIfOperationWasCancelled(request.runID)
             guard !stagedIdentity.isDirty, stagedIdentity.head == request.expectedCommit else {
                 throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("staged worktree is not clean at the expected commit")
             }
+            // Worktree creation touches the shared Git administrative area.
+            // Re-read the source after it returns so a source edited while Git
+            // was staging is never represented by a stale binding.
+            let finalOriginalIdentity = try await inspectIdentity(request)
+            guard finalOriginalIdentity == identity else {
+                throw GuideSourceWorkspacePreparationError.sourceChangedSinceInspection
+            }
+            try throwIfOperationWasCancelled(request.runID)
             let linkedGitDirectory = try await readGitDirectory(in: destination)
+            try throwIfOperationWasCancelled(request.runID)
             let binding = GuideSourceWorkspaceBinding(
                 runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
                 projectID: request.projectID, original: identity, staged: stagedIdentity,
@@ -829,6 +930,7 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                 linkedWorktreeGitDirectory: linkedGitDirectory, isIsolated: true
             )
             do {
+                try throwIfOperationWasCancelled(request.runID)
                 try saveRecord(GuideSourceWorkspaceRecord(
                 runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
                 projectID: request.projectID, originalPath: identity.canonicalPath, stagedPath: destination.path,
@@ -851,20 +953,48 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                 throw GuideSourceWorkspacePreparationError.recoveryRecordCouldNotBeSaved
             }
             throw GuideSourceWorkspacePreparationError.cancelled
+        } catch let error as GuideSourceWorkspacePreparationError {
+            do {
+                try saveRecord(GuideSourceWorkspaceRecord(
+                    runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
+                    projectID: request.projectID, originalPath: identity.canonicalPath, stagedPath: destination.path,
+                    expectedOrigin: request.expectedOrigin, expectedCommit: request.expectedCommit,
+                    ownershipMarker: marker, state: .failed
+                ))
+            } catch {
+                throw GuideSourceWorkspacePreparationError.recoveryRecordCouldNotBeSaved
+            }
+            throw error
+        } catch {
+            do {
+                try saveRecord(GuideSourceWorkspaceRecord(
+                    runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
+                    projectID: request.projectID, originalPath: identity.canonicalPath, stagedPath: destination.path,
+                    expectedOrigin: request.expectedOrigin, expectedCommit: request.expectedCommit,
+                    ownershipMarker: marker, state: .failed
+                ))
+            } catch {
+                throw GuideSourceWorkspacePreparationError.recoveryRecordCouldNotBeSaved
+            }
+            throw error
         }
     }
 
     private func makeExistingBinding(
         request: GuideSourceWorkspaceRequest,
         identity: GuideSourceWorkspaceIdentity
-    ) -> GuideSourceWorkspaceBinding {
-        GuideSourceWorkspaceBinding(
+    ) async throws -> GuideSourceWorkspaceBinding {
+        let linkedGitDirectory = try await readGitDirectory(
+            in: URL(fileURLWithPath: identity.canonicalPath, isDirectory: true)
+        )
+        try throwIfOperationWasCancelled(request.runID)
+        return GuideSourceWorkspaceBinding(
             runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
             projectID: request.projectID, original: identity, staged: identity,
             originalPath: identity.canonicalPath, stagedPath: identity.canonicalPath,
             expectedOrigin: identity.origin, expectedCommit: request.expectedCommit,
             ownershipMarker: "existing-user-checkout", commonGitDirectory: identity.commonGitDirectory,
-            linkedWorktreeGitDirectory: identity.commonGitDirectory, isIsolated: false
+            linkedWorktreeGitDirectory: linkedGitDirectory, isIsolated: false
         )
     }
 
@@ -874,6 +1004,9 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
             throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("linked worktree admin path could not be read")
         }
         let text = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !text.contains("\n"), !text.contains("\r") else {
+            throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("linked worktree admin path is empty")
+        }
         let path = URL(fileURLWithPath: text, relativeTo: worktree).standardizedFileURL
         guard path.path == path.resolvingSymlinksInPath().standardizedFileURL.path else {
             throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("linked worktree admin path contains a symlink")
@@ -883,6 +1016,66 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
 
     private func saveRecord(_ record: GuideSourceWorkspaceRecord) throws {
         try store.save(record)
+    }
+
+    private func beginOperation(_ operationID: UUID) async -> Bool {
+        // A cancelled operation may still be unwinding the process executor
+        // when the reader immediately retries. Wait for that bounded teardown
+        // instead of turning a normal retry into an executor-busy error. A
+        // live operation that was not cancelled remains a hard single-flight
+        // refusal, so two independent setup requests cannot overlap. The
+        // timeout keeps a broken executor from making the retry wait forever.
+        let teardownDeadline = Date().addingTimeInterval(5)
+        while true {
+            switch beginOperationAttempt(operationID) {
+            case .acquired:
+                return true
+            case .busy:
+                return false
+            case .waitForCancelledOperation:
+                guard Date() < teardownDeadline else { return false }
+                do {
+                    try await Task.sleep(for: .milliseconds(10))
+                } catch {
+                    return false
+                }
+            }
+        }
+    }
+
+    private enum OperationStartDecision {
+        case acquired
+        case waitForCancelledOperation
+        case busy
+    }
+
+    private func beginOperationAttempt(_ operationID: UUID) -> OperationStartDecision {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard activeOperationID == nil else {
+            let activeOperationWasCancelled = activeOperationID
+                .map { cancelledOperationIDs.contains($0) } ?? false
+            return activeOperationWasCancelled ? .waitForCancelledOperation : .busy
+        }
+        activeOperationID = operationID
+        return .acquired
+    }
+
+    private func endOperation(_ operationID: UUID) {
+        operationLock.lock()
+        if activeOperationID == operationID {
+            activeOperationID = nil
+        }
+        cancelledOperationIDs.remove(operationID)
+        operationLock.unlock()
+    }
+
+    private func throwIfOperationWasCancelled(_ operationID: UUID) throws {
+        try Task.checkCancellation()
+        operationLock.lock()
+        let cancelled = cancelledOperationIDs.contains(operationID)
+        operationLock.unlock()
+        if cancelled { throw CancellationError() }
     }
 
     private func runGit(_ arguments: [String], in directory: URL) async throws -> GuideSourceWorkspaceCommandResult {

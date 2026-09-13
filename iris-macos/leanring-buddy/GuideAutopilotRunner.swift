@@ -905,10 +905,12 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         var resolvedWorkspaceDirectory: String?
         if let workspace = step.workspace {
             guard let directory = await resolvePreparedWorkspace(workspace) else {
+                guard !Task.isCancelled else { return .stopped }
                 return refusePreparedWorkspace(workspace, command: step.command ?? "")
             }
             resolvedWorkspaceDirectory = directory
         }
+        guard !Task.isCancelled else { return .stopped }
         guard let command = step.command else { return .succeeded }
 
         // Do not advance the UI step generation merely because a second
@@ -1634,16 +1636,18 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
               binding.guideID == guideContext.slug,
               binding.guideRevision == guideContext.version,
               binding.projectID == (guideContext.projectID ?? guideContext.slug),
-              let validator = preparedWorkspaceValidator,
-              await validator(binding) else {
+              let owner = guideContext.sourceOwner,
+              let repo = guideContext.sourceRepo,
+              let commit = guideContext.sourceCommit,
+              let validator = preparedWorkspaceValidator else {
             return nil
         }
-        if let owner = guideContext.sourceOwner,
-           let repo = guideContext.sourceRepo,
-           GuideSourceWorkspaceOrigin.parse("https://github.com/\(owner)/\(repo)") != binding.expectedOrigin {
+        guard !Task.isCancelled, await validator(binding), !Task.isCancelled else {
             return nil
         }
-        if let commit = guideContext.sourceCommit, commit != binding.expectedCommit {
+        guard GuideSourceWorkspaceOrigin.parse("https://github.com/\(owner)/\(repo)") == binding.expectedOrigin,
+              commit == binding.expectedCommit,
+              !Task.isCancelled else {
             return nil
         }
         guard let directory = try? binding.workingDirectory(forRelativePath: workspace.relativePath) else {

@@ -1242,6 +1242,7 @@ final class GuideSessionController: ObservableObject {
     /// paired with the generation checks around async results because a
     /// cancelled operation can still return from an already-started request.
     private func tearDownWhicheverGuideSessionIsCurrentlyOpen() {
+        cancelPendingSourceWorkspaceOperation()
         cancelAnyWorkFromThePreviousStep()
         // A pointer request already in flight has to die with the guide.
         //
@@ -1292,6 +1293,7 @@ final class GuideSessionController: ObservableObject {
         }
         guideSessionGeneration &+= 1
         sourceWorkspaceGeneration &+= 1
+        cancelPendingSourceWorkspaceOperation()
         let generationForThisBranchSelection = guideSessionGeneration
         if autopilotIsRunning { stopAutopilot() }
         cancelAnyWorkFromThePreviousStep()
@@ -1349,6 +1351,7 @@ final class GuideSessionController: ObservableObject {
             expectedCommit: sourceCommit,
             ownedProjectsRoot: ownedProjectsRoot
         )
+        cancelPendingSourceWorkspaceOperation()
         sourceWorkspaceGeneration &+= 1
         let generation = sourceWorkspaceGeneration
         sourceWorkspaceRequest = request
@@ -1378,6 +1381,11 @@ final class GuideSessionController: ObservableObject {
     func prepareSelectedSourceWorkspace(
         choice: GuideSourceWorkspaceSetupChoice
     ) async -> Result<GuideSourceWorkspaceBinding, GuideSourceWorkspacePreparationError> {
+        if case .preparing = sourceWorkspaceSetupState {
+            let failure: Result<GuideSourceWorkspaceBinding, GuideSourceWorkspacePreparationError> =
+                .failure(.invalidRequest("workspace preparation is already in progress"))
+            return failure
+        }
         guard let request = sourceWorkspaceRequest,
               let inspection = sourceWorkspaceInspection else {
             let failure: Result<GuideSourceWorkspaceBinding, GuideSourceWorkspacePreparationError> =
@@ -1424,10 +1432,20 @@ final class GuideSessionController: ObservableObject {
     }
 
     func cancelSourceWorkspaceSetup() {
+        cancelPendingSourceWorkspaceOperation()
         sourceWorkspaceGeneration &+= 1
         sourceWorkspaceRequest = nil
         sourceWorkspaceInspection = nil
         sourceWorkspaceSetupState = .idle
+    }
+
+    /// Cancels the fixed-argv source probe or worktree staging operation before
+    /// its request is discarded. Generation checks still reject any late value,
+    /// while the service cancellation prevents a stale operation from creating
+    /// a worktree after the reader has pressed Cancel or opened another guide.
+    private func cancelPendingSourceWorkspaceOperation() {
+        guard let request = sourceWorkspaceRequest else { return }
+        sourceWorkspaceService.cancel(runID: request.runID)
     }
 
     /// Revalidate the persisted binding at an execution boundary. A false

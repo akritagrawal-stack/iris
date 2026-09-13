@@ -1529,19 +1529,21 @@ final class OnDemandEditCoordinator: ObservableObject {
         return true
     }
 
-    /// A model-backed intake plan is optional.  If its provider stalls or
-    /// fails, cancel it and continue through the local, deterministic gate.
-    /// This preserves questions that are already justified by the repository
-    /// recipe/runtime shape, while avoiding a silent model-based guess.
+    /// A model-backed intake plan is required for harness edits. A timeout or
+    /// failed response must not send the same request through the older,
+    /// unmeasured runner. Keep the reader on the describe card with a clear
+    /// retry instead; no source or installed app is touched.
     private func fallBackFromHarnessPlanning(
-        generation: Int, kind: OnDemandEditKind
+        generation: Int, kind _: OnDemandEditKind
     ) {
         guard requestProbeGeneration == generation, phase == .describe,
               isAssessingRequest else { return }
-        harnessWorkflow = nil
-        advanceFromDescribe(
-            afterProbeGeneration: generation, verdict: .allQuiet, kind: kind
-        )
+        requestProbeTask?.cancel()
+        requestProbeWatchdog?.cancel()
+        requestProbeTask = nil
+        requestProbeWatchdog = nil
+        isAssessingRequest = false
+        statusLine = "Iris could not finish the plan in time. Nothing was changed — try again when your model connection is ready."
     }
 
     private func failHarnessPlanning(generation: Int) {
@@ -1552,7 +1554,6 @@ final class OnDemandEditCoordinator: ObservableObject {
         requestProbeTask = nil
         requestProbeWatchdog = nil
         isAssessingRequest = false
-        harnessWorkflow = nil
         statusLine = "Iris could not finish the plan. Nothing was changed. Please try again."
     }
 
@@ -1870,6 +1871,17 @@ final class OnDemandEditCoordinator: ObservableObject {
               let scrubbed = scrubbedRequest,
               let editChangeId = changeId,
               let kind = classifiedKind else { return }
+
+        // Iris Test is deliberately wired through the measured harness. A
+        // missing or incomplete workflow means intake did not establish the
+        // user contract, so it must never fall through to the ordinary
+        // provider just because a stale card or callback tried to start.
+        guard !(IrisTestEnvironment.isEnabled && makeHarnessWorkflow != nil
+                && (harnessWorkflow == nil || harnessWorkflow?.state == nil)) else {
+            phase = .failed(reason: "Iris could not finish its measured plan. Nothing was changed; try the request again.")
+            statusLine = phaseReason
+            return
+        }
 
         // 1) Re-check eligibility LIVE — a cached render flag is advisory only,
         //    and `.git` can have been deleted/moved since the offer.

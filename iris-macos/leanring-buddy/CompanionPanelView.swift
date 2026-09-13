@@ -569,26 +569,34 @@ struct CompanionPanelView: View {
                         .foregroundColor(DS.Colors.success)
                 }
             } else {
-                HStack(spacing: 6) {
-                    Button(action: {
-                        // Triggers the system accessibility prompt (AXIsProcessTrustedWithOptions)
-                        // on first attempt, then opens System Settings on subsequent attempts.
-                        WindowPositionManager.requestAccessibilityPermission()
-                    }) {
-                        Text("Grant")
-                    }
-                    .irisPrimaryPill(isFullWidth: false, isCompact: true)
+                VStack(alignment: .trailing, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Button(action: {
+                            // Triggers the system accessibility prompt (AXIsProcessTrustedWithOptions)
+                            // on first attempt, then opens System Settings on subsequent attempts.
+                            WindowPositionManager.requestAccessibilityPermission()
+                        }) {
+                            Text("Grant")
+                        }
+                        .irisPrimaryPill(isFullWidth: false, isCompact: true)
 
-                    Button(action: {
-                        // Reveals the app in Finder so the user can drag it into
-                        // the Accessibility list if it doesn't appear automatically
-                        // (common with unsigned dev builds).
-                        WindowPositionManager.revealAppInFinder()
-                        WindowPositionManager.openAccessibilitySettings()
-                    }) {
-                        Text("Find App")
+                        Button(action: {
+                            // Reveals the app in Finder so the user can drag it into
+                            // the Accessibility list if it doesn't appear automatically
+                            // (common with unsigned dev builds).
+                            WindowPositionManager.revealAppInFinder()
+                            WindowPositionManager.openAccessibilitySettings()
+                        }) {
+                            Text("Show Iris")
+                        }
+                        .irisTinyButton()
                     }
-                    .irisTinyButton()
+
+                    Text(AccessibilityPermissionRecovery.repairInstructions)
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: 260, alignment: .trailing)
                 }
             }
         }

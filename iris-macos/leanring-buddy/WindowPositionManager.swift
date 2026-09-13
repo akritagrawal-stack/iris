@@ -16,6 +16,27 @@ enum PermissionRequestPresentationDestination: Equatable {
     case systemSettings
 }
 
+/// Copy and actions for the unusual case where macOS has not listed this
+/// particular Iris build in Accessibility. Keeping this decision separate from
+/// the system APIs makes the recovery path consistent in Settings and testable
+/// without prompting macOS.
+enum AccessibilityPermissionRecovery {
+    enum Action: String, Equatable {
+        case openSettings = "Open Settings"
+        case showIris = "Show Iris"
+    }
+
+    static func shouldShowRepairInstructions(isGranted: Bool) -> Bool {
+        !isGranted
+    }
+
+    static func actions(isGranted: Bool) -> [Action] {
+        isGranted ? [] : [.openSettings, .showIris]
+    }
+
+    static let repairInstructions = "If Iris is missing in Accessibility, use Show Iris, remove any stale Iris entry with the minus button, then add this copy with the plus button."
+}
+
 @MainActor
 class WindowPositionManager {
     private static var hasAttemptedAccessibilitySystemPromptDuringCurrentLaunch = false

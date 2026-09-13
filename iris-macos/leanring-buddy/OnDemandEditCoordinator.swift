@@ -978,6 +978,14 @@ final class OnDemandEditCoordinator: ObservableObject {
     /// behind a spinner.
     private static let probeWatchdogNanoseconds: UInt64 = 20_000_000_000
 
+    /// The test harness's intake planner can use a reader-provided model, but
+    /// it is an enhancement to the deterministic clarification gate—not a
+    /// reason to leave the reader behind a spinner.  Keep this deliberately
+    /// short: when it misses its window, Iris falls back to the same local
+    /// plan/clarification path used outside the test harness.  The edit's
+    /// model budget and independent-review reserve are unaffected.
+    private static let harnessPlanningWatchdogNanoseconds: UInt64 = 20_000_000_000
+
     /// The optional seams default INSIDE the `@MainActor` init body rather than
     /// in the parameter list: a default argument referencing a `@MainActor`
     /// static (`.shared`, `defaultPerformOnDemandEdit`) is evaluated in a
@@ -1477,13 +1485,21 @@ final class OnDemandEditCoordinator: ObservableObject {
                             self.statusLine = "A quick decision before Iris starts."
                         }
                     } catch {
-                        self?.failHarnessPlanning(generation: probeGeneration)
+                        self?.fallBackFromHarnessPlanning(
+                            generation: probeGeneration, kind: kind
+                        )
                     }
                 }
                 requestProbeWatchdog = Task { [weak self] in
-                    do { try await Task.sleep(nanoseconds: 180_000_000_000) }
+                    do {
+                        try await Task.sleep(
+                            nanoseconds: Self.harnessPlanningWatchdogNanoseconds
+                        )
+                    }
                     catch { return }
-                    self?.failHarnessPlanning(generation: probeGeneration)
+                    self?.fallBackFromHarnessPlanning(
+                        generation: probeGeneration, kind: kind
+                    )
                 }
             } catch {
                 failHarnessPlanning(generation: probeGeneration)
@@ -1511,6 +1527,21 @@ final class OnDemandEditCoordinator: ObservableObject {
             )
         }
         return true
+    }
+
+    /// A model-backed intake plan is optional.  If its provider stalls or
+    /// fails, cancel it and continue through the local, deterministic gate.
+    /// This preserves questions that are already justified by the repository
+    /// recipe/runtime shape, while avoiding a silent model-based guess.
+    private func fallBackFromHarnessPlanning(
+        generation: Int, kind: OnDemandEditKind
+    ) {
+        guard requestProbeGeneration == generation, phase == .describe,
+              isAssessingRequest else { return }
+        harnessWorkflow = nil
+        advanceFromDescribe(
+            afterProbeGeneration: generation, verdict: .allQuiet, kind: kind
+        )
     }
 
     private func failHarnessPlanning(generation: Int) {

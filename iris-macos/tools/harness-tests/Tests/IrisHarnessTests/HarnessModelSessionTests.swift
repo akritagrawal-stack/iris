@@ -224,6 +224,73 @@ import Testing
     #expect(physicalCalls == 1)
 }
 
+@Test @MainActor func terminalCancellationRetainsAnAdmittedTransportForLateSettlement() async throws {
+    var physicalCalls = 0
+    var checkpoints: [HarnessRunLedgerSnapshot] = []
+    var releaseTransport: CheckedContinuation<Void, Never>?
+    var admissionContinuation: AsyncStream<Void>.Continuation?
+    let admissions = AsyncStream<Void> { continuation in
+        admissionContinuation = continuation
+    }
+    let session = try HarnessModelSession(
+        implementationArm: .astraLow,
+        settings: HarnessRunLedgerSettings(maxCalls: 1, maxInputBytes: 10_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { _ in
+        physicalCalls += 1
+        await withCheckedContinuation { continuation in
+            releaseTransport = continuation
+            admissionContinuation?.yield()
+        }
+        return HarnessModelReply(text: "settled", usage: .init(
+            inputTokens: 9, cachedInputTokens: 4, outputTokens: 3, reasoningOutputTokens: 2
+        ))
+    }
+
+    session.ledgerDidChange = { checkpoints.append($0) }
+    let response = Task { @MainActor in
+        try await session.respond(
+            phase: .edit, systemPrompt: "edit", conversation: [], maximumOutputTokens: 10
+        )
+    }
+    var transportReleased = false
+    defer {
+        if !transportReleased { releaseTransport?.resume() }
+    }
+    var admissionIterator = admissions.makeAsyncIterator()
+    _ = await admissionIterator.next()
+    let release = try #require(releaseTransport)
+    #expect(physicalCalls == 1)
+    #expect(session.ledger.snapshot.inFlightCallCount == 1)
+    #expect(session.finish(reason: .cancelled))
+    #expect(session.ledger.snapshot.status == .stopped(.cancelled))
+    #expect(session.ledger.snapshot.inFlightCallCount == 1)
+    #expect(checkpoints.last?.status == .stopped(.cancelled))
+
+    await #expect(throws: HarnessRunLedgerError.self) {
+        _ = try await session.respond(
+            phase: .review, systemPrompt: "review", conversation: [], maximumOutputTokens: 10
+        )
+    }
+    #expect(physicalCalls == 1)
+
+    release.resume()
+    transportReleased = true
+    _ = try await response.value
+    #expect(session.ledger.snapshot.settledCallCount == 1)
+    #expect(session.ledger.snapshot.inFlightCallCount == 0)
+    #expect(session.ledger.snapshot.status == .stopped(.cancelled))
+    #expect(session.ledger.snapshot.measuredInputTokens == 9)
+    #expect(session.ledger.snapshot.measuredCachedInputTokens == 4)
+    #expect(session.ledger.snapshot.measuredOutputTokens == 3)
+    #expect(session.ledger.snapshot.measuredReasoningOutputTokens == 2)
+    #expect(!session.finish(reason: .completed))
+    #expect(physicalCalls == 1)
+    #expect(checkpoints.last?.status == .stopped(.cancelled))
+    #expect(checkpoints.last?.inFlightCallCount == 0)
+}
+
 @Test @MainActor func rejectedLargeReplyIsNotReportedAsFree() async throws {
     let session = try HarnessModelSession(implementationArm: .astraLow,
         settings: HarnessRunLedgerSettings(maxCalls: 2, maxInputBytes: 10_000),

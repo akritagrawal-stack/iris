@@ -63,6 +63,16 @@ final class HarnessModelSession {
     }
 
     private(set) var ledger: HarnessRunLedger
+    /// The most recent reservation accepted before transport began. The
+    /// adapter uses this to associate a later successful image-retirement
+    /// notification with the exact physical request that carried the image.
+    /// It remains populated after a failed transport so the full admitted
+    /// reservation stays the replay estimate.
+    private(set) var lastAdmittedReservation: HarnessRunReservation?
+    /// Component counts for `lastAdmittedReservation`. These are retained even
+    /// when no telemetry observer is installed so an image-retirement signal
+    /// can be matched conservatively in every harness run.
+    private(set) var lastAdmittedInputCounts: HarnessModelInputCounts?
     /// Optional host checkpoint, called after each accounting mutation.
     var ledgerDidChange: ((HarnessRunLedgerSnapshot) -> Void)?
     /// Optional observer for admitted requests. It receives counts only after
@@ -109,12 +119,7 @@ final class HarnessModelSession {
         let request = HarnessModelRequest(route: route, phase: phase,
             systemPrompt: systemPrompt, conversation: conversation, maximumOutputTokens: maximumOutputTokens)
         let inputBytes = try serializedInputByteCounter(request)
-        let inputCounts: HarnessModelInputCounts?
-        if admissionDidSucceed == nil {
-            inputCounts = nil
-        } else {
-            inputCounts = try Self.inputCounts(for: request)
-        }
+        let inputCounts = try Self.inputCounts(for: request)
         let availableAfterPreserving = ledger.remainingInputByteCapacity(
             afterPreservingInputBytes: preservingInputBytes
         )
@@ -129,9 +134,9 @@ final class HarnessModelSession {
         guard !attempt.overflow else { throw SessionError.invalidLimits }
         let reservation = try ledger.reserve(task: phase, attempt: attempt.partialValue,
             inputBytes: inputBytes, at: .init(nanoseconds: timestamp))
-        if let inputCounts {
-            admissionDidSucceed?(reservation, inputCounts)
-        }
+        lastAdmittedReservation = reservation
+        lastAdmittedInputCounts = inputCounts
+        admissionDidSucceed?(reservation, inputCounts)
         ledgerDidChange?(ledger.snapshot)
         let reply: HarnessModelReply
         do {

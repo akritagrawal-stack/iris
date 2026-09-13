@@ -105,6 +105,15 @@ protocol HarnessPhaseAwareModelProviding {
     func setHarnessPhase(_ phase: HarnessRunTaskKind)
 }
 
+/// The fixer sends this only after a successful response and after removing
+/// the opening image from its replay conversation. Keeping the notification
+/// explicit lets the harness reduce a future correction estimate without
+/// changing the ledger's already-accounted request bytes.
+@MainActor
+protocol HarnessOpeningRuntimeImageRetirementObserving {
+    func openingRuntimeImageWasRetired(rawImageBytes: UInt64)
+}
+
 @MainActor
 protocol HarnessBehaviorReviewProviding {
     func prepareBehaviorReview(revision: String, suitePassed: Bool, testCommand: String?,
@@ -146,7 +155,7 @@ protocol HarnessReviewBudgetProviding {
 /// Uses the original Iris executor with the accepted brief pinned in each
 /// request, including after its ordinary conversation window is compacted.
 @MainActor
-final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhaseAwareModelProviding, HarnessBehaviorReviewProviding, HarnessExecutionObserving, HarnessReviewBudgetProviding {
+final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhaseAwareModelProviding, HarnessOpeningRuntimeImageRetirementObserving, HarnessBehaviorReviewProviding, HarnessExecutionObserving, HarnessReviewBudgetProviding {
     let workflow: HarnessFeatureWorkflow
     private var phase: HarnessRunTaskKind = .edit
     private(set) var executionJournal = HarnessExecutionJournal()
@@ -163,6 +172,13 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
     private var reviewTestCommand: String?
     private var reviewFiles: [String: String] = [:]
     private var reviewPurpose: HarnessReviewPurpose = .ordinaryBehaviorCoverage
+    /// The latest admitted edit or repair request's prospective replay size.
+    /// It starts at the exact reserved serialized size. Only an explicit
+    /// successful opening-image retirement can lower it.
+    private var replayableEditInputBytes: UInt64?
+    private var replayableEditReservationID: HarnessRunReservationID?
+    private var replayableEditImageBytes: UInt64 = 0
+    private var replayableEditImageWasRetired = false
     private var reservedReviewCalls: UInt64 = 1
     private var initialCorrectionReserveCalls: UInt64 = 0
     private var hasStartedVerification = false
@@ -210,10 +226,7 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
         let mandatoryReviewBytes = reviewInputBudget.reservedInputBytes
         guard initialCorrectionReserveCalls > 0,
               !hasStartedVerification,
-              let latestEditBytes = workflow.modelSession.ledger.settledCalls
-                  .reversed()
-                  .first(where: { $0.reservation.task == .edit })?
-                  .reservation.inputBytesReserved
+              let latestEditBytes = replayableEditInputBytes
         else {
             return mandatoryReviewBytes
         }
@@ -258,6 +271,23 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
     func setHarnessPhase(_ phase: HarnessRunTaskKind) {
         self.phase = phase
         if phase == .edit || phase == .repair { behaviorAssessment = nil }
+    }
+
+    func openingRuntimeImageWasRetired(rawImageBytes: UInt64) {
+        guard rawImageBytes > 0,
+              !replayableEditImageWasRetired,
+              let reservationID = replayableEditReservationID,
+              replayableEditImageBytes == rawImageBytes,
+              let settled = workflow.modelSession.ledger.settledCalls.first(where: {
+                  $0.reservation.id == reservationID
+              }),
+              settled.outcome == .succeeded,
+              settled.reservation.task == .edit || settled.reservation.task == .repair,
+              rawImageBytes <= settled.reservation.inputBytesReserved else {
+            return
+        }
+        replayableEditInputBytes = settled.reservation.inputBytesReserved - rawImageBytes
+        replayableEditImageWasRetired = true
     }
 
     func observeEngineProgress(_ event: MaintainTierCProgressEvent) {
@@ -406,15 +436,35 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
                 reviewGuidance = HarnessBehaviorAssessment.manualTestCodeAdmissionInstructions
             }
         }
-        let reply = try await workflow.modelSession.respond(phase: phase,
-            systemPrompt: systemPrompt + "\n\n" + context + "\n\n" + reviewGuidance
-                + (phase == .review ? "" : "\n\n" + readingGuidance + "\n\n" + executionJournal.promptSection
-                   + "\nBefore DONE, add and run tests for each requested behavior when possible. Report what cannot be tested; never mark it passed."),
-            conversation: boundedProjection.messages,
-            maximumOutputTokens: maximumOutputTokens,
-            preservingInputBytes: (phase == .edit || phase == .repair)
-                ? editingInputBytesToPreserve
-                : 0)
+        let admittedCallCountBefore = workflow.modelSession.ledger.admittedCallCount
+        let reply: String
+        do {
+            reply = try await workflow.modelSession.respond(phase: phase,
+                systemPrompt: systemPrompt + "\n\n" + context + "\n\n" + reviewGuidance
+                    + (phase == .review ? "" : "\n\n" + readingGuidance + "\n\n" + executionJournal.promptSection
+                       + "\nBefore DONE, add and run tests for each requested behavior when possible. Report what cannot be tested; never mark it passed."),
+                conversation: boundedProjection.messages,
+                maximumOutputTokens: maximumOutputTokens,
+                preservingInputBytes: (phase == .edit || phase == .repair)
+                    ? editingInputBytesToPreserve
+                    : 0)
+        } catch {
+            if (phase == .edit || phase == .repair),
+               let reservation = admittedEditReservation(after: admittedCallCountBefore) {
+                replayableEditReservationID = reservation.id
+                replayableEditInputBytes = reservation.inputBytesReserved
+                replayableEditImageBytes = workflow.modelSession.lastAdmittedInputCounts?.rawImageBytes ?? 0
+                replayableEditImageWasRetired = false
+            }
+            throw error
+        }
+        if (phase == .edit || phase == .repair),
+           let reservation = admittedEditReservation(after: admittedCallCountBefore) {
+            replayableEditReservationID = reservation.id
+            replayableEditInputBytes = reservation.inputBytesReserved
+            replayableEditImageBytes = workflow.modelSession.lastAdmittedInputCounts?.rawImageBytes ?? 0
+            replayableEditImageWasRetired = false
+        }
         if phase == .review && reviewPurpose != .nativeCodeAdmission {
             let verdict = FeatureEditAdversarialReviewer.parse(reply: reply)
             switch reviewPurpose {
@@ -439,5 +489,12 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
             lastReplyAppliedStructuredEdits = false
         }
         return reply
+    }
+
+    private func admittedEditReservation(after admittedCallCount: UInt64) -> HarnessRunReservation? {
+        guard let reservation = workflow.modelSession.lastAdmittedReservation,
+              reservation.task == phase,
+              reservation.attempt == admittedCallCount + 1 else { return nil }
+        return reservation
     }
 }

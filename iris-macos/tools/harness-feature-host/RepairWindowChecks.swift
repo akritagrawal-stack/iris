@@ -41,6 +41,7 @@ private func repairWindowRequire(
 @MainActor
 func runRepairWindowChecks() async throws {
     try await runRepairWindowBudgetChecks()
+    try await runReplayableEditReserveChecks()
 
     let repaired = try await runRepairWindowScenario(.rejectedThenRepaired)
     let repairRequests = repaired.requests.filter { $0.phase == .repair }
@@ -118,6 +119,281 @@ func runRepairWindowChecks() async throws {
         return false
     }, "the fixture did not actually fail its build before review")
     print("PASS repair window: build failure before first review released correction capacity without dropping final review")
+}
+
+/// The opening runtime image is a one-shot observation. Its bytes remain in
+/// the ledger's actual submitted/accounted total, but after a successful
+/// response they must not inflate the next correction's prospective reserve.
+/// This uses the real workflow provider and model session with an inert
+/// transport, so no model or native app is involved.
+@MainActor
+private func runReplayableEditReserveChecks() async throws {
+    let imageBytes = 672_977
+    let image = Data(repeating: 0xA5, count: imageBytes)
+    let brief = try HarnessTaskBrief(
+        userRequest: "Export the selected images",
+        desiredOutcome: "The export queue preserves the selected images",
+        acceptanceCriteria: [.init(id: "queue", statement: "The selected images remain queued")]
+    )
+    let briefJSON = String(decoding: try JSONEncoder().encode(brief), as: UTF8.self)
+
+    func makeSession(transportFails: Bool = false) async throws ->
+        (HarnessModelSession, HarnessWorkflowMaintainProvider) {
+        let session = try HarnessModelSession(
+            implementationArm: .astraLow,
+            settings: .init(maxCalls: 18, maxInputBytes: 1_800_000),
+            maximumDurationNanoseconds: 60_000_000_000,
+            // These are the recorded production serializer sizes for the
+            // counterfactual. Component counts below still come from the
+            // real request, including the exact raw image byte count.
+            serializedInputByteCounter: { request in
+                if request.phase == .intake { return 13_152 }
+                if request.conversation.contains(where: { $0.text == "IMAGE_EDIT" }) {
+                    return 716_522
+                }
+                if request.conversation.contains(where: { $0.text == "LARGE_TEXT_EDIT" }) {
+                    return 200_000
+                }
+                if request.conversation.contains(where: { $0.text == "HUGE_TEXT_EDIT" }) {
+                    return 150_000
+                }
+                return 43_545
+            }
+        ) { request in
+            if request.phase == .intake {
+                return HarnessModelReply(text: briefJSON)
+            }
+            if transportFails && request.phase == .edit {
+                throw NSError(domain: "inert-transport", code: 1)
+            }
+            return HarnessModelReply(text: "OK")
+        }
+        let workflow = HarnessFeatureWorkflow(modelSession: session)
+        _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "inert fixture")
+        let provider = HarnessWorkflowMaintainProvider(workflow: workflow)
+        provider.configureReviewStages(nativeChecksRequired: true)
+        return (session, provider)
+    }
+
+    let (session, provider) = try await makeSession()
+
+    _ = try await provider.respond(
+        systemPrompt: "inert image edit",
+        conversation: [MaintainChatTurn(role: "user", text: "IMAGE_EDIT", attachedImagePNGData: image)],
+        maximumOutputTokens: 1
+    )
+    try repairWindowRequire(
+        session.lastAdmittedInputCounts?.rawImageBytes == UInt64(imageBytes)
+            && session.lastAdmittedInputCounts?.imageCount == 1,
+        "the admitted image edit did not retain exact component counts without telemetry"
+    )
+    try repairWindowRequire(
+        session.ledger.accountedInputBytes == 729_674,
+        "the intake plus image edit did not retain the full 729674 ledger bytes"
+    )
+    try repairWindowRequire(
+        provider.shouldYieldEditingToVerification,
+        "the full image-bearing edit estimate did not protect both native review stages"
+    )
+
+    // This is the explicit notification the fixer emits after it has cleared
+    // the opening image from the replay conversation.
+    provider.openingRuntimeImageWasRetired(rawImageBytes: UInt64(imageBytes - 1))
+    try repairWindowRequire(
+        provider.shouldYieldEditingToVerification,
+        "a mismatched image-retirement signal released the reserve"
+    )
+    provider.openingRuntimeImageWasRetired(rawImageBytes: UInt64(imageBytes))
+    try repairWindowRequire(
+        session.ledger.accountedInputBytes == 729_674,
+        "retiring the opening image changed actual ledger accounting"
+    )
+    try repairWindowRequire(
+        !provider.shouldYieldEditingToVerification,
+        "the exact retired image bytes did not release the prospective reserve"
+    )
+    provider.openingRuntimeImageWasRetired(rawImageBytes: UInt64(imageBytes))
+    try repairWindowRequire(
+        !provider.shouldYieldEditingToVerification,
+        "a repeated image-retirement signal changed the reserve a second time"
+    )
+
+    _ = try await provider.respond(
+        systemPrompt: "inert text edit",
+        conversation: [MaintainChatTurn(role: "user", text: "TEXT_EDIT")],
+        maximumOutputTokens: 1
+    )
+    _ = try await provider.respond(
+        systemPrompt: "inert larger text edit",
+        conversation: [MaintainChatTurn(role: "user", text: "LARGE_TEXT_EDIT")],
+        maximumOutputTokens: 1
+    )
+    try repairWindowRequire(
+        session.ledger.accountedInputBytes == 973_219,
+        "the admitted 43545 and larger 200000 text edits were not fully accounted"
+    )
+    var staleEstimateWouldAdmit = false
+    do {
+        _ = try await provider.respond(
+            systemPrompt: "inert huge text edit",
+            conversation: [MaintainChatTurn(role: "user", text: "HUGE_TEXT_EDIT")],
+            maximumOutputTokens: 1
+        )
+        staleEstimateWouldAdmit = true
+    } catch let error as HarnessModelSession.SessionError {
+        guard case .yieldToVerification = error else { throw error }
+    }
+    try repairWindowRequire(
+        !staleEstimateWouldAdmit && session.ledger.admittedCallCount == 4,
+        "a later larger text estimate was stale or consumed a refused call"
+    )
+    let reserveDecisionBeforeStaleSignal = provider.shouldYieldEditingToVerification
+    provider.openingRuntimeImageWasRetired(rawImageBytes: UInt64(imageBytes))
+    try repairWindowRequire(
+        provider.shouldYieldEditingToVerification == reserveDecisionBeforeStaleSignal,
+        "a stale retirement signal changed a later text request's reserve"
+    )
+    try repairWindowRequire(
+        provider.reviewInputBudget.stageCount == 2,
+        "the mandatory native review reserve changed while retiring the image"
+    )
+    print("PASS replayable edit reserve: 672977 retired image bytes lowered only the future estimate; ledger stayed at 729674 and larger text refreshed the estimate")
+
+    let (failedSession, failedProvider) = try await makeSession(transportFails: true)
+    do {
+        _ = try await failedProvider.respond(
+            systemPrompt: "inert failed image edit",
+            conversation: [MaintainChatTurn(role: "user", text: "IMAGE_EDIT", attachedImagePNGData: image)],
+            maximumOutputTokens: 1
+        )
+        throw RepairWindowCheckError.failed("the failed image transport unexpectedly returned a reply")
+    } catch let error as HarnessModelSession.SessionError {
+        throw error
+    } catch is NSError {
+        // The provider rethrows the transport error after retaining the full
+        // admitted reservation as the correction estimate.
+    }
+    try repairWindowRequire(
+        failedSession.ledger.accountedInputBytes == 729_674,
+        "a failed image transport did not retain its full admitted ledger bytes"
+    )
+    try repairWindowRequire(
+        failedProvider.shouldYieldEditingToVerification,
+        "a failed image transport incorrectly released the image reserve"
+    )
+    print("PASS replayable edit reserve: failed image transport kept the full future reserve")
+    try await runReplayableEditFixerHookCheck()
+}
+
+/// Runs the real edit loop with an inert transport so the retirement
+/// notification is exercised at its source. The fixture is a private Git tree;
+/// no model, app or installed bundle is used.
+@MainActor
+private func runReplayableEditFixerHookCheck() async throws {
+    try repairWindowRequire(MaintainSandbox.isAvailable,
+                            "the real fixer hook check needs the existing edit sandbox")
+    let fileManager = FileManager.default
+    let container = fileManager.temporaryDirectory
+        .appendingPathComponent("iris-replayable-image-fixer-" + UUID().uuidString)
+    let workRoot = container.appendingPathComponent("work")
+    let scratchRoot = container.appendingPathComponent("scratch")
+    try fileManager.createDirectory(at: workRoot.appendingPathComponent("src"), withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: scratchRoot, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: container) }
+    let previousScratch = ProcessInfo.processInfo.environment["IRIS_HARNESS_SCRATCH"]
+    setenv("IRIS_HARNESS_SCRATCH", scratchRoot.path, 1)
+    defer {
+        if let previousScratch { setenv("IRIS_HARNESS_SCRATCH", previousScratch, 1) }
+        else { unsetenv("IRIS_HARNESS_SCRATCH") }
+    }
+
+    let sourceURL = workRoot.appendingPathComponent("src/feature.js")
+    try Data("export const featureValue = 1;\n".utf8).write(to: sourceURL)
+    let runner = try MaintainShellRunner(repoRootPath: workRoot.path)
+    let initialized = try await runner.run(
+        "git init -q && git add src/feature.js && git -c user.name=IrisFixture -c user.email=fixture@example.invalid commit -qm baseline",
+        deadline: 20
+    )
+    try repairWindowRequire(initialized.succeeded,
+                            "could not initialize the replayable-image fixer fixture")
+
+    let brief = try HarnessTaskBrief(
+        userRequest: "Change the fixture value",
+        desiredOutcome: "The fixture exports the requested value",
+        acceptanceCriteria: [.init(id: "value", statement: "The source exports featureValue equal to 2")]
+    )
+    let briefJSON = String(decoding: try JSONEncoder().encode(brief), as: UTF8.self)
+    let image = Data(repeating: 0x5A, count: 672_977)
+    var requests: [HarnessModelRequest] = []
+    var editCount = 0
+    let session = try HarnessModelSession(
+        implementationArm: .astraLow,
+        settings: .init(maxCalls: 18, maxInputBytes: 1_800_000),
+        maximumDurationNanoseconds: 60_000_000_000,
+        serializedInputByteCounter: { request in
+            if request.phase == .intake { return 13_152 }
+            if request.phase == .edit,
+               request.conversation.contains(where: { $0.imagePNG != nil }) { return 716_522 }
+            if request.phase == .edit { return 43_545 }
+            return 1_000
+        }
+    ) { request in
+        requests.append(request)
+        if request.phase == .intake { return HarnessModelReply(text: briefJSON) }
+        if request.phase == .edit {
+            editCount += 1
+            if editCount == 1 {
+                return HarnessModelReply(text: "Applying the requested value.\n```write src/feature.js\nexport const featureValue = 2;\n```")
+            }
+            return HarnessModelReply(text: "DONE")
+        }
+        return HarnessModelReply(text: "VERDICT: CLEAN")
+    }
+    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    _ = try await workflow.plan(
+        request: brief.userRequest,
+        repositorySummary: "src/feature.js"
+    )
+    let provider = HarnessWorkflowMaintainProvider(workflow: workflow)
+    let result = await MaintainTierCFixer(provider: provider).attemptOnDemandEdit(
+        clonePath: workRoot.path,
+        appSlug: "replayable-image-fixer",
+        appStack: .electron,
+        changeId: "1234567890abcdef1234567890abcdef",
+        request: brief.userRequest,
+        kind: .feature,
+        cancellationCheck: { false },
+        runtimeLogContext: "inert fixture log",
+        appWindowScreenshotPNG: image,
+        verificationCommandsOverride: VerificationCommands(
+            buildCommand: "grep -q 'featureValue = 2' src/feature.js",
+            testCommand: "grep -q 'featureValue = 2' src/feature.js",
+            commandSubdirectory: nil
+        ),
+        runsAnIndependentReview: false
+    )
+    guard case .appliedAndRebuilt = result else {
+        throw RepairWindowCheckError.failed("the real fixer hook fixture did not complete: \(result)")
+    }
+    let editRequests = requests.filter { $0.phase == .edit }
+    try repairWindowRequire(editRequests.count == 2,
+                            "the real fixer hook fixture did not make exactly two edit requests")
+    try repairWindowRequire(editRequests[0].conversation.contains(where: { $0.imagePNG != nil }),
+                            "the first real fixer request did not carry the opening image")
+    try repairWindowRequire(editRequests[1].conversation.allSatisfy { $0.imagePNG == nil },
+                            "the real fixer did not retire the opening image before the next edit request")
+
+    // Verification has started in the real fixer. Configure the unchanged
+    // native two-stage reserve and admit both mandatory review transports.
+    provider.configureReviewStages(nativeChecksRequired: true)
+    provider.setHarnessPhase(.review)
+    _ = try await provider.respond(systemPrompt: "native review one", conversation: [], maximumOutputTokens: 1)
+    _ = try await provider.respond(systemPrompt: "native review two", conversation: [], maximumOutputTokens: 1)
+    let reviewRequests = requests.filter { $0.phase == .review }
+    try repairWindowRequire(reviewRequests.count == 2
+                                && provider.reviewInputBudget.stageCount == 2,
+                            "both mandatory native review transports were not admitted")
+    print("PASS replayable edit reserve: real fixer retired the opening image, next edit was image-free, and both native review transports were admitted")
 }
 
 @MainActor

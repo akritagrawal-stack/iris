@@ -1202,7 +1202,13 @@ final class MaintainTierCFixer {
             // Retire only the opening runtime observation after a successful
             // response. Later calls retain written observations, not hidden
             // visual memory. Other attachments remain untouched.
+            let retiredOpeningImageBytes = conversation.first?.attachedImagePNGData
+                .flatMap { UInt64(exactly: $0.count) }
             Self.retireOpeningRuntimeScreenshot(in: &conversation)
+            if let retiredOpeningImageBytes {
+                (provider as? HarnessOpeningRuntimeImageRetirementObserving)?
+                    .openingRuntimeImageWasRetired(rawImageBytes: retiredOpeningImageBytes)
+            }
 
             // The agent's own sentence for this step — what it says it is
             // doing and why (the on-demand prompts ask for exactly one). This

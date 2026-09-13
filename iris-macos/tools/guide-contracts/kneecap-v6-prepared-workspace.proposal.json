@@ -9,7 +9,9 @@
   "sourceCommit": "fc48ba487a1e0d0cd10b30d6600acd2895ffdbed",
   "outputType": "mobile_app",
   "estimatedMinutes": 40,
-  "readmeSectionIds": ["build"],
+  "readmeSectionIds": [
+    "build"
+  ],
   "branches": [
     {
       "platform": "macos",
@@ -25,6 +27,16 @@
           "body": "Apple opens a small installer.",
           "command": "xcode-select --install",
           "verifierLabel": "Git responds with a version number"
+        },
+        {
+          "id": "install-xcode",
+          "kind": "open",
+          "tool": "xcode",
+          "title": "Install Xcode",
+          "body": "Install the full Xcode app from the App Store, then open it once to accept its license. Command Line Tools alone cannot open or build the iPhone project.",
+          "href": "macappstore://apps.apple.com/app/xcode/id497799835",
+          "actionLabel": "Open App Store",
+          "verifierLabel": "Xcode opens and its license is accepted"
         },
         {
           "id": "install-node",
@@ -67,7 +79,10 @@
           "title": "Install the workspace",
           "body": "A few minutes the first time. Iris runs this only in the prepared project copy.",
           "command": "bun install",
-          "workspace": {"kind": "prepared-project", "relativePath": "."},
+          "workspace": {
+            "kind": "prepared-project",
+            "relativePath": "."
+          },
           "verifierLabel": "The command finishes without an error"
         },
         {
@@ -76,7 +91,10 @@
           "title": "Build the editor",
           "body": "Bundles the editor into apps/mobile/www.",
           "command": "bun run build",
-          "workspace": {"kind": "prepared-project", "relativePath": "apps/mobile"},
+          "workspace": {
+            "kind": "prepared-project",
+            "relativePath": "apps/mobile"
+          },
           "verifierLabel": "Vite reports the build finished"
         },
         {
@@ -85,7 +103,10 @@
           "title": "Copy the editor into the iPhone app",
           "body": "",
           "command": "bunx cap sync ios",
-          "workspace": {"kind": "prepared-project", "relativePath": "apps/mobile"},
+          "workspace": {
+            "kind": "prepared-project",
+            "relativePath": "apps/mobile"
+          },
           "verifierLabel": "Capacitor reports the sync finished"
         },
         {
@@ -94,7 +115,10 @@
           "title": "Open the iPhone project",
           "body": "Capacitor 8 uses Swift Package Manager, so there is no workspace file to hunt for.",
           "command": "bunx cap open ios",
-          "workspace": {"kind": "prepared-project", "relativePath": "apps/mobile"},
+          "workspace": {
+            "kind": "prepared-project",
+            "relativePath": "apps/mobile"
+          },
           "verifierLabel": "Xcode opens the App project and finishes resolving packages"
         },
         {

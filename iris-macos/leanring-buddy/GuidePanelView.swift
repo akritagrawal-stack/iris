@@ -634,32 +634,27 @@ struct GuidePanelView: View {
             .irisPrimaryPill(isFullWidth: false, isCompact: true)
     }
 
-    @ViewBuilder
     private func sourceWorkspaceOffer(_ inspection: GuideSourceWorkspaceInspection) -> some View {
-        let isDirty: Bool
-        switch inspection {
-        case .existingClean:
-            isDirty = false
-        case .isolatedCopyOffered:
-            isDirty = true
-        }
-        Text(isDirty ? "The selected checkout has changes, so Iris will only use an isolated prepared copy." : "The selected checkout is clean and at the reviewed source identity.")
-            .font(.system(size: 11))
-            .foregroundColor(DS.Colors.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-        HStack(spacing: 12) {
-            if !isDirty {
-                Button("Use clean checkout") {
-                    Task { _ = await guideSessionController.prepareSelectedSourceWorkspace(choice: .useExistingCleanCheckout) }
+        let isDirty: Bool = if case .isolatedCopyOffered = inspection { true } else { false }
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(isDirty ? "The selected checkout has changes, so Iris will only use an isolated prepared copy." : "The selected checkout is clean and at the reviewed source identity.")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                if !isDirty {
+                    Button("Use clean checkout") {
+                        Task { _ = await guideSessionController.prepareSelectedSourceWorkspace(choice: .useExistingCleanCheckout) }
+                    }
+                    .irisTextButton(fontSize: 10)
                 }
-                .irisTextButton(fontSize: 10)
+                Button(isDirty ? "Prepare copy" : "Prepare isolated copy") {
+                    Task { _ = await guideSessionController.prepareSelectedSourceWorkspace(choice: .createIsolatedWorktree) }
+                }
+                .irisPrimaryPill(isFullWidth: false, isCompact: true)
+                Button("Cancel") { guideSessionController.cancelSourceWorkspaceSetup() }
+                    .irisTextButton(fontSize: 10)
             }
-            Button(isDirty ? "Prepare copy" : "Prepare isolated copy") {
-                Task { _ = await guideSessionController.prepareSelectedSourceWorkspace(choice: .createIsolatedWorktree) }
-            }
-            .irisPrimaryPill(isFullWidth: false, isCompact: true)
-            Button("Cancel") { guideSessionController.cancelSourceWorkspaceSetup() }
-                .irisTextButton(fontSize: 10)
         }
     }
 

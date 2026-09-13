@@ -17,7 +17,11 @@
 import Foundation
 import Testing
 // The module follows PRODUCT_NAME, which the fork renamed to Iris.
+#if IRIS_HARNESS_STANDALONE
+@testable import IrisHarnessNative
+#else
 @testable import Iris
+#endif
 
 /// Answers "is this tool installed?" from a table a test controls, and remembers
 /// what it was asked. The record is what proves the branch with no setup steps
@@ -380,7 +384,7 @@ struct GuideSetupRecoveryTests {
 /// A fixed-output executor keeps source-workspace tests hermetic. It records
 /// every argv so the tests can prove that a rejected binding never probes or
 /// executes inside an unowned staged path.
-private final class GuideSetupWorkspaceScriptedExecutor: GuideSourceWorkspaceCommandExecuting, @unchecked Sendable {
+final class GuideSetupWorkspaceScriptedExecutor: GuideSourceWorkspaceCommandExecuting, @unchecked Sendable {
     private let lock = NSLock()
     private let head: String
     private let origin: String

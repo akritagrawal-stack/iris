@@ -11,6 +11,13 @@ function requireCondition(condition, message) {
 
 requireCondition(guide.appSlug === "kneecap" && guide.version === 6, "expected Kneecap v6 proposal");
 requireCondition(guide.sourceCommit === expectedCommit, "proposal must retain the reviewed source pin");
+const macOSIOSBranch = guide.branches.find(branch => branch.platform === "macos" && branch.target === "ios");
+requireCondition(macOSIOSBranch, "proposal needs the Mac + iPhone branch");
+const xcodePrerequisite = macOSIOSBranch.setupSteps.find(step => step.id === "install-xcode");
+requireCondition(xcodePrerequisite?.kind === "open" && xcodePrerequisite.tool === "xcode",
+  "proposal must preserve the full Xcode prerequisite");
+requireCondition(typeof xcodePrerequisite.href === "string" && xcodePrerequisite.href.length > 0,
+  "full Xcode prerequisite needs a reader-owned installation route");
 
 for (const branch of guide.branches) {
   for (const step of branch.steps) {

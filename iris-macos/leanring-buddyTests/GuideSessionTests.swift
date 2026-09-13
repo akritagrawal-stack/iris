@@ -11,7 +11,11 @@
 import Foundation
 import Testing
 // The module follows PRODUCT_NAME, which the fork renamed to Iris.
+#if IRIS_HARNESS_STANDALONE
+@testable import IrisHarnessNative
+#else
 @testable import Iris
+#endif
 
 // The controller is main-actor isolated, so the suite has to be too.
 @MainActor
@@ -28,6 +32,10 @@ struct GuideSessionTests {
         #expect(legacy.guideOffersSourceWorkspaceSetup)
         #expect(legacy.guideNeedsPublisherWorkspaceMigration)
         #expect(!legacy.guideHasStructuralWorkspaceSteps)
+        legacy.startAutopilot()
+        #expect(!legacy.autopilotIsRunning)
+        #expect(legacy.autopilotBlockedExplanation?.contains("structural prepared-workspace") == true,
+                "the production start action must refuse legacy HOME-bound project commands")
 
         let structural = GuideSessionController(guideService: guideService)
         await structural.openGuide(
@@ -37,6 +45,115 @@ struct GuideSessionTests {
         #expect(structural.guideOffersSourceWorkspaceSetup)
         #expect(!structural.guideNeedsPublisherWorkspaceMigration)
         #expect(structural.guideHasStructuralWorkspaceSteps)
+    }
+
+    @Test func controllerPreparesAndReusesTheSelectedStructuralSourceWorkspace() async throws {
+        let base = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("iris-source-flow-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = base.appendingPathComponent("source", isDirectory: true)
+        let owned = base.appendingPathComponent("owned", isDirectory: true)
+        let common = base.appendingPathComponent("common.git", isDirectory: true)
+        let linked = common.appendingPathComponent("worktrees/staged", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: owned, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: linked, withIntermediateDirectories: true)
+
+        let commit = "0123456789abcdef0123456789abcdef01234567"
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: commit,
+            origin: "https://github.com/example/prepared-source-contract",
+            commonGitDirectory: common.path,
+            linkedGitDirectory: linked.path,
+            materializeDestination: { destination in
+                try? FileManager.default.createDirectory(
+                    at: destination.appendingPathComponent("apps/mobile", isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+            }
+        )
+        let service = GuideSourceWorkspaceService(
+            executor: executor,
+            store: GuideSourceWorkspaceStore(directory: owned.appendingPathComponent("records", isDirectory: true)),
+            destinationIsOwned: { $0.standardizedFileURL.path == owned.standardizedFileURL.path }
+        )
+        let shell = GuideAutopilotRunnerTests.FakeShellSession(
+            outcomes: [.succeeded(workingDirectory: "/private/tmp")]
+        )
+        let defaultsName = "iris.guide.source-workspace.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsName))
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let controller = GuideSessionController(
+            guideService: try Self.guideServiceAnsweredByTheStub(),
+            makeAutopilotRunner: { context in
+                GuideAutopilotRunner(
+                    shellSession: shell,
+                    longRunningSession: GuideAutopilotRunnerTests.FakeShellSession(
+                        outcomes: [.succeeded(workingDirectory: "/private/tmp")]
+                    ),
+                    fixProposer: GuideAutopilotRunnerTests.FakeFixProposer(),
+                    guideContext: context,
+                    pacing: .instant
+                )
+            },
+            sourceWorkspaceService: service
+        )
+        controller.autonomyGrant = AutopilotAutonomyGrant(userDefaults: defaults)
+        controller.confirmAutonomousControl = { true }
+        await controller.openGuide(
+            slug: "prepared-source-contract", requestedVersion: 6,
+            branchKeyFromDeepLink: "macos:ios", stepIndexFromDeepLink: nil
+        )
+
+        let inspection = await controller.inspectSourceWorkspace(
+            sourcePath: source.path, ownedProjectsRoot: owned
+        )
+        guard case .success(.existingClean) = inspection else {
+            Issue.record("the production controller must expose the clean source choice: \(inspection)")
+            return
+        }
+        let prepared = await controller.prepareSelectedSourceWorkspace(choice: .createIsolatedWorktree)
+        guard case .success(let binding) = prepared else {
+            Issue.record("the production controller must retain its prepared binding: \(prepared)")
+            return
+        }
+        #expect(binding.guideID == "prepared-source-contract")
+        #expect(binding.guideRevision == 6)
+        #expect(binding.expectedCommit == commit)
+        #expect(controller.selectedWorkspaceBinding == binding)
+
+        controller.startAutopilot()
+        let commandRan = await Self.eventually {
+            shell.commandsRun.contains("bun run build")
+        }
+        #expect(commandRan, "startAutopilot must bind the prepared workspace before it drives the command")
+        let expectedDirectory = try binding.workingDirectory(forRelativePath: "apps/mobile")
+            .resolvingSymlinksInPath().path
+        #expect(shell.commandsRun.contains("cd \(expectedDirectory)"))
+        #expect(shell.commandsRun.contains("bun run build"))
+        controller.stopAutopilot()
+
+        controller.cancelSourceWorkspaceSetup()
+        let retry = await controller.inspectSourceWorkspace(
+            sourcePath: source.path, ownedProjectsRoot: owned
+        )
+        guard case .success(.existingClean) = retry else {
+            Issue.record("cancelling setup must leave a retryable controller route: \(retry)")
+            return
+        }
+    }
+
+    private static func eventually(
+        within seconds: Double = 1,
+        until condition: @MainActor () -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(seconds))
+        while clock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
     }
 
     // MARK: - Resuming and version bumps

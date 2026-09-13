@@ -603,11 +603,12 @@ final class GuideSessionController: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.theReaderCanSeeTheGuideStepRightNow else { return }
                 // The previous target may belong to the app that just lost
                 // focus. Clear it before the debounced re-resolution rather
                 // than letting a stale outline remain visible during a switch.
+                guard let self else { return }
                 self.clearGuideTargetOutline?()
+                guard self.theReaderCanSeeTheGuideStepRightNow else { return }
                 self.refreshPointingOnceAppActivationsHaveSettled()
             }
         }
@@ -731,6 +732,8 @@ final class GuideSessionController: ObservableObject {
             // no budget to spend and nothing about a budget to explain.
             pointingDecisionForTheOpenStep = decision
             explanationForIrisHavingStoppedPointingAtThisStep = nil
+            clearGuideTargetOutline?()
+            stopPointingTheEye?()
             return
         }
 

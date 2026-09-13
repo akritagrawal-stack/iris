@@ -1373,6 +1373,20 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Turn evidence into an outline only after the final foreground and
+    /// focused-window check. A resolver can return while the user is changing
+    /// tabs or windows; a failed final check must remove the old outline rather
+    /// than leave a rectangle from the previous target on screen.
+    static func freshGuideTargetOutline(from evidence: GuideTargetEvidence) -> GuideTargetOutline? {
+        guard GuidePointingFreshness.validateCurrentObservation(evidence) == .fresh else {
+            return nil
+        }
+        return GuideTargetOutline(
+            rectangle: evidence.rectangle,
+            fingerprint: evidence.fingerprint
+        )
+    }
+
     /// Lets a guide step fly the eye without the guide controller knowing that
     /// overlays, screens or AppKit exist.
     ///
@@ -1415,13 +1429,8 @@ final class CompanionManager: ObservableObject {
         }
 
         guideSessionController.showGuideTargetOutline = { [weak self] evidence in
-            guard let self,
-                  GuidePointingFreshness.validateCurrentObservation(evidence) == .fresh
-            else { return }
-            self.guideTargetOutline = GuideTargetOutline(
-                rectangle: evidence.rectangle,
-                fingerprint: evidence.fingerprint
-            )
+            guard let self else { return }
+            self.guideTargetOutline = Self.freshGuideTargetOutline(from: evidence)
         }
 
         guideSessionController.clearGuideTargetOutline = { [weak self] in

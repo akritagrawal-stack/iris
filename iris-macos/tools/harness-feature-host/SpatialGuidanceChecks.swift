@@ -32,6 +32,7 @@ struct SpatialGuidanceChecks {
     private static func run() async throws {
         try checkSanitizer()
         try checkSemanticFreshness()
+        try checkOutlineEligibility()
         try checkWindowIdentityFactory()
         try checkCoordinateTransforms()
         try await checkInitialEvidenceValidation()
@@ -209,6 +210,33 @@ struct SpatialGuidanceChecks {
         try require(missing.windowIdentifier == nil,
                     "window factory invented an identity without AX evidence")
         print("PASS production AX-window identity factory")
+    }
+
+    private static func checkOutlineEligibility() throws {
+        let current = evidence(
+            processIdentifier: 11,
+            windowIdentifier: "window-a",
+            controlIdentifier: "save-a",
+            tabFingerprint: "tab-a",
+            rectangle: CGRect(x: 40, y: 60, width: 100, height: 24),
+            topology: testTopology
+        )
+        let changedWindow = evidence(
+            processIdentifier: 11,
+            windowIdentifier: "window-a",
+            controlIdentifier: "save-a",
+            tabFingerprint: "tab-a",
+            rectangle: current.rectangle,
+            topology: testTopology,
+            focusedWindowIdentifier: "window-b"
+        )
+
+        let outline = CompanionManager.freshGuideTargetOutline(from: current)
+        try require(outline?.rectangle == current.rectangle,
+                    "fresh semantic evidence did not produce an outline")
+        try require(CompanionManager.freshGuideTargetOutline(from: changedWindow) == nil,
+                    "changed window retained an outline from the prior target")
+        print("PASS final outline freshness gate")
     }
 
     private static func checkCoordinateTransforms() throws {

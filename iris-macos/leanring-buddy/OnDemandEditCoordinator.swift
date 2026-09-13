@@ -517,6 +517,25 @@ final class OnDemandEditCoordinator: ObservableObject {
         }
     }
 
+    /// Whole-screen evidence is useful when the reader's wording points to
+    /// something visual, but it is irrelevant context for an ordinary source
+    /// edit. Keep the fallback decision local and deterministic so a missing
+    /// app window cannot spend image budget on every request.
+    nonisolated static func requestExplicitlyReferencesVisualContext(_ request: String) -> Bool {
+        let words = request
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+        let visualWords: Set<String> = [
+            "image", "images", "screenshot", "screenshots", "screen", "screens"
+        ]
+        if words.contains(where: { visualWords.contains(String($0)) }) {
+            return true
+        }
+        return zip(words, words.dropFirst()).contains { first, second in
+            String(first) == "current" && String(second) == "view"
+        }
+    }
+
     /// Shared by the Apps panel and the coordinator itself. Keeping this as a
     /// published-state-only gate makes every app picker obey the same reset
     /// boundary without cancelling or otherwise touching the active task.
@@ -2049,12 +2068,13 @@ final class OnDemandEditCoordinator: ObservableObject {
         statusLine = "Looking at \(appName)'s window and recent logs…"
         var runtimeEvidence = await gatherRuntimeEvidenceForApp?(slug)
             ?? OnDemandEditRuntimeEvidence(runtimeLogText: nil, appWindowScreenshotPNG: nil)
-        // An app with no capturable window — every menu-bar app — used to leave
-        // the run with no image at all, so a request like "can you do what the
-        // image says?" reached the model naming a picture nothing had taken, and
-        // it blocked asking for it. The reader's own screen is what "the image"
-        // meant; take that instead, carrying the label that says so.
+        // An app with no capturable window can still need the reader's screen
+        // when the request explicitly refers to an image, screenshot, screen,
+        // or current view. Do not attach that broad fallback to an ordinary
+        // source edit because it is irrelevant context and consumes image
+        // budget before the model gets to change the code.
         if runtimeEvidence.appWindowScreenshotPNG == nil,
+           Self.requestExplicitlyReferencesVisualContext(scrubbed),
            let readersScreenPNG = await captureReadersScreenPNGForFallback?() {
             runtimeEvidence = OnDemandEditRuntimeEvidence(
                 runtimeLogText: runtimeEvidence.runtimeLogText,

@@ -800,10 +800,13 @@ struct OnDemandEditHarnessPlanningTests {
         private var calls = 0
         private var delayedReplies = 0
 
-        func recordCall() {
+        @discardableResult
+        func recordCall() -> Int {
             lock.lock()
             calls += 1
+            let callNumber = calls
             lock.unlock()
+            return callNumber
         }
 
         func recordDelayedReply() {
@@ -978,6 +981,160 @@ struct OnDemandEditHarnessPlanningTests {
         #expect(fixture.coordinator.presentedPlan != nil)
     }
 
+    /// The first planner transport deliberately ignores cancellation: it
+    /// settles after the watchdog and after the reader submits an immediate
+    /// retry. The retry must own the visible plan, workflow state and ledger;
+    /// the late first reply is stale and cannot overwrite any of them.
+    @Test func immediateRetryWinsOverLateCancellationIgnoringPlanner() async throws {
+        let recorder = PlannerProbeRecorder()
+        let firstRequest = "add the stale dark mode toggle"
+        let retryRequest = "add the retry-only dark mode toggle"
+        let firstPlan = try Self.encodedPlan(
+            for: firstRequest,
+            desiredOutcome: "STALE FIRST PLAN — must never be shown",
+            modelAssumption: "stale-first-assumption"
+        )
+        let retryPlan = try Self.encodedPlan(
+            for: retryRequest,
+            desiredOutcome: "RETRY PLAN — the current plan",
+            modelAssumption: "retry-only-assumption"
+        )
+        var factoryCalls = 0
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                factoryCalls += 1
+                if factoryCalls == 1 {
+                    return try Self.makeWorkflow { _ in
+                        _ = recorder.recordCall()
+                        // A DispatchQueue continuation is intentionally not
+                        // cancellation-aware. This mirrors a provider that
+                        // returns after the coordinator has already retried.
+                        return await Self.delayedReplyIgnoringCancellation(
+                            reply: firstPlan,
+                            delayNanoseconds: 250_000_000,
+                            recorder: recorder
+                        )
+                    }
+                }
+                return try Self.makeWorkflow { _ in
+                    _ = recorder.recordCall()
+                    return HarnessModelReply(text: retryPlan)
+                }
+            },
+            watchdogNanoseconds: 20_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest(firstRequest, kind: .feature))
+        #expect(await Self.waitUntil { !fixture.coordinator.isAssessingRequest })
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(recorder.callCount == 1)
+
+        // This is the user-visible retry while the first provider call is
+        // still physically in flight. It must create a fresh workflow.
+        #expect(fixture.coordinator.describeRequest(retryRequest, kind: .feature))
+        #expect(await Self.waitUntil {
+            fixture.coordinator.phase == .presentingPlan
+                && fixture.coordinator.presentedPlan?.approachSummary
+                    .contains("RETRY PLAN — the current plan") == true
+        })
+        #expect(factoryCalls == 2)
+        #expect(recorder.callCount == 2)
+        #expect(fixture.coordinator.proposedHarnessDefaults == ["retry-only-assumption"])
+
+        let planBeforeLateReply = fixture.coordinator.presentedPlan?.approachSummary
+        let stateBeforeLateReply = fixture.coordinator.proposedHarnessDefaults
+        let ledgerBeforeLateReply = fixture.coordinator.harnessRunSnapshot
+        #expect(ledgerBeforeLateReply?.admittedCallCount == 1)
+        #expect(ledgerBeforeLateReply?.settledCallCount == 1)
+
+        // The first continuation now settles. Its canceled workflow may
+        // finish internally, but its generation guard must make it inert at
+        // the coordinator boundary.
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(recorder.callCount == 2)
+        #expect(fixture.coordinator.phase == .presentingPlan)
+        #expect(fixture.coordinator.presentedPlan?.approachSummary == planBeforeLateReply)
+        #expect(fixture.coordinator.proposedHarnessDefaults == stateBeforeLateReply)
+        #expect(fixture.coordinator.harnessRunSnapshot == ledgerBeforeLateReply)
+    }
+
+    /// A configured harness can temporarily have no workflow state (for
+    /// example while a stale planner task is being replaced). Driving the
+    /// real consent method in that window must fail closed before the edit
+    /// performer is even constructed or called.
+    @Test func confirmStartDoesNotCallPerformerWhenConfiguredWorkflowIsMissingState() async throws {
+        let recorder = PlannerProbeRecorder()
+        let firstPlan = try Self.encodedPlan(for: "add a dark mode toggle")
+        var retainedWorkflow: HarnessFeatureWorkflow?
+        let performerCalls = PlannerProbeRecorder()
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                let workflow = try Self.makeWorkflow { request in
+                    let callNumber = recorder.recordCall()
+                    if callNumber == 1 {
+                        return HarnessModelReply(text: firstPlan)
+                    }
+                    return await Self.delayedReplyIgnoringCancellation(
+                        reply: firstPlan,
+                        delayNanoseconds: 250_000_000,
+                        recorder: recorder
+                    )
+                }
+                retainedWorkflow = workflow
+                return workflow
+            },
+            watchdogNanoseconds: 1_000_000_000,
+            onPerformerCall: { _ = performerCalls.recordCall() }
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil {
+            fixture.coordinator.phase == .presentingPlan
+        })
+        guard let workflow = retainedWorkflow else {
+            Issue.record("the configured harness workflow was not retained")
+            return
+        }
+
+        // HarnessFeatureWorkflow clears state synchronously at the beginning
+        // of a new plan. The delayed second plan leaves that state missing
+        // while the coordinator is still showing the previous plan.
+        let stalePlanningTask = Task { @MainActor in
+            _ = try? await workflow.plan(
+                request: "a newer stale planner request",
+                repositorySummary: "the local planner test repository"
+            )
+        }
+        defer { stalePlanningTask.cancel() }
+        #expect(await Self.waitUntil {
+            workflow.state == nil && recorder.callCount == 2
+        })
+
+        fixture.coordinator.confirmPlanAndStart()
+        #expect(fixture.coordinator.phase == .failed(
+            reason: "Iris could not finish its measured plan. Nothing was changed; try the request again."
+        ))
+        #expect(performerCalls.callCount == 0)
+        #expect(recorder.callCount == 2)
+
+        // Let the intentionally late transport settle before the fixture is
+        // removed. The stale workflow is allowed to finish, but must not move
+        // the coordinator away from its fail-closed result.
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(fixture.coordinator.phase == .failed(
+            reason: "Iris could not finish its measured plan. Nothing was changed; try the request again."
+        ))
+        #expect(performerCalls.callCount == 0)
+    }
+
     private static func makeWorkflow(
         transport: @escaping HarnessModelSession.Transport
     ) throws -> HarnessFeatureWorkflow {
@@ -1007,23 +1164,46 @@ struct OnDemandEditHarnessPlanningTests {
         }
     }
 
-    private static func encodedPlan(for request: String) throws -> String {
+    private static func delayedReplyIgnoringCancellation(
+        reply: String,
+        delayNanoseconds: UInt64,
+        recorder: PlannerProbeRecorder
+    ) async -> HarnessModelReply {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().asyncAfter(
+                deadline: .now() + .nanoseconds(Int(delayNanoseconds))
+            ) {
+                recorder.recordDelayedReply()
+                continuation.resume(returning: HarnessModelReply(text: reply))
+            }
+        }
+    }
+
+    private static func encodedPlan(
+        for request: String,
+        desiredOutcome: String = "The app shows the requested change.",
+        modelAssumption: String? = nil
+    ) throws -> String {
         let brief = try HarnessTaskBrief(
             userRequest: request,
-            desiredOutcome: "The app shows the requested change.",
+            desiredOutcome: desiredOutcome,
             acceptanceCriteria: [
                 .init(id: "visible", statement: "The app shows the requested change.")
             ],
             milestones: [
                 .init(id: "change", title: "Make the requested change")
-            ]
+            ],
+            modelAssumptions: modelAssumption.map {
+                [.init(id: "marker", statement: $0)]
+            } ?? []
         )
         return String(decoding: try JSONEncoder().encode(brief), as: UTF8.self)
     }
 
     private static func makeFixture(
         makeWorkflow: @escaping () throws -> HarnessFeatureWorkflow,
-        watchdogNanoseconds: UInt64
+        watchdogNanoseconds: UInt64,
+        onPerformerCall: @escaping () -> Void = {}
     ) throws -> Fixture {
         let rootURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Caches/iris-harness-planning-tests", isDirectory: true)
@@ -1052,6 +1232,7 @@ struct OnDemandEditHarnessPlanningTests {
             clonePathLock: MaintainClonePathLock(),
             topRequestsForApp: { _ in [] },
             performOnDemandEdit: { _, _, _, _, _, _, _, _, _, _, _ in
+                onPerformerCall()
                 .couldNotComplete(reason: "the harness planning test must not start an edit")
             },
             deliveredUndoRecoveryStore: recoveryStore,

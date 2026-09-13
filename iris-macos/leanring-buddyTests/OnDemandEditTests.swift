@@ -884,13 +884,16 @@ struct OnDemandEditHarnessPlanningTests {
     @Test func plannerTimeoutLeavesDescribeReadyForRetry() async throws {
         let recorder = PlannerProbeRecorder()
         let planReply = try Self.encodedPlan(for: "add a dark mode toggle")
+        var timedOutWorkflow: HarnessFeatureWorkflow?
         let fixture = try Self.makeFixture(
             makeWorkflow: {
-                try Self.makeWorkflow(transport: Self.delayedTransport(
+                let workflow = try Self.makeWorkflow(transport: Self.delayedTransport(
                     reply: planReply,
                     delayNanoseconds: 250_000_000,
                     recorder: recorder
                 ))
+                timedOutWorkflow = workflow
+                return workflow
             },
             watchdogNanoseconds: 20_000_000
         )
@@ -903,10 +906,45 @@ struct OnDemandEditHarnessPlanningTests {
         #expect(fixture.coordinator.statusLine?.contains("could not finish the plan in time") == true)
         #expect(fixture.coordinator.presentedPlan == nil)
         #expect(recorder.callCount == 1)
+        #expect(timedOutWorkflow?.modelSession.ledger.snapshot.status == .stopped(.failed))
 
         #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
             recorder.delayedReplyCount == 1
         })
+        #expect(timedOutWorkflow?.modelSession.ledger.snapshot.status == .stopped(.failed))
+    }
+
+    /// Backing out of a planning request stops its captured session before the
+    /// delayed transport settles. The stopped ledger remains authoritative and
+    /// must not admit a later request from the cancelled flow.
+    @Test func cancellingPlanningStopsItsCapturedLedgerBeforeLateSettlement() async throws {
+        let recorder = PlannerProbeRecorder()
+        let planReply = try Self.encodedPlan(for: "add a dark mode toggle")
+        var cancelledWorkflow: HarnessFeatureWorkflow?
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                let workflow = try Self.makeWorkflow(transport: Self.delayedTransport(
+                    reply: planReply,
+                    delayNanoseconds: 250_000_000,
+                    recorder: recorder
+                ))
+                cancelledWorkflow = workflow
+                return workflow
+            },
+            watchdogNanoseconds: 1_000_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil { recorder.callCount == 1 })
+        fixture.coordinator.cancel()
+        #expect(cancelledWorkflow?.modelSession.ledger.snapshot.status == .stopped(.cancelled))
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(cancelledWorkflow?.modelSession.ledger.snapshot.status == .stopped(.cancelled))
+        #expect(cancelledWorkflow?.modelSession.ledger.snapshot.admittedCallCount == 1)
     }
 
     /// A valid planner reply that arrives after the watchdog must not draw a
@@ -1000,11 +1038,12 @@ struct OnDemandEditHarnessPlanningTests {
             modelAssumption: "retry-only-assumption"
         )
         var factoryCalls = 0
+        var firstWorkflow: HarnessFeatureWorkflow?
         let fixture = try Self.makeFixture(
             makeWorkflow: {
                 factoryCalls += 1
                 if factoryCalls == 1 {
-                    return try Self.makeWorkflow { _ in
+                    let workflow = try Self.makeWorkflow { _ in
                         _ = recorder.recordCall()
                         // A DispatchQueue continuation is intentionally not
                         // cancellation-aware. This mirrors a provider that
@@ -1015,6 +1054,8 @@ struct OnDemandEditHarnessPlanningTests {
                             recorder: recorder
                         )
                     }
+                    firstWorkflow = workflow
+                    return workflow
                 }
                 return try Self.makeWorkflow { _ in
                     _ = recorder.recordCall()
@@ -1032,6 +1073,7 @@ struct OnDemandEditHarnessPlanningTests {
         })
         #expect(fixture.coordinator.phase == .describe)
         #expect(recorder.callCount == 1)
+        #expect(firstWorkflow?.modelSession.ledger.snapshot.status == .stopped(.failed))
 
         // This is the user-visible retry while the first provider call is
         // still physically in flight. It must create a fresh workflow.
@@ -1062,6 +1104,7 @@ struct OnDemandEditHarnessPlanningTests {
         #expect(fixture.coordinator.presentedPlan?.approachSummary == planBeforeLateReply)
         #expect(fixture.coordinator.proposedHarnessDefaults == stateBeforeLateReply)
         #expect(fixture.coordinator.harnessRunSnapshot == ledgerBeforeLateReply)
+        #expect(firstWorkflow?.modelSession.ledger.snapshot.status == .stopped(.failed))
     }
 
     /// A configured harness can temporarily have no workflow state (for

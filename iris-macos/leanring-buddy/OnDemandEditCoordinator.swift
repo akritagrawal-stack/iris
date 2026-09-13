@@ -1518,7 +1518,7 @@ final class OnDemandEditCoordinator: ObservableObject {
                         }
                     } catch {
                         self?.fallBackFromHarnessPlanning(
-                            generation: probeGeneration, kind: kind
+                            generation: probeGeneration, kind: kind, workflow: workflow
                         )
                     }
                 }
@@ -1531,7 +1531,7 @@ final class OnDemandEditCoordinator: ObservableObject {
                     }
                     catch { return }
                     self?.fallBackFromHarnessPlanning(
-                        generation: probeGeneration, kind: kind
+                        generation: probeGeneration, kind: kind, workflow: workflow
                     )
                 }
             } catch {
@@ -1567,16 +1567,47 @@ final class OnDemandEditCoordinator: ObservableObject {
     /// unmeasured runner. Keep the reader on the describe card with a clear
     /// retry instead; no source or installed app is touched.
     private func fallBackFromHarnessPlanning(
-        generation: Int, kind _: OnDemandEditKind
+        generation: Int, kind _: OnDemandEditKind, workflow: HarnessFeatureWorkflow
     ) {
         guard requestProbeGeneration == generation, phase == .describe,
-              isAssessingRequest else { return }
+              isAssessingRequest, harnessWorkflow === workflow else { return }
+        finishHarnessWorkflowIfCurrent(workflow, reason: .failed)
         requestProbeTask?.cancel()
         requestProbeWatchdog?.cancel()
         requestProbeTask = nil
         requestProbeWatchdog = nil
         isAssessingRequest = false
         statusLine = "Iris could not finish the plan in time. Nothing was changed — try again when your model connection is ready."
+    }
+
+    /// Stops only the workflow that still owns the current flow. A late
+    /// planner or performer must never finalize a replacement workflow.
+    private func finishHarnessWorkflowIfCurrent(
+        _ workflow: HarnessFeatureWorkflow?, reason: HarnessRunStopReason
+    ) {
+        guard let workflow, harnessWorkflow === workflow else { return }
+        _ = workflow.modelSession.finish(reason: reason)
+    }
+
+    private static func harnessStopReason(
+        for result: MaintainOnDemandEditResult, readerStopped: Bool
+    ) -> HarnessRunStopReason {
+        if readerStopped { return .userStopped }
+        switch result {
+        case .appliedAndRebuilt, .blockedByModel, .machineCommandRequested:
+            return .completed
+        case .notEligible:
+            return .failed
+        case .couldNotComplete(let reason):
+            if reason == MaintainTierCFixer.stoppedByReaderReason
+                || reason == MaintainSavedChangeRechecker.stoppedReason {
+                return .userStopped
+            }
+            if reason == "the editing budget ended before any source change was made" {
+                return .budgetLimited
+            }
+            return .failed
+        }
     }
 
     private func failHarnessPlanning(generation: Int) {
@@ -1911,6 +1942,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         // provider just because a stale card or callback tried to start.
         guard !(makeHarnessWorkflow != nil
                 && (harnessWorkflow == nil || harnessWorkflow?.state == nil)) else {
+            finishHarnessWorkflowIfCurrent(harnessWorkflow, reason: .failed)
             phase = .failed(reason: "Iris could not finish its measured plan. Nothing was changed; try the request again.")
             statusLine = phaseReason
             return
@@ -2017,6 +2049,11 @@ final class OnDemandEditCoordinator: ObservableObject {
         workflow: HarnessFeatureWorkflow?
     ) async {
         guard activeEditRunID == runID else { return }
+        defer {
+            if self.activeEditRunID == runID, self.harnessWorkflow === workflow {
+                self.finishHarnessWorkflowIfCurrent(workflow, reason: .failed)
+            }
+        }
         let recheckIdentity = pendingRecheckIdentity
         guard let runner = try? MaintainShellRunner(repoRootPath: resolvedClonePath) else {
             runLog?.finish(outcome: "not started: the clone path is not usable")
@@ -2287,6 +2324,12 @@ final class OnDemandEditCoordinator: ObservableObject {
                 return await self.askReaderToApproveManifestChange(declaration)
             }
         )
+        if let workflow {
+            finishHarnessWorkflowIfCurrent(
+                workflow,
+                reason: Self.harnessStopReason(for: result, readerStopped: readerAskedToStopTheRun)
+            )
+        }
         guard activeEditRunID == runID else { return }
         let elapsed = Date().timeIntervalSince(startedAt)
         editRunner.setWorking(false)
@@ -5311,6 +5354,7 @@ final class OnDemandEditCoordinator: ObservableObject {
     private func continuePreparingEdit(runID: UUID, resolvedClonePath: String) -> Bool {
         guard activeEditRunID == runID, phase == .running else { return false }
         guard readerAskedToStopTheRun || Task.isCancelled else { return true }
+        finishHarnessWorkflowIfCurrent(harnessWorkflow, reason: .userStopped)
         let reason = "Stopped before editing. Your app and source files were not changed."
         runLog?.finish(outcome: "stopped during preparation; no editor call")
         runLog = nil
@@ -5567,6 +5611,7 @@ final class OnDemandEditCoordinator: ObservableObject {
     }
 
     private func resetInFlightState() {
+        finishHarnessWorkflowIfCurrent(harnessWorkflow, reason: .cancelled)
         pendingUnverifiedTestDeliveryProject = nil
         failedReviewRetentionAttempted = false
         failedReviewRetentionSucceeded = false

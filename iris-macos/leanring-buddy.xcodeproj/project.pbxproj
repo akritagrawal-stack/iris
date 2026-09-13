@@ -42,6 +42,25 @@
 			);
 			target = 28F22CBE2F56440300A0FC59 /* leanring-buddy */;
 		};
+		AA00BB052F6500050039DA55 /* Package-only test sources */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				AssistantRequestDiagnosticsTests.swift,
+				CatalogAppIconTests.swift,
+				CatalogMacCompatibilityTests.swift,
+				ChatActionCancellationTests.swift,
+				ChatTranscriptResetTests.swift,
+				CodexEditModelSelectionTests.swift,
+				ComposerConnectionPresentationTests.swift,
+				EditVerificationReceiptTests.swift,
+				GuidePresentationRegressionTests.swift,
+				KeychainReadPolicyTests.swift,
+				OverlayEyeDragTests.swift,
+				SettingsPanelBehaviorTests.swift,
+				SpatialGuidanceRegressionTests.swift,
+			);
+			target = 28F22CCB2F56440300A0FC59 /* leanring-buddyTests */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -55,6 +74,9 @@
 		};
 		28F22CCF2F56440300A0FC59 /* leanring-buddyTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AA00BB052F6500050039DA55 /* Package-only test sources */,
+			);
 			path = "leanring-buddyTests";
 			sourceTree = "<group>";
 		};
@@ -662,6 +684,7 @@
 				);
 				MARKETING_VERSION = 0.9.9;
 				PRODUCT_BUNDLE_IDENTIFIER = com.publikhq.iris.test;
+				PRODUCT_MODULE_NAME = Iris;
 				PRODUCT_NAME = "Iris Test";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;

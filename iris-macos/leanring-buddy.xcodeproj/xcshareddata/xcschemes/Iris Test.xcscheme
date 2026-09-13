@@ -37,6 +37,16 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "28F22CCB2F56440300A0FC59"
+               BuildableName = "leanring-buddyTests.xctest"
+               BlueprintName = "leanring-buddyTests"
+               ReferencedContainer = "container:leanring-buddy.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

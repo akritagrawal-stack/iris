@@ -1235,7 +1235,7 @@ struct OnDemandEditHarnessPlanningTests {
             topRequestsForApp: { _ in [] },
             performOnDemandEdit: { _, _, _, _, _, _, _, _, _, _, _ in
                 onPerformerCall()
-                .couldNotComplete(reason: "the harness planning test must not start an edit")
+                return .couldNotComplete(reason: "the harness planning test must not start an edit")
             },
             deliveredUndoRecoveryStore: recoveryStore,
             appDeliveryReceiptStore: AppDeliveryReceiptStore(

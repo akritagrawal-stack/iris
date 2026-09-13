@@ -145,6 +145,16 @@ enum OnDemandEditPhase: Equatable, Sendable {
     case blockedByModel(explanation: String)
 }
 
+/// The host capabilities needed before an on-demand edit can be offered.
+/// Provenance, path containment, and the repository recipe remain concrete
+/// coordinator checks; this narrow collaborator only supplies capabilities
+/// that a focused test can provide without a real model credential.
+enum OnDemandEditReadiness: Equatable, Sendable {
+    case ready
+    case modelProviderUnavailable
+    case sandboxUnavailable
+}
+
 /// One FINISHED edit exchange, kept for the life of the session.
 ///
 /// This is the edit flow's half of what `ChatTranscriptStore` already does for
@@ -637,6 +647,7 @@ final class OnDemandEditCoordinator: ObservableObject {
     // Only an isolated lab host supplies this. The normal app stays on its
     // existing route until separate runtime state has been validated.
     private let makeHarnessWorkflow: (() throws -> HarnessFeatureWorkflow)?
+    private let editReadiness: @MainActor () -> OnDemandEditReadiness
     private var harnessWorkflow: HarnessFeatureWorkflow?
     @Published private var editTask: Task<Void, Never>?
     private var activeEditRunID: UUID?
@@ -978,17 +989,12 @@ final class OnDemandEditCoordinator: ObservableObject {
     /// behind a spinner.
     private static let probeWatchdogNanoseconds: UInt64 = 20_000_000_000
 
-    /// The test harness's intake planner can use a reader-provided model, but
-    /// it is an enhancement to the deterministic clarification gate—not a
-    /// reason to leave the reader behind a spinner.  Keep this deliberately
-    /// short: when it misses its window, Iris falls back to the same local
-    /// plan/clarification path used outside the test harness.  The edit's
-    /// model budget and independent-review reserve are unaffected.
-    // Intake is a bounded harness phase, but recent successful complex plans
-    // take longer than 20 seconds. Keep the established three-minute ceiling
-    // rather than cancelling a normal in-flight plan; the ledger/session
-    // deadline still constrains the provider call itself.
-    private static let harnessPlanningWatchdogNanoseconds: UInt64 = 180_000_000_000
+    /// Intake is bounded, but successful complex plans take longer than the
+    /// ordinary request probe. The production default is three minutes; tests
+    /// may inject a smaller value to exercise timeout and late-reply behavior
+    /// without altering a live model route or bypassing any edit gate.
+    private static let defaultHarnessPlanningWatchdogNanoseconds: UInt64 = 180_000_000_000
+    private let harnessPlanningWatchdogNanoseconds: UInt64
 
     /// The optional seams default INSIDE the `@MainActor` init body rather than
     /// in the parameter list: a default argument referencing a `@MainActor`
@@ -1023,12 +1029,26 @@ final class OnDemandEditCoordinator: ObservableObject {
         )? = nil,
         deliveredUndoRecoveryStore: DeliveredEditUndoRecoveryStore? = nil,
         appDeliveryReceiptStore: AppDeliveryReceiptStore? = nil,
-        makeHarnessWorkflow: (() throws -> HarnessFeatureWorkflow)? = nil
+        makeHarnessWorkflow: (() throws -> HarnessFeatureWorkflow)? = nil,
+        harnessPlanningWatchdogNanoseconds: UInt64? = nil,
+        editReadiness: (@MainActor () -> OnDemandEditReadiness)? = nil
     ) {
         self.installProvenanceStore = installProvenanceStore
         self.patchQueue = patchQueue
         self.clonePathLock = clonePathLock ?? .shared
         self.makeHarnessWorkflow = makeHarnessWorkflow
+        self.harnessPlanningWatchdogNanoseconds = max(
+            1, harnessPlanningWatchdogNanoseconds ?? Self.defaultHarnessPlanningWatchdogNanoseconds
+        )
+        self.editReadiness = editReadiness ?? {
+            if MaintainModelProviderResolver.firstAvailable() == nil {
+                return .modelProviderUnavailable
+            }
+            if !MaintainSandbox.isAvailable {
+                return .sandboxUnavailable
+            }
+            return .ready
+        }
         self.topRequestsForApp = topRequestsForApp
         self.probeRequestTriggers = probeRequestTriggers ?? Self.defaultProbeRequestTriggers
         self.performOnDemandEdit = performOnDemandEdit ?? Self.defaultPerformOnDemandEdit
@@ -1497,7 +1517,7 @@ final class OnDemandEditCoordinator: ObservableObject {
                 requestProbeWatchdog = Task { [weak self] in
                     do {
                         try await Task.sleep(
-                            nanoseconds: Self.harnessPlanningWatchdogNanoseconds
+                            nanoseconds: self.harnessPlanningWatchdogNanoseconds
                         )
                     }
                     catch { return }
@@ -1880,7 +1900,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         // missing or incomplete workflow means intake did not establish the
         // user contract, so it must never fall through to the ordinary
         // provider just because a stale card or callback tried to start.
-        guard !(IrisTestEnvironment.isEnabled && makeHarnessWorkflow != nil
+        guard !(makeHarnessWorkflow != nil
                 && (harnessWorkflow == nil || harnessWorkflow?.state == nil)) else {
             phase = .failed(reason: "Iris could not finish its measured plan. Nothing was changed; try the request again.")
             statusLine = phaseReason
@@ -5054,15 +5074,16 @@ final class OnDemandEditCoordinator: ObservableObject {
         // explains WHY editing needs a key (chat is funded, editing real code is
         // not) rather than reading as an accusation — and the card offers a
         // button straight into settings, driven by `refusalOffersModelKeySetup`.
-        guard MaintainModelProviderResolver.firstAvailable() != nil else {
+        switch editReadiness() {
+        case .modelProviderUnavailable:
             return .refused(
                 reason: "Editing an app changes its real code, which runs on your own model key — not the funded tier that covers chat. Connect a model in settings to turn this on.",
                 offersModelKeySetup: true
             )
-        }
-        // The Seatbelt jail every model-authored command runs inside.
-        guard MaintainSandbox.isAvailable else {
+        case .sandboxUnavailable:
             return .refused(reason: "the sandbox Iris edits inside isn't available on this machine.")
+        case .ready:
+            break
         }
         // A real rebuild recipe for this stack. `.other` / swiftMacOS have no
         // build vocabulary, and an Electron/Next.js repo with no build script

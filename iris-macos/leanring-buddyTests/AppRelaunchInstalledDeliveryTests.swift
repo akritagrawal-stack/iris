@@ -174,6 +174,54 @@ import Testing
         #expect(try store.reconcilePreparedInstallations() == 0)
     }
 
+    /// Startup must never turn a partially changed delivery into an installed
+    /// history entry. The prepared receipt remains available for diagnosis and
+    /// retry, while reconciliation leaves every app bundle untouched.
+    @Test func startupKeepsAChangedPreparedDeliveryPendingForRecovery() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iris-delivery-unconfirmed-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let installedPath = root.appendingPathComponent("Applications/Demo.app").path
+        let freshBuildPath = root.appendingPathComponent("clone/build/Demo.app").path
+        let snapshotPath = root.appendingPathComponent("backups/Demo.app").path
+        let receiptDirectory = root.appendingPathComponent("receipts")
+        Self.makeFakeBundle(at: installedPath, marker: "installed-v1")
+        Self.makeFakeBundle(at: freshBuildPath, marker: "fresh-v2")
+
+        let store = AppDeliveryReceiptStore(baseDirectory: receiptDirectory)
+        let installedIdentity = try #require(AppDeliveryReceipt.bundleIdentity(atPath: installedPath))
+        let replacementIdentity = try #require(AppDeliveryReceipt.bundleIdentity(atPath: freshBuildPath))
+        let sourceIdentity = AppDeliveryReceipt.SourceIdentity(
+            appSlug: "demo", appName: "Demo", clonePath: root.appendingPathComponent("clone").path,
+            branchName: "codex/demo", commit: String(repeating: "a", count: 40),
+            baseCommit: String(repeating: "b", count: 40), baseRef: "main", changeId: "change-1"
+        )
+        let receipt = AppDeliveryReceipt(
+            bundleIdentifier: "com.fixture.demo", installedPath: installedPath,
+            sourceArtifactPath: freshBuildPath, backupPath: snapshotPath,
+            sourceIdentity: sourceIdentity, installedBundleIdentity: installedIdentity,
+            replacementBundleIdentity: replacementIdentity, backupBundleIdentity: installedIdentity
+        )
+        try store.savePrepared(receipt)
+        #expect(AppRelaunchService.atomicallyReplaceBundle(
+            installedPath: installedPath, withBundleAt: freshBuildPath, snapshotTo: snapshotPath
+        ).isSuccess)
+
+        let installedMarker = URL(fileURLWithPath: installedPath).appendingPathComponent("Contents/marker.txt")
+        try Data("unconfirmed-change".utf8).write(to: installedMarker)
+        #expect(try store.reconcilePreparedInstallations() == 0)
+        guard case .valid(let retained) = store.load(receipt.identifier) else {
+            Issue.record("the unconfirmed delivery receipt was not retained")
+            return
+        }
+        #expect(retained.phase == .prepared)
+        #expect(!retained.hasCompleteUndoMetadata)
+        #expect(Self.markerOfBundle(at: installedPath) == "unconfirmed-change")
+        #expect(Self.markerOfBundle(at: snapshotPath) == "installed-v1")
+        #expect(Self.markerOfBundle(at: freshBuildPath) == "fresh-v2")
+    }
+
     /// The core the whole delivery rests on, exercised for real: snapshot the
     /// installed bundle, swap the fresh one into its exact path, and prove the
     /// installed path now holds the FRESH build while the snapshot holds the OLD

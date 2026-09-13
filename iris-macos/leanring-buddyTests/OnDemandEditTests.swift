@@ -3,13 +3,16 @@
 //  leanring-buddyTests
 //
 //  The on-demand edit tool's load-bearing SAFETY logic, tested without a
-//  screen. Two suites:
+//  screen. Three suites:
 //
 //    OnDemandEditPureLogicTests — pure/deterministic, no process spawning: the
 //      per-clone lock's mutual exclusion + canonicalization, the build-script
 //      guard, the synthesized changeId, the branch naming, the up-front
 //      too-large refusal, the fix/feature classifiers, the structural honesty
 //      of the result type, and the coordinator's fail-closed eligibility gate.
+//
+//    OnDemandEditHarnessPlanningTests - drives the bounded intake planner
+//      with a local transport, covering failures, timeout, stale replies, and retry.
 //
 //    OnDemandEditEngineTests — drives the REAL jailed loop through a scripted
 //      stand-in for the model against real temp git repos (the same shape the
@@ -775,6 +778,313 @@ import Testing
             .appendingPathComponent("iris-ondemand-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+}
+
+// MARK: - Harness planning lifecycle (local planner transport)
+
+/// The harness planner is a bounded intake phase. These tests drive the real
+/// coordinator state machine with a local HarnessModelSession transport, so a
+/// planner error, watchdog timeout, late reply, or retry never reaches a model
+/// service or the edit engine.
+@MainActor
+@Suite(.serialized)
+struct OnDemandEditHarnessPlanningTests {
+
+    private struct PlannerFailure: Error, Sendable {}
+
+    /// The failure and timeout paths must not depend on a valid model reply.
+    /// This recorder only counts local transport activity and delayed delivery.
+    private final class PlannerProbeRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        private var delayedReplies = 0
+
+        func recordCall() {
+            lock.lock()
+            calls += 1
+            lock.unlock()
+        }
+
+        func recordDelayedReply() {
+            lock.lock()
+            delayedReplies += 1
+            lock.unlock()
+        }
+
+        var callCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return calls
+        }
+
+        var delayedReplyCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return delayedReplies
+        }
+    }
+
+    private struct Fixture {
+        let rootURL: URL
+        let slug: String
+        let coordinator: OnDemandEditCoordinator
+    }
+
+    /// A factory failure is handled synchronously and leaves the request on the
+    /// describe card with an honest retry message.
+    @Test func plannerFactoryFailureLeavesDescribeReadyForRetry() throws {
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                throw PlannerFailure()
+            },
+            watchdogNanoseconds: 100_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(!fixture.coordinator.isAssessingRequest)
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(fixture.coordinator.statusLine
+            == "Iris could not finish the plan. Nothing was changed. Please try again.")
+        #expect(fixture.coordinator.presentedPlan == nil)
+    }
+
+    /// A planner response error uses the same fail-closed retry surface and
+    /// never advances into clarification or a pre-edit plan.
+    @Test func plannerReplyFailureLeavesDescribeReadyForRetry() async throws {
+        let recorder = PlannerProbeRecorder()
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                try Self.makeWorkflow { _ in
+                    recorder.recordCall()
+                    throw PlannerFailure()
+                }
+            },
+            watchdogNanoseconds: 1_000_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil { !fixture.coordinator.isAssessingRequest })
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(fixture.coordinator.statusLine?.contains("could not finish the plan in time") == true)
+        #expect(fixture.coordinator.statusLine?.contains("Nothing was changed") == true)
+        #expect(fixture.coordinator.presentedPlan == nil)
+        #expect(recorder.callCount == 1)
+    }
+
+    /// The watchdog is injected at a short interval so a stalled local planner
+    /// can be tested without waiting for the production three-minute ceiling.
+    @Test func plannerTimeoutLeavesDescribeReadyForRetry() async throws {
+        let recorder = PlannerProbeRecorder()
+        let planReply = try Self.encodedPlan(for: "add a dark mode toggle")
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                try Self.makeWorkflow(transport: Self.delayedTransport(
+                    reply: planReply,
+                    delayNanoseconds: 250_000_000,
+                    recorder: recorder
+                ))
+            },
+            watchdogNanoseconds: 20_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil { !fixture.coordinator.isAssessingRequest })
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(fixture.coordinator.statusLine?.contains("could not finish the plan in time") == true)
+        #expect(fixture.coordinator.presentedPlan == nil)
+        #expect(recorder.callCount == 1)
+
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+    }
+
+    /// A valid planner reply that arrives after the watchdog must not draw a
+    /// stale plan or change the retry state.
+    @Test func latePlannerReplyIsIgnoredAfterTimeout() async throws {
+        let recorder = PlannerProbeRecorder()
+        let planReply = try Self.encodedPlan(for: "add a dark mode toggle")
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                try Self.makeWorkflow(transport: Self.delayedTransport(
+                    reply: planReply,
+                    delayNanoseconds: 250_000_000,
+                    recorder: recorder
+                ))
+            },
+            watchdogNanoseconds: 20_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil { !fixture.coordinator.isAssessingRequest })
+        let statusAfterTimeout = fixture.coordinator.statusLine
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(fixture.coordinator.presentedPlan == nil)
+
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(!fixture.coordinator.isAssessingRequest)
+        #expect(fixture.coordinator.statusLine == statusAfterTimeout)
+        #expect(fixture.coordinator.presentedPlan == nil)
+    }
+
+    /// After a planner failure the reader can immediately submit a new request;
+    /// the second workflow is a fresh local planner and may present its plan.
+    @Test func immediateRetryStartsANewPlannerAndPresentsPlan() async throws {
+        let recorder = PlannerProbeRecorder()
+        let planReply = try Self.encodedPlan(for: "add a dark mode toggle")
+        var factoryCalls = 0
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                factoryCalls += 1
+                if factoryCalls == 1 {
+                    return try Self.makeWorkflow { _ in
+                        recorder.recordCall()
+                        throw PlannerFailure()
+                    }
+                }
+                return try Self.makeWorkflow { _ in
+                    recorder.recordCall()
+                    return HarnessModelReply(text: planReply)
+                }
+            },
+            watchdogNanoseconds: 1_000_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil { !fixture.coordinator.isAssessingRequest })
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(factoryCalls == 1)
+
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil {
+            fixture.coordinator.phase == .presentingPlan
+        })
+        #expect(factoryCalls == 2)
+        #expect(recorder.callCount == 2)
+        #expect(fixture.coordinator.presentedPlan != nil)
+    }
+
+    private static func makeWorkflow(
+        transport: @escaping HarnessModelSession.Transport
+    ) throws -> HarnessFeatureWorkflow {
+        let session = try HarnessModelSession(
+            implementationArm: .astraLow,
+            settings: .init(maxCalls: 3, maxInputBytes: 120_000),
+            maximumDurationNanoseconds: 5_000_000_000,
+            transport: transport
+        )
+        return HarnessFeatureWorkflow(modelSession: session)
+    }
+
+    private static func delayedTransport(
+        reply: String,
+        delayNanoseconds: UInt64,
+        recorder: PlannerProbeRecorder
+    ) -> HarnessModelSession.Transport {
+        { _ in
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().asyncAfter(
+                    deadline: .now() + .nanoseconds(Int(delayNanoseconds))
+                ) {
+                    recorder.recordDelayedReply()
+                    continuation.resume(returning: HarnessModelReply(text: reply))
+                }
+            }
+        }
+    }
+
+    private static func encodedPlan(for request: String) throws -> String {
+        let brief = try HarnessTaskBrief(
+            userRequest: request,
+            desiredOutcome: "The app shows the requested change.",
+            acceptanceCriteria: [
+                .init(id: "visible", statement: "The app shows the requested change.")
+            ],
+            milestones: [
+                .init(id: "change", title: "Make the requested change")
+            ]
+        )
+        return String(decoding: try JSONEncoder().encode(brief), as: UTF8.self)
+    }
+
+    private static func makeFixture(
+        makeWorkflow: @escaping () throws -> HarnessFeatureWorkflow,
+        watchdogNanoseconds: UInt64
+    ) throws -> Fixture {
+        let rootURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/iris-harness-planning-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let cloneURL = rootURL.appendingPathComponent("clone", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: cloneURL.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("{\"name\":\"planner-fixture\",\"scripts\":{\"build\":\"true\",\"test\":\"true\"}}\n".utf8)
+            .write(to: cloneURL.appendingPathComponent("package.json"))
+
+        let slug = "harness-planning-\(UUID().uuidString)"
+        let provenanceStore = InstallProvenanceStore(
+            userDefaults: UserDefaults(suiteName: "iris.harness.planning.\(UUID().uuidString)")!
+        )
+        provenanceStore.recordGuideSourceClone(
+            appSlug: slug, clonePath: cloneURL.path, pinnedCommit: nil, canonicalRepo: nil
+        )
+        let recoveryStore = DeliveredEditUndoRecoveryStore(
+            recordURL: rootURL.appendingPathComponent("recovery.json")
+        )
+        let coordinator = OnDemandEditCoordinator(
+            installProvenanceStore: provenanceStore,
+            patchQueue: PatchQueue(baseDirectoryURL: rootURL.appendingPathComponent("patches")),
+            clonePathLock: MaintainClonePathLock(),
+            topRequestsForApp: { _ in [] },
+            performOnDemandEdit: { _, _, _, _, _, _, _, _, _, _, _ in
+                .couldNotComplete(reason: "the harness planning test must not start an edit")
+            },
+            deliveredUndoRecoveryStore: recoveryStore,
+            appDeliveryReceiptStore: AppDeliveryReceiptStore(
+                baseDirectory: rootURL.appendingPathComponent("receipts")
+            ),
+            makeHarnessWorkflow: makeWorkflow,
+            harnessPlanningWatchdogNanoseconds: watchdogNanoseconds,
+            editReadiness: { .ready }
+        )
+        return Fixture(rootURL: rootURL, slug: slug, coordinator: coordinator)
+    }
+
+    private static func pickFixtureApp(_ fixture: Fixture) {
+        fixture.coordinator.pickApp(slug: fixture.slug, name: "Planner Fixture", stack: .nextjs)
+        #expect(fixture.coordinator.phase == .describe)
+    }
+
+    @discardableResult
+    private static func waitUntil(
+        timeoutNanoseconds: UInt64 = 2_000_000_000,
+        _ condition: () -> Bool
+    ) async -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return condition()
+    }
+
+    private static func removeFixture(_ fixture: Fixture) {
+        try? FileManager.default.removeItem(at: fixture.rootURL)
     }
 }
 

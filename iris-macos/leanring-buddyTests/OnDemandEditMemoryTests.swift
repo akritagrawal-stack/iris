@@ -377,16 +377,16 @@ import Testing
         let transferRequest = "Move the folder and keep its notes"
         OnDemandEditRunLog.appendMemoryRecord(
             Self.makeRecord(
-                scrubbedRequest: transferRequest,
                 kind: OnDemandEditMemoryRecord.kindBugFix,
+                scrubbedRequest: transferRequest,
                 secondsAgo: 20
             ),
             directoryPath: directoryPath
         )
         OnDemandEditRunLog.appendMemoryRecord(
             Self.makeRecord(
-                scrubbedRequest: transferRequest,
                 kind: OnDemandEditMemoryRecord.kindFeature,
+                scrubbedRequest: transferRequest,
                 secondsAgo: 19
             ),
             directoryPath: directoryPath
@@ -394,8 +394,8 @@ import Testing
         for index in 1...4 {
             OnDemandEditRunLog.appendMemoryRecord(
                 Self.makeRecord(
-                    scrubbedRequest: "Search notes result \(index)",
                     kind: OnDemandEditMemoryRecord.kindBugFix,
+                    scrubbedRequest: "Search notes result \(index)",
                     secondsAgo: TimeInterval(20 - index)
                 ),
                 directoryPath: directoryPath
@@ -416,8 +416,8 @@ import Testing
         for index in 1...4 {
             OnDemandEditRunLog.appendMemoryRecord(
                 Self.makeRecord(
-                    scrubbedRequest: "recent request \(index)",
                     kind: index == 1 ? OnDemandEditMemoryRecord.kindFeature : OnDemandEditMemoryRecord.kindBugFix,
+                    scrubbedRequest: "recent request \(index)",
                     secondsAgo: TimeInterval(4 - index)
                 ),
                 directoryPath: directoryPath

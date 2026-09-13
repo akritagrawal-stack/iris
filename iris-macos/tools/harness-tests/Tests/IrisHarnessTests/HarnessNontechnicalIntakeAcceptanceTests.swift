@@ -227,6 +227,52 @@ func plannerAddsOneDestinationChoiceWhenANontechnicalRequestLeavesTheTabImplicit
 }
 
 @Test @MainActor
+func destinationGuardRecognizesNoviceWordingButNotGenericDestinations() {
+    #expect(HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+        "Have Whisper Flow write this into the correct window"
+    ))
+    #expect(HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+        "Copy my notes to the browser"
+    ))
+    #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+        "Copy my notes to Gmail"
+    ))
+    #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+        "Move the panel to the right side"
+    ))
+}
+
+@Test @MainActor
+func destinationQuestionDisplacesOnlyTheLastPlannerQuestionAtTheLimit() async throws {
+    let request = "Put my transcript in the right tab"
+    let options = [
+        HarnessQuestionOption(id: "one", label: "One"),
+        HarnessQuestionOption(id: "two", label: "Two"),
+    ]
+    let brief = try HarnessTaskBrief(
+        userRequest: request,
+        desiredOutcome: "Place the transcript safely",
+        acceptanceCriteria: [.init(id: "placed", statement: "The transcript reaches the chosen tab.")],
+        targetedQuestions: [
+            .init(id: "first", prompt: "Keep the existing draft?", options: options),
+            .init(id: "second", prompt: "Should Iris confirm before sending?", options: options),
+            .init(id: "third", prompt: "Should Iris add a notification?", options: options),
+        ],
+        milestones: [.init(id: "place", title: "Place the transcript")]
+    )
+    let session = try HarnessModelSession(
+        implementationArm: .astraLow,
+        settings: .init(maxCalls: 2, maxInputBytes: 80_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { _ in HarnessModelReply(text: try encodedBrief(brief)) }
+    let planned = try await HarnessFeatureWorkflow(modelSession: session).plan(
+        request: request, repositorySummary: ""
+    )
+    #expect(planned.targetedQuestions.map(\.id) == ["first", "second", "destination-selection"])
+}
+
+@Test @MainActor
 func clearLocalFixDoesNotRequireAnIntakeInterview() async throws {
     let request = "make the Save button text larger"
     let brief = try HarnessTaskBrief(

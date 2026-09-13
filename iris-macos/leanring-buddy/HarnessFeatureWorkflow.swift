@@ -559,13 +559,12 @@ final class HarnessFeatureWorkflow {
         _ brief: HarnessTaskBrief
     ) throws -> HarnessTaskBrief {
         guard Self.requestNeedsDestinationChoice(brief.userRequest),
-              !brief.targetedQuestions.contains(where: Self.isDestinationChoiceQuestion),
-              brief.targetedQuestions.count < 3 else {
+              !brief.targetedQuestions.contains(where: Self.isDestinationChoiceQuestion) else {
             return brief
         }
 
         var questions = brief.targetedQuestions
-        questions.append(HarnessTargetedQuestion(
+        let destinationQuestion = HarnessTargetedQuestion(
             id: Self.destinationChoiceQuestionID,
             prompt: "Your request describes moving or pasting something, but it does not say how Iris should choose the destination. What should happen?",
             options: [
@@ -583,7 +582,16 @@ final class HarnessFeatureWorkflow {
                 ),
             ],
             kind: .productChoice
-        ))
+        )
+        // The destination behavior is a required user decision for this
+        // request. Do not silently drop it when the planner already used the
+        // three-question limit; keep the first two planner questions and
+        // replace only the final slot.
+        if questions.count >= 3 {
+            questions[questions.index(before: questions.endIndex)] = destinationQuestion
+        } else {
+            questions.append(destinationQuestion)
+        }
         return try HarnessTaskBrief(
             userRequest: brief.userRequest,
             desiredOutcome: brief.desiredOutcome,
@@ -606,6 +614,7 @@ final class HarnessFeatureWorkflow {
             .joined(separator: " ")
         let transferIntentWords: Set<String> = [
             "paste", "type", "send", "insert", "move", "transfer", "open", "switch",
+            "put", "write", "copy",
         ]
         let words = normalized.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
         guard let transferIntentIndex = words.firstIndex(where: {
@@ -629,7 +638,7 @@ final class HarnessFeatureWorkflow {
         let genericDestinationWords: Set<String> = [
             "the", "a", "an", "right", "correct", "proper", "appropriate",
             "target", "desired", "same", "another", "tab", "window", "app",
-            "document", "screen", "place", "location", "one", "it", "i", "my",
+            "browser", "chat", "page", "document", "screen", "place", "location", "one", "it", "i", "my",
             "your", "this", "that", "choose", "select", "selected", "current",
             "active", "focused", "first", "next", "best", "matching", "to", "into",
         ]
@@ -652,8 +661,15 @@ final class HarnessFeatureWorkflow {
         _ question: HarnessTargetedQuestion
     ) -> Bool {
         let text = (question.id + " " + question.prompt).lowercased()
-        return text.contains("destination") || text.contains("app or tab")
-            || text.contains("target app") || text.contains("target tab")
+        if text.contains("destination") || text.contains("app or tab")
+            || text.contains("target app") || text.contains("target tab") {
+            return true
+        }
+        let asksForChoice = text.contains("which") || text.contains("where")
+            || text.contains("how should iris choose")
+        let namesSurface = text.contains("tab") || text.contains("app")
+            || text.contains("browser") || text.contains("window")
+        return asksForChoice && namesSurface
     }
 
     private func normalizedAnswer(_ value: String) -> String {

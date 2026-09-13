@@ -526,13 +526,14 @@ final class OnDemandEditCoordinator: ObservableObject {
             .lowercased()
             .split { !$0.isLetter && !$0.isNumber }
         let visualWords: Set<String> = [
-            "image", "images", "screenshot", "screenshots", "screen", "screens"
+            "image", "images", "screenshot", "screenshots", "picture", "pictures", "photo", "photos"
         ]
         if words.contains(where: { visualWords.contains(String($0)) }) {
             return true
         }
+        let visualPhrases: Set<String> = ["current view", "on screen", "my screen", "this screen", "the screen"]
         return zip(words, words.dropFirst()).contains { first, second in
-            String(first) == "current" && String(second) == "view"
+            visualPhrases.contains("\(first) \(second)")
         }
     }
 

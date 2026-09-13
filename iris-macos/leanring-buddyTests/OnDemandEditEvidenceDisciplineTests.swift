@@ -28,6 +28,7 @@ import Testing
     func sourceOnlyRequestsDoNotNeedWholeScreenEvidence() {
         for request in [
             "Add export and import for notes and folders",
+            "Fix screen rendering after relaunch",
             "Fix the settings command so it persists after relaunch",
             "Make the build finish without the missing dependency",
             "Add a keyboard shortcut for opening the project picker",

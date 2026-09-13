@@ -96,7 +96,17 @@ enum OnDemandEditInterruptedRunRecovery {
     static func remember(_ record: OnDemandEditInFlightRecord, recordPath: String = defaultRecordPath) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        // `JSONEncoder.DateEncodingStrategy.iso8601` truncates Date values to
+        // whole seconds on this platform. The review-held retention path
+        // intentionally checks that its persisted record round-trips exactly;
+        // truncating `startedAt` made every normal `Date()` record fail that
+        // check and silently fall through to cleanup. Persist the reference
+        // timestamp as a Double so Equatable records survive the write/read
+        // boundary without losing sub-second precision.
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(date.timeIntervalSinceReferenceDate)
+        }
         guard let data = try? encoder.encode(record) else { return }
         let directory = (recordPath as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
@@ -110,7 +120,24 @@ enum OnDemandEditInterruptedRunRecovery {
     static func recordOnDisk(recordPath: String = defaultRecordPath) -> OnDemandEditInFlightRecord? {
         guard let data = FileManager.default.contents(atPath: recordPath) else { return nil }
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        // Read the exact numeric format above and retain compatibility with
+        // records written by older builds using an ISO-8601 string.
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            if let timestamp = try? container.decode(Double.self) {
+                return Date(timeIntervalSinceReferenceDate: timestamp)
+            }
+            let string = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: string) { return date }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: string) { return date }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "recovery record date was not a valid ISO-8601 timestamp"
+            )
+        }
         return try? decoder.decode(OnDemandEditInFlightRecord.self, from: data)
     }
 

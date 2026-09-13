@@ -66,3 +66,24 @@ for (const [name, fixer] of [['before', beforeFixer], ['after', currentFixer]]) 
   if (name === 'after' && (checked.status !== 0
       || !checked.output.includes('UNADMITTED REPAIR CHECKS PASS: 5'))) process.exitCode = 1;
 }
+
+// The current fixer also carries the review-held saved-candidate path. Keep
+// this check in the same fresh Test environment so it exercises the exact
+// generated identity adapter without touching the real Iris Test profile.
+const lifecycleDestination = path.join(root, 'lifecycle');
+mkdirSync(lifecycleDestination);
+const lifecycleExecutable = path.join(lifecycleDestination, 'checks');
+const lifecycleBuilt = execute('xcrun', ['swiftc', '-parse-as-library', ...flags,
+  '-I', path.join(root, 'after'), '-L', path.join(root, 'after'),
+  '-lIrisHarnessNative', '-Xlinker', '-rpath', '-Xlinker', path.join(root, 'after'),
+  'iris-macos/tools/harness-feature-host/SavedNativeReviewLifecycleChecks.swift',
+  '-o', lifecycleExecutable], path.join(lifecycleDestination, 'compile.log'));
+if (lifecycleBuilt.status !== 0) { console.log(lifecycleBuilt.output); process.exit(1); }
+const lifecycleChecked = execute(lifecycleExecutable, [],
+  path.join(lifecycleDestination, 'checks.log'),
+  {env: {...process.env, IRIS_UNADMITTED_FIXTURE_ROOT: root}, timeout: 240_000});
+console.log(JSON.stringify({name: 'lifecycle', status: lifecycleChecked.status,
+  log: path.join(lifecycleDestination, 'checks.log')}));
+console.log(lifecycleChecked.output);
+if (lifecycleChecked.status !== 0
+    || !lifecycleChecked.output.includes('SAVED NATIVE REVIEW LIFECYCLE CHECKS PASS')) process.exitCode = 1;

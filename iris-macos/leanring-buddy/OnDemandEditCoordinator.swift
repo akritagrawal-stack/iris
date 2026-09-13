@@ -984,7 +984,11 @@ final class OnDemandEditCoordinator: ObservableObject {
     /// short: when it misses its window, Iris falls back to the same local
     /// plan/clarification path used outside the test harness.  The edit's
     /// model budget and independent-review reserve are unaffected.
-    private static let harnessPlanningWatchdogNanoseconds: UInt64 = 20_000_000_000
+    // Intake is a bounded harness phase, but recent successful complex plans
+    // take longer than 20 seconds. Keep the established three-minute ceiling
+    // rather than cancelling a normal in-flight plan; the ledger/session
+    // deadline still constrains the provider call itself.
+    private static let harnessPlanningWatchdogNanoseconds: UInt64 = 180_000_000_000
 
     /// The optional seams default INSIDE the `@MainActor` init body rather than
     /// in the parameter list: a default argument referencing a `@MainActor`

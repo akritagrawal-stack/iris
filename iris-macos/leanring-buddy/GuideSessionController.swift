@@ -454,6 +454,36 @@ final class GuideSessionController: ObservableObject {
         setupRecoveryState != nil
     }
 
+    /// A source-pinned guide can ask the reader to select a checkout before
+    /// Iris takes control. The selected path is inspected with fixed Git argv;
+    /// the panel never turns a path into shell text.
+    var guideOffersSourceWorkspaceSetup: Bool {
+        guard let guide = guideBeingFollowed else { return false }
+        return guide.sourceCommit != nil && Self.sourceOrigin(for: guide) != nil
+    }
+
+    /// A structural workspace declaration is the publisher's proof that a
+    /// project command is intended to run in the prepared tree. Older guides
+    /// retain their home-relative commands for manual following only.
+    var guideHasStructuralWorkspaceSteps: Bool {
+        selectedBranch?.steps.contains(where: { $0.workspace != nil }) == true
+    }
+
+    /// Do not let a source-pinned guide claim safe automation while it still
+    /// names its project checkout through HOME-relative paths. Moving the shell
+    /// first cannot constrain a later `cd ~/project` in raw guide text.
+    var guideNeedsPublisherWorkspaceMigration: Bool {
+        guard let guide = guideBeingFollowed,
+              guide.sourceCommit != nil,
+              let branch = selectedBranch else { return false }
+        let projectPrefix = "~/\(guide.appSlug)"
+        return branch.steps.contains { step in
+            step.workingDirectory == projectPrefix
+                || step.workingDirectory?.hasPrefix(projectPrefix + "/") == true
+                || step.command?.contains("cd \(projectPrefix)") == true
+        }
+    }
+
     /// Where the eye is going for the step on screen, and why.
     ///
     /// Published rather than computed on demand because resolving it touches
@@ -1322,6 +1352,23 @@ final class GuideSessionController: ObservableObject {
 
     // MARK: - Prepared source setup
 
+    /// The guide panel supplies only a folder chosen through the native picker.
+    /// Keep the owned destination under Iris's application-support root;
+    /// no reader-selected path is ever used as a staging destination.
+    @discardableResult
+    func inspectReaderSelectedSourceWorkspace(
+        sourcePath: String,
+        runID: UUID = UUID()
+    ) async -> Result<GuideSourceWorkspaceInspection, GuideSourceWorkspacePreparationError> {
+        let ownedProjectsRoot = IrisTestEnvironment.applicationSupportDirectory
+            .appendingPathComponent("GuideSourceWorkspaces", isDirectory: true)
+        return await inspectSourceWorkspace(
+            sourcePath: sourcePath,
+            ownedProjectsRoot: ownedProjectsRoot,
+            runID: runID
+        )
+    }
+
     /// Inspect the guide's declared source and present the reader with the
     /// existing-clean or isolated-worktree choice. This route is deliberately
     /// source-only: it does not register an app and does not start a command.
@@ -1836,6 +1883,24 @@ final class GuideSessionController: ObservableObject {
             autopilotBlockedExplanation = "This guide isn't open any more. Reopen it and try again."
             irisTrace("autopilot: start refused — guide not open (loadState=\(loadState))")
             return
+        }
+        guard !guideNeedsPublisherWorkspaceMigration else {
+            autopilotBlockedExplanation = "This published guide still names its project folder through HOME-relative commands. Iris will not automate it until Publik publishes structural prepared-workspace steps for this version."
+            irisTrace("autopilot: start refused — source guide needs workspace migration")
+            return
+        }
+        if guideHasStructuralWorkspaceSteps {
+            guard let binding = selectedWorkspaceBinding,
+                  let sourceCommit = guide.sourceCommit,
+                  binding.guideID == guide.appSlug,
+                  binding.guideRevision == guide.version,
+                  binding.projectID == guide.appSlug,
+                  binding.expectedCommit == sourceCommit,
+                  Self.sourceOrigin(for: guide) == binding.expectedOrigin else {
+                autopilotBlockedExplanation = "Choose and prepare the guide's source folder before Iris runs project commands."
+                irisTrace("autopilot: start refused — no matching prepared source workspace")
+                return
+            }
         }
         guard !readerIsInSetupRecovery else {
             autopilotBlockedExplanation = "Finish the setup step Iris is helping with first, then Iris can run the rest."

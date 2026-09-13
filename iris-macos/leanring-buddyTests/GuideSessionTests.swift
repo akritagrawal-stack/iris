@@ -17,6 +17,28 @@ import Testing
 @MainActor
 struct GuideSessionTests {
 
+    @Test func sourceWorkspaceContractDistinguishesPublishedLegacyPathsFromTheOwnedStructuralFixture() async throws {
+        let guideService = try Self.guideServiceAnsweredByTheStub()
+
+        let legacy = GuideSessionController(guideService: guideService)
+        await legacy.openGuide(
+            slug: "legacy-source-contract", requestedVersion: 5,
+            branchKeyFromDeepLink: "macos:ios", stepIndexFromDeepLink: nil
+        )
+        #expect(legacy.guideOffersSourceWorkspaceSetup)
+        #expect(legacy.guideNeedsPublisherWorkspaceMigration)
+        #expect(!legacy.guideHasStructuralWorkspaceSteps)
+
+        let structural = GuideSessionController(guideService: guideService)
+        await structural.openGuide(
+            slug: "prepared-source-contract", requestedVersion: 6,
+            branchKeyFromDeepLink: "macos:ios", stepIndexFromDeepLink: nil
+        )
+        #expect(structural.guideOffersSourceWorkspaceSetup)
+        #expect(!structural.guideNeedsPublisherWorkspaceMigration)
+        #expect(structural.guideHasStructuralWorkspaceSteps)
+    }
+
     // MARK: - Resuming and version bumps
 
     @Test func resumeLandsOnTheSavedStepAndSurvivesAVersionBump() async throws {
@@ -544,9 +566,39 @@ final class StubbedGuideURLProtocol: URLProtocol {
             return prerequisiteGuideJSON(slug: slug, version: version, carriesSetupSteps: true)
         case "no-setup-steps":
             return prerequisiteGuideJSON(slug: slug, version: version, carriesSetupSteps: false)
+        case "legacy-source-contract":
+            return sourceWorkspaceGuideJSON(slug: slug, version: version, structural: false)
+        case "prepared-source-contract":
+            return sourceWorkspaceGuideJSON(slug: slug, version: version, structural: true)
         default:
             return mobileGuideJSON(slug: slug, version: version)
         }
+    }
+
+    /// This is an Iris-owned decoding contract, not a copy of the live Kneecap
+    /// response. The live v5 guide remains legacy until Publik publishes a
+    /// separately reviewed structural version.
+    private static func sourceWorkspaceGuideJSON(
+        slug: String,
+        version: Int,
+        structural: Bool
+    ) -> String {
+        let projectStep = structural
+            ? """
+              {"id":"build","kind":"terminal","title":"Build","body":"","command":"bun run build","workspace":{"kind":"prepared-project","relativePath":"apps/mobile"}}
+              """
+            : """
+              {"id":"build","kind":"terminal","title":"Build","body":"","command":"cd ~/legacy-source-contract/apps/mobile\\nbun run build","workingDirectory":"~/legacy-source-contract/apps/mobile"}
+              """
+        return """
+        {
+          "appSlug":"\(slug)", "appName":"Source contract", "version":\(version), "status":"pilot",
+          "sourceOwner":"example", "sourceRepo":"\(slug)",
+          "sourceCommit":"0123456789abcdef0123456789abcdef01234567",
+          "outputType":"mobile_app", "estimatedMinutes":1, "readmeSectionIds":[],
+          "branches":[{"platform":"macos","target":"ios","label":"Mac + iPhone","shell":"terminal","setupSteps":[],"steps":[\(projectStep)],"unsupported":null}]
+        }
+        """
     }
 
     /// The shape every published desktop guide has: a branch whose `setupSteps`

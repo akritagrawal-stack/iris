@@ -244,6 +244,9 @@ func destinationGuardRecognizesNoviceWordingButNotGenericDestinations() {
         "Keep changed content as a separate copy and still work after restarting the app"
     ))
     #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+        "Add Export notes and folders and Import notes and folders in Settings > Your data. Keep the existing Markdown export. Importing the same file twice should skip confirmed identical notes and folders, preserve same-name folders from different origins, keep changed content as a separate copy, never overwrite existing work, and still work after restarting the app."
+    ))
+    #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
         "Move the panel to the right side"
     ))
 }

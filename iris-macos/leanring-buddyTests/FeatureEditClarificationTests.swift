@@ -12,7 +12,7 @@ import Foundation
 import Testing
 @testable import Iris
 
-@Suite struct FeatureEditClarificationTests {
+@MainActor @Suite struct FeatureEditClarificationTests {
 
     // MARK: - Nontechnical destination gap
 

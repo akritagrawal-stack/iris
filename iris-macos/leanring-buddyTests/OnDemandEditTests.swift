@@ -1027,7 +1027,9 @@ struct OnDemandEditHarnessPlanningTests {
 
         Self.pickFixtureApp(fixture)
         #expect(fixture.coordinator.describeRequest(firstRequest, kind: .feature))
-        #expect(await Self.waitUntil { !fixture.coordinator.isAssessingRequest })
+        #expect(await Self.waitUntil {
+            !fixture.coordinator.isAssessingRequest && recorder.callCount == 1
+        })
         #expect(fixture.coordinator.phase == .describe)
         #expect(recorder.callCount == 1)
 

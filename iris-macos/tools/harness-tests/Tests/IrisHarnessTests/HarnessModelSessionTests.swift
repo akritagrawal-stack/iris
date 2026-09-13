@@ -185,6 +185,45 @@ import Testing
     #expect(session.ledger.snapshot.inFlightCallCount == 0)
 }
 
+@Test @MainActor func terminalFailureStopsTheSettledLedgerWithoutAnotherPhysicalAttempt() async throws {
+    var physicalCalls = 0
+    var checkpoints: [HarnessRunLedgerSnapshot] = []
+    let session = try HarnessModelSession(
+        implementationArm: .astraLow,
+        settings: HarnessRunLedgerSettings(maxCalls: 2, maxInputBytes: 10_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { _ in
+        physicalCalls += 1
+        return HarnessModelReply(text: "received", usage: .init(
+            inputTokens: 8, cachedInputTokens: 3, outputTokens: 2, reasoningOutputTokens: 1
+        ))
+    }
+
+    session.ledgerDidChange = { checkpoints.append($0) }
+    _ = try await session.respond(
+        phase: .edit, systemPrompt: "edit", conversation: [], maximumOutputTokens: 10
+    )
+    #expect(physicalCalls == 1)
+    #expect(session.ledger.snapshot.status == .running)
+    #expect(session.finish(reason: .failed))
+    #expect(session.ledger.snapshot.status == .stopped(.failed))
+    #expect(session.ledger.snapshot.admittedCallCount == 1)
+    #expect(session.ledger.snapshot.settledCallCount == 1)
+    #expect(session.ledger.snapshot.inFlightCallCount == 0)
+    #expect(session.ledger.snapshot.measuredCachedInputTokens == 3)
+    #expect(session.ledger.snapshot.measuredReasoningOutputTokens == 1)
+    #expect(checkpoints.last?.status == .stopped(.failed))
+    #expect(!session.finish(reason: .completed))
+
+    await #expect(throws: HarnessRunLedgerError.self) {
+        _ = try await session.respond(
+            phase: .review, systemPrompt: "review", conversation: [], maximumOutputTokens: 10
+        )
+    }
+    #expect(physicalCalls == 1)
+}
+
 @Test @MainActor func rejectedLargeReplyIsNotReportedAsFree() async throws {
     let session = try HarnessModelSession(implementationArm: .astraLow,
         settings: HarnessRunLedgerSettings(maxCalls: 2, maxInputBytes: 10_000),

@@ -168,6 +168,23 @@ final class HarnessModelSession {
         return reply.text
     }
 
+    /// Records the run's terminal outcome only after all admitted work has
+    /// settled. The coordinator owns the outcome classification because it
+    /// knows whether a completed request was accepted, cancelled, or rejected
+    /// by a later independent gate. This method never turns an in-flight call
+    /// into a settled or successful one.
+    @discardableResult
+    func finish(reason: HarnessRunStopReason) -> Bool {
+        guard ledger.isRunning, ledger.snapshot.inFlightCallCount == 0 else { return false }
+        do {
+            try ledger.stop(reason: reason, at: .init(nanoseconds: now()))
+            ledgerDidChange?(ledger.snapshot)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     nonisolated private static func inputCounts(
         for request: HarnessModelRequest
     ) throws -> HarnessModelInputCounts {

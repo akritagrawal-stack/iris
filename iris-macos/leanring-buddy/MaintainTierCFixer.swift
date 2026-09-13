@@ -203,6 +203,31 @@ typealias MaintainTierCCancellationCheck = @MainActor () -> Bool
 /// returns true; nil (no seam) means "never" — the run then ends honestly.
 typealias MaintainTierCManifestChangeApproval = @MainActor (MaintainManifestChangeRequest) async -> Bool
 
+/// A bounded handoff for a failed native review in the isolated Iris Test
+/// feature lane. The fixer has the only reliable view of which files changed
+/// during this run; the coordinator owns persistence and candidate identity.
+/// This is deliberately a callback rather than a second archive system: a
+/// false return means the caller must use its existing cleanup path.
+nonisolated struct MaintainFailedReviewRetentionRequest: Sendable {
+    let appSlug: String
+    let clonePath: String
+    let changeId: String
+    let kind: OnDemandEditKind
+    let blockedStage: String
+    let receipt: EditVerificationReceipt
+    /// The current Git worktree paths, re-read immediately before staging.
+    let changedPaths: [String]
+    /// Paths observed as changed by the model's source-edit steps. This is
+    /// intentionally separate from `changedPaths`: foreign or tool-generated
+    /// paths must never be silently swept into the retained candidate.
+    let modelOwnedPaths: [String]
+}
+
+/// Called only immediately before the fixer would clean a Test-only, feature
+/// candidate rejected at native code admission or native final review.
+typealias MaintainTierCFailedReviewRetention = @MainActor
+    (MaintainFailedReviewRetentionRequest) async -> Bool
+
 @MainActor
 final class MaintainTierCFixer {
 
@@ -721,7 +746,12 @@ final class MaintainTierCFixer {
         // The independent review (L6) is one extra call on the provider. Tests
         // that assert on the engine's own conversation with the model turn it
         // off so they are not reading the reviewer's turns by mistake.
-        runsAnIndependentReview: Bool = true
+        runsAnIndependentReview: Bool = true,
+        // Test-only retention seam for a failed native review. The coordinator
+        // stages and persists a candidate only after this loop has proved the
+        // changed paths are model-owned; nil leaves every existing cleanup path
+        // unchanged.
+        failedReviewRetention: MaintainTierCFailedReviewRetention? = nil
     ) async -> MaintainOnDemandEditResult {
         progressHandler?(.modelRouteSelected(description: provider.routeDescription))
         let changeKindTrailer = kind == .feature ? "on-demand-feature" : "on-demand-bug-fix"
@@ -773,7 +803,8 @@ final class MaintainTierCFixer {
             additionalPromptSections: additionalPromptSections,
             manifestChangeApproval: manifestChangeApproval,
             priorAttemptsDidNotCureTheComplaint: priorAttemptsDidNotCureTheComplaint,
-            runsAnIndependentReview: runsAnIndependentReview
+            runsAnIndependentReview: runsAnIndependentReview,
+            failedReviewRetention: failedReviewRetention
         )
         switch outcome {
         case .committed(let branchName, let suitePassed, let symptomVerifiedByRepro):
@@ -843,7 +874,8 @@ final class MaintainTierCFixer {
         additionalPromptSections: [String] = [],
         manifestChangeApproval: MaintainTierCManifestChangeApproval? = nil,
         priorAttemptsDidNotCureTheComplaint: Bool = false,
-        runsAnIndependentReview: Bool = true
+        runsAnIndependentReview: Bool = true,
+        failedReviewRetention: MaintainTierCFailedReviewRetention? = nil
     ) async -> EditLoopOutcome {
         guard MaintainSandbox.isAvailable else {
             return .notEligible(reason: "the sandbox is unavailable on this machine")
@@ -888,6 +920,42 @@ final class MaintainTierCFixer {
             await restoreGit()
             _ = try? await runner.run("git checkout -- . && git clean -fd --quiet", deadline: 120)
             return .couldNotFix(reason: Self.stoppedByReaderReason)
+        }
+
+        /// Give the coordinator one chance to retain a failed native review
+        /// before this loop's ordinary cleanup. This is deliberately narrow:
+        /// only an isolated Test feature, only the two native review stages,
+        /// and only when a fresh Git read says the current paths are exactly
+        /// the paths observed changing during model-owned source edits.
+        /// Returning false leaves the existing cleanup path authoritative.
+        func retainFailedReviewIfEligible(
+            stage: String, receipt: EditVerificationReceipt
+        ) async -> Bool {
+            guard let failedReviewRetention,
+                  IrisTestEnvironment.isEnabled,
+                  runner.isTestProcessPolicy,
+                  case .onDemand(_, let kind) = task,
+                  kind == .feature,
+                  receipt.nativeTestsRequired,
+                  receipt.failureStage == stage else { return false }
+
+            let currentPaths = await Self.changedFilePathsForRetention(runner: runner)
+            let expectedPaths = modelOwnedPaths.sorted()
+            guard !currentPaths.isEmpty,
+                  currentPaths == expectedPaths,
+                  Self.retainedPathsAreSafe(currentPaths) else { return false }
+
+            let request = MaintainFailedReviewRetentionRequest(
+                appSlug: appSlug,
+                clonePath: clonePath,
+                changeId: changeId,
+                kind: kind,
+                blockedStage: stage,
+                receipt: receipt,
+                changedPaths: currentPaths,
+                modelOwnedPaths: expectedPaths
+            )
+            return await failedReviewRetention(request)
         }
 
         /// Sleep out a wait in one-second slices, returning early the moment
@@ -1077,7 +1145,9 @@ final class MaintainTierCFixer {
         var rateLimitWaitsRemaining = Self.maximumRateLimitWaitsPerRun
         var transportDropRetriesRemaining = Self.maximumTransportDropRetriesPerRun
         var verificationRepairRoundsRemaining = Self.maximumVerificationRepairRoundsPerRun
-        var rejectedReviewAwaitingRepair: (stage: String, candidateIdentity: String)?
+        var rejectedReviewAwaitingRepair: (
+            stage: String, candidateIdentity: String, receipt: EditVerificationReceipt
+        )?
         // The model-authored repro check (bug fixes only), captured from the
         // DONE reply and run through the three legs at verification.
         var modelAuthoredReproCommand: String? = nil
@@ -1094,6 +1164,11 @@ final class MaintainTierCFixer {
         // from the build-script guard (they are Iris-authored, not
         // model-authored) and re-applied if a mid-loop restore touches them.
         var irisAppliedManifestPaths: Set<String> = []
+        // Only paths observed changing during a model source-edit step are
+        // eligible for failed-review retention. The final callback re-reads
+        // Git and compares this set exactly, so a reader edit or tool-created
+        // file fails closed instead of being staged by a broad `git add`.
+        var modelOwnedPaths: Set<String> = []
         let taskIsAnOnDemandBugFix: Bool = {
             if case .onDemand(_, .bugFix) = task { return true }
             return false
@@ -1278,6 +1353,7 @@ final class MaintainTierCFixer {
                             commandsSinceLastSourceChange.removeAll()
                             theModelHasEditedTheTreeAtLeastOnce = true
                             consecutiveNoProgressStepCount = 0
+                            modelOwnedPaths.formUnion(changed)
                             progressHandler?(.editedFiles(paths: changed, stepNumber: step))
                         }
                         fileStatesFromPreviousStep = latest
@@ -1618,6 +1694,7 @@ final class MaintainTierCFixer {
                     commandsSinceLastSourceChange.removeAll()
                     theModelHasEditedTheTreeAtLeastOnce = true
                     consecutiveNoProgressStepCount = 0
+                    modelOwnedPaths.formUnion(changedPaths)
                     progressHandler?(.editedFiles(paths: changedPaths, stepNumber: step))
                 }
                 if changedPaths?.isEmpty != false,
@@ -1662,6 +1739,7 @@ final class MaintainTierCFixer {
                                 deadline: 60
                             )
                         }
+                        modelOwnedPaths.subtract(forbiddenPaths)
                         irisTrace("maintain: tier-c restored forbidden build-script edit(s) mid-loop (\(buildScriptRestoresRemaining) restores left)")
                         progressHandler?(.revertedForbiddenBuildScriptEdit(
                             paths: forbiddenPaths, stepNumber: step
@@ -1751,6 +1829,12 @@ final class MaintainTierCFixer {
             if cancellationCheck?() == true {
                 _ = try? await runner.run("git checkout -- . && git clean -fd --quiet", deadline: 120)
                 return .couldNotFix(reason: Self.stoppedByReaderReason)
+            }
+            if await retainFailedReviewIfEligible(
+                stage: rejectedReview.stage, receipt: rejectedReview.receipt
+            ) {
+                irisTrace("maintain: repair was not admitted; failed native review candidate retained for checked recheck")
+                return .couldNotFix(reason: "the fix failed verification (\(rejectedReview.stage))")
             }
             irisTrace("maintain: repair was not admitted; retaining the unchanged candidate's failed review without another build or review")
             _ = try? await runner.run("git checkout -- . && git clean -fd --quiet", deadline: 120)
@@ -2209,7 +2293,9 @@ final class MaintainTierCFixer {
                 if nativeVerification != nil, independentReviewFindingsForCurrentInvocation != nil,
                    let candidateIdentity = rejectedReviewCandidateIdentity,
                    failedStage == "native-review-required" {
-                    rejectedReviewAwaitingRepair = (failedStage, candidateIdentity)
+                    rejectedReviewAwaitingRepair = (
+                        failedStage, candidateIdentity, verification.editReceipt
+                    )
                 }
                 verificationRepairRoundsRemaining -= 1
                 irisTrace("maintain: tier-c verification failed (\(failedStage)) — feeding the output back for a repair round (\(verificationRepairRoundsRemaining) left)")
@@ -2244,6 +2330,12 @@ final class MaintainTierCFixer {
                 hasNudgedTowardConvergence = false
                 fileStatesFromPreviousStep = Self.workingTreeFileStates(repoRootPath: clonePath)
                 continue repairRounds
+            }
+            if await retainFailedReviewIfEligible(
+                stage: failedStage, receipt: verification.editReceipt
+            ) {
+                irisTrace("maintain: failed native review candidate retained for checked recheck")
+                return .couldNotFix(reason: "the fix failed verification (\(failedStage))")
             }
             _ = try? await runner.run("git checkout -- . && git clean -fd --quiet", deadline: 120)
             return .couldNotFix(
@@ -2895,6 +2987,49 @@ final class MaintainTierCFixer {
         }
 
         return nil
+    }
+
+    /// A conservative path predicate used before a failed-review callback is
+    /// allowed to construct a path-specific `git add`. It intentionally rejects
+    /// absolute paths, traversal, `.git`, control characters and malformed
+    /// components before any staging command is assembled.
+    nonisolated static func isSafeRetainedPath(_ path: String) -> Bool {
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.hasPrefix("~"),
+              !path.contains("\0"), !path.contains("\u{FFFD}"),
+              !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            return false
+        }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !components.isEmpty && components.allSatisfy { component in
+            component != "." && component != ".." && component != ".git"
+                && !component.isEmpty
+        }
+    }
+
+    /// Read the current changed paths with NUL delimiters immediately before a
+    /// failed-review retention attempt. The ordinary display helper below is
+    /// line-based; retaining source needs the stronger shape because Git paths
+    /// may contain spaces or other whitespace.
+    private static func changedFilePathsForRetention(
+        runner: MaintainShellRunner
+    ) async -> [String] {
+        func read(_ command: String) async -> [String]? {
+            guard let result = try? await runner.run(command, deadline: 30),
+                  result.succeeded, result.bytesDroppedBeforeTail == 0 else { return nil }
+            guard !result.outputTail.isEmpty else { return [] }
+            guard result.outputTail.utf8.last == 0 else { return nil }
+            let paths = result.outputTail
+                .split(separator: "\0", omittingEmptySubsequences: true)
+                .map(String.init)
+            guard paths.allSatisfy(isSafeRetainedPath),
+                  Set(paths).count == paths.count else { return nil }
+            return paths
+        }
+        guard let tracked = await read("git diff --name-only --no-renames -z HEAD"),
+              let untracked = await read("git ls-files --others --exclude-standard -z") else {
+            return []
+        }
+        return Array(Set(tracked + untracked)).sorted()
     }
 
     /// The change's touched paths — tracked changes against HEAD plus untracked

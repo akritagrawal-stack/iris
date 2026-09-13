@@ -388,6 +388,12 @@ final class EditBatteryRunLog {
         case .verificationCompleted(let receipt):
             note("verification receipt: \(receipt.summary)")
 
+        case .checkingStartingTests:
+            note("checking starting tests")
+
+        case .startingTestsChecked(let summary):
+            note("starting tests: \(summary)")
+
         case .waitingOnTheModel(let stepNumber):
             note("step \(stepNumber): waiting on the model")
 

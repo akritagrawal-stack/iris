@@ -19,10 +19,10 @@ struct ChatGuideToolTests {
             name: name,
             macBundleId: nil,
             latestReleaseTag: nil,
+            guideSlug: guideSlug,
             installationState: .unknown,
             updateAvailability: .unknown,
-            isLocallyEditable: false,
-            guideSlug: guideSlug
+            isLocallyEditable: false
         )
     }
 

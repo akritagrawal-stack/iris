@@ -245,6 +245,14 @@ is independent of duplicate-title card ordering. The oracle is therefore still
 red at the transfer journey's preservation boundary, and no complex-feature
 acceptance claim is made.
 
+Root cause isolation, September 14: NitroAI persists the repository in
+origin-scoped IndexedDB, while the Electron shell and oracle bind the local HTTP
+server to a new OS-assigned port on each process launch. A relaunch therefore
+opens a fresh origin and cannot see the prior profile's records. The transfer
+algorithm itself is additive within one origin; durable cross-relaunch storage
+requires a stable origin or a filesystem/native persistence bridge before this
+journey can pass.
+
 ## Current Iris model-route policy, September 14
 
 New planner and implementation work uses Luna by default. GPT-5.5 is available

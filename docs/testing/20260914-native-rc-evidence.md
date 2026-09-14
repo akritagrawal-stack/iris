@@ -22,6 +22,10 @@ are tied to the signed client, not merely the display name.
   app-specific draft surface.
 - Expanding **Saved app versions** showed retained NitroAI and PlantGPT records,
   explicit previous-file status, and the read-only `Review cleanup…` action.
+- Entering the real `cue` guide in the Test RC correctly refused to open it and
+  said Test is for editing separate test copies; marketplace installation guides
+  must be exercised through regular Iris. This is an explicit environment
+  boundary, not evidence that spatial guidance works.
 
 ## Remaining native evidence
 

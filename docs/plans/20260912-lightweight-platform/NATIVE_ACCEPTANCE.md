@@ -204,3 +204,12 @@ Recording grants are missing or revoked, with `Grant`, `Show Iris`, and `Quit
 Iris` controls. No permission-setting action was taken. This proves the RC
 launches and exposes the required native gate; screen-help/spatial acceptance
 remains pending until the owner grants those macOS permissions.
+
+## RC permission destination observation, September 14
+
+The RC's `Show Iris` control opened macOS System Settings to Accessibility.
+The list shows `Iris` and `Iris Test (pre-rc-20260913)` enabled, but no entry for
+`Iris-RC-20260914`. Screen Recording is also still a required grant in the RC
+setup card. I did not add or toggle an application. The owner must add this
+specific RC to Accessibility and grant Screen Recording before live spatial
+acceptance can proceed.

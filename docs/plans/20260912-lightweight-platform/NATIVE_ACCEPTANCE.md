@@ -132,3 +132,15 @@ when the preview finds eligible obsolete backups, and its text reports the
 fresh count plus logical and allocated bytes. The app UI route itself has not
 yet been clicked through after this wiring, so this is a build-and-launch fact,
 not a completed preview/confirmation acceptance.
+
+## Current native Ask observation, September 14
+
+The current derived `Iris Test.app` was launched through the native computer-use
+surface after terminating a stale test process. The Iris eye opened the compact
+composer. A real click on **New chat** changed the field to the general `Ask Iris…`
+state; it did not bind the conversation to an app. A realistic Kneecap setup
+question was entered and remained visible in the field. The Send control was
+truthfully disabled because this Test profile reports Codex app editing as
+connected but has no connected typed-question or screen-help provider. The
+question was cleared without sending or changing user data. This is native UI
+and mode-separation evidence; it is not a successful contextual model response.

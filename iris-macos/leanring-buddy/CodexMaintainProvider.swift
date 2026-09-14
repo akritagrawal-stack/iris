@@ -741,10 +741,11 @@ final class CodexMaintainProvider: MaintainModelProviding, MaintainRunPhaseProvi
     private let maximumEmptyReplyRetriesOverride: Int?
     private var runPhase: HarnessRunTaskKind
 
-    /// How long one step may take before Iris gives up on it. Generous: a Tier C
-    /// step can carry a large context, and a reasoning model can take a while.
-    /// The fix loop's own step ceiling is what bounds a run overall.
-    private static let stepTimeoutSeconds: TimeInterval = 300
+    /// How long one provider step may run before Iris gives up on it. Keep this
+    /// bounded so a stalled CLI transport cannot hold the UI and one reserved
+    /// call open for five minutes. The surrounding workflow can retry only
+    /// through its explicit, measured retry policy.
+    private static let stepTimeoutSeconds: TimeInterval = 120
 
     /// How many times ONE step will re-run a `codex exec` that exited cleanly
     /// but handed back NO assistant message — an empty `--output-last-message`

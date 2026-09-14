@@ -785,6 +785,7 @@ final class GuideSessionController: ObservableObject {
             pointingDecisionForTheOpenStep = .doNotPoint(.stepHasNothingToPointAt)
             explanationForIrisHavingStoppedPointingAtThisStep = nil
             theFlightTheEyeIsShowing.theEyeStoppedPointing()
+            clearGuideTargetOutline?()
             stopPointingTheEye?()
             return
         }
@@ -952,6 +953,12 @@ final class GuideSessionController: ObservableObject {
                 // step moved on, the window moved — is a different flight and
                 // still flies, and the hard reset for "there is no step any
                 // more" is still done by the guard at the top of this method.
+                // The eye memo survives this absence so a return to the same
+                // semantic control is not needlessly announced again. The
+                // outline is different: it represents the control currently
+                // visible on screen, so it must disappear as soon as this
+                // refresh has no current target to reacquire.
+                self.clearGuideTargetOutline?()
                 self.stopPointingTheEye?()
             }
         }
@@ -1404,6 +1411,7 @@ final class GuideSessionController: ObservableObject {
         debouncedPointingRefreshTask?.cancel()
         debouncedPointingRefreshTask = nil
         explanationForIrisHavingStoppedPointingAtThisStep = nil
+        clearGuideTargetOutline?()
         stopPointingTheEye?()
         if autopilotIsRunning { stopAutopilot() }
         setupRecheckTask?.cancel()

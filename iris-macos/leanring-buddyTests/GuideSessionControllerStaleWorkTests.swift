@@ -19,6 +19,22 @@ import Testing
 @Suite(.serialized)
 struct GuideSessionControllerStaleWorkTests {
 
+    @Test("a missing guide target clears the semantic outline before stopping the eye")
+    func missingGuideTargetClearsOutline() {
+        let controller = GuideSessionController(
+            watchLoop: WatchLoop(drivesItsOwnTickTimer: false)
+        )
+        var clearCount = 0
+        var stopCount = 0
+        controller.clearGuideTargetOutline = { clearCount += 1 }
+        controller.stopPointingTheEye = { stopCount += 1 }
+
+        controller.refreshPointingForTheOpenStep()
+
+        #expect(clearCount == 1)
+        #expect(stopCount == 1)
+    }
+
     @Test("a primary action captured for an earlier step is ignored after the guide advances")
     func staleRenderedStepActionDoesNotAdvanceTheNewStep() async throws {
         StaleGuideURLProtocol.reset(blockFirstRequest: false)

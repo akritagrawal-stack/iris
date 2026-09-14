@@ -62,6 +62,7 @@ public nonisolated enum IrisTestEnvironment {
     static var isNativeAcceptanceMode: Bool {
         guard isEnabled, !isUnitTestProcess else { return false }
         return ProcessInfo.processInfo.environment["IRIS_TEST_NATIVE_ACCEPTANCE"] == "1"
+            || CommandLine.arguments.contains("--native-acceptance")
     }
 
     static func allowsMarketplaceGuides(

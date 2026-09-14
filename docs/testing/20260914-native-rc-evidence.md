@@ -1,5 +1,11 @@
 # Native RC evidence, 2026-09-14
 
+### 2026-09-14 bounded complex transfer attempt
+
+The signed RC was exercised through the native UI with an explicit **Feature** route. The request was intentionally scoped to the existing NitroAI transfer design: add Settings export/import controls, preserve folder and note identity, keep both copies on same-ID collisions, reject malformed or dangling references atomically, and run the focused tests/build.
+
+Iris asked two concrete clarification questions. The live answers were **Notes and folders only** and **keep both copies**. The generated plan exposed the approach and technical checks, and the starting test check passed before editing. The model then spent eight setup steps rereading the same repository and transfer fixtures without changing a file. The user-facing Stop control was used; the RC reported “Stopped at your request — nothing was changed,” and the clone was reverted/left clean. No provider-generated feature, delivery, relaunch, or transfer acceptance is claimed from this run. This is evidence of a remaining complex-run convergence problem, not a completed transfer feature.
+
 RC under test: `/Users/Shared/Iris-RC-20260914/Iris Test.app`.
 
 The RC was rebuilt from the integrated worktree with the stable local identity

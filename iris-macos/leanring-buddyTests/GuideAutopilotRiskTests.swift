@@ -94,6 +94,87 @@ struct GuideAutopilotRiskTests {
         }
     }
 
+    @Test func inlineDirectoryChangesCannotHideRiskyTargets() {
+        for command in [
+            "cd /Applications ; cp -R ./Evil.app .",
+            "cd \"/Applications\" && cp -R ./Evil.app ."
+        ] {
+            guard case .needsAConfirmTap = GuideAutopilotRiskAssessment.assess(
+                command, inWorkingDirectory: "~", autonomyGranted: false
+            ) else {
+                Issue.record("a system-folder write hidden after cd must ask: \(command)")
+                continue
+            }
+        }
+
+        for command in [
+            "cd ~ ; rm -rf .",
+            "cd $HOME ; rm -rf *",
+            "cd / ; rm -rf ."
+        ] {
+            guard case .refusedOutright = GuideAutopilotRiskAssessment.assess(
+                command, inWorkingDirectory: "~", autonomyGranted: true
+            ) else {
+                Issue.record("a whole-home or whole-disk delete hidden after cd must refuse: \(command)")
+                continue
+            }
+            #expect(
+                GuideAutopilotRiskAssessment.approve(
+                    command, inWorkingDirectory: "~", autonomyGranted: true
+                ) == nil
+            )
+        }
+    }
+
+    @Test func mutatingMetadataAndServiceCommandsRequireExplicitConfirmation() {
+        let needsATap = [
+            "xattr -w user.test value ./file",
+            "xattr -d user.test ./file",
+            "xattr -c ./file",
+            "xattr -rc ./folder",
+            "xattr --write user.test value ./file",
+            "defaults write com.example.App Enabled -bool true",
+            "defaults rename com.example.App OldKey NewKey",
+            "defaults import com.example.App ./settings.plist",
+            "spctl --add /Applications/App.app",
+            "spctl --remove /Applications/App.app",
+            "spctl --enable",
+            "spctl --disable",
+            "launchctl unload ~/Library/LaunchAgents/app.plist",
+            "launchctl bootstrap gui/501 ~/Library/LaunchAgents/app.plist",
+            "launchctl remove com.example.App"
+        ]
+        for command in needsATap {
+            guard case .needsAConfirmTap = GuideAutopilotRiskAssessment.assess(
+                command, autonomyGranted: false
+            ) else {
+                Issue.record("a mutating command must ask: \(command)")
+                continue
+            }
+            #expect(
+                GuideAutopilotRiskAssessment.approve(command, autonomyGranted: false) == nil,
+                "silent approval must refuse: \(command)"
+            )
+            #expect(
+                GuideAutopilotRiskAssessment.approveAfterAReaderTap(command) != nil,
+                "an explicit tap should allow the reviewed command: \(command)"
+            )
+        }
+
+        for command in [
+            "xattr -p com.apple.quarantine ./file",
+            "defaults read com.example.App",
+            "spctl --assess /Applications/App.app",
+            "launchctl print gui/501/com.example.App"
+        ] {
+            #expect(
+                GuideAutopilotRiskAssessment.assess(command, autonomyGranted: false)
+                    == .runsWithoutAsking,
+                "a read-only metadata or service probe should stay quiet: \(command)"
+            )
+        }
+    }
+
     @Test func obfuscationItselfTripsTheGate() {
         let disguised = [
             "$(echo rm) -rf build",

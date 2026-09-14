@@ -370,3 +370,11 @@ delivery, backup identity, startup reconciliation, orphan recovery, dirty-tree
 protection, retry records, relaunch selection, and Undo snapshot restoration
 all passed. The prior run's failures were filesystem `ENOSPC` fixture failures,
 not product assertion failures.
+
+## Clean RC permission gate observation, September 14
+
+After stopping stale Xcode and duplicate Test processes, computer-use attached
+to the named RC itself. Iris displayed its setup panel stating that permissions
+were revoked: this exact RC copy must be re-added under Accessibility, and
+Screen Recording must be granted again. The panel remains open for that
+operator action; no privacy entries were changed automatically.

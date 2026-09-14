@@ -280,6 +280,12 @@ nonisolated public struct HarnessRunLedgerSnapshot: Equatable, Sendable {
     public let admittedCallCount: UInt64
     public let settledCallCount: UInt64
     public let accountedInputBytes: UInt64
+    /// The configured hard caps travel with a snapshot so a usage record can
+    /// report utilization without recovering settings from process state.
+    /// Optional keeps hand-built snapshots from older callers source
+    /// compatible; a live ledger always supplies both values.
+    public let maxCalls: UInt64?
+    public let maxInputBytes: UInt64?
     public let inFlightReservations: [HarnessInFlightReservation]
     public let settledCalls: [HarnessRunCallRecord]
     public let measuredInputTokens: UInt64?
@@ -307,18 +313,201 @@ nonisolated public struct HarnessRunLedgerSnapshot: Equatable, Sendable {
         measuredInputTokens: UInt64?,
         measuredOutputTokens: UInt64?,
         measuredCachedInputTokens: UInt64? = nil,
-        measuredReasoningOutputTokens: UInt64? = nil
+        measuredReasoningOutputTokens: UInt64? = nil,
+        maxCalls: UInt64? = nil,
+        maxInputBytes: UInt64? = nil
     ) {
         self.status = status
         self.admittedCallCount = admittedCallCount
         self.settledCallCount = settledCallCount
         self.accountedInputBytes = accountedInputBytes
+        self.maxCalls = maxCalls
+        self.maxInputBytes = maxInputBytes
         self.inFlightReservations = inFlightReservations
         self.settledCalls = settledCalls
         self.measuredInputTokens = measuredInputTokens
         self.measuredCachedInputTokens = measuredCachedInputTokens
         self.measuredOutputTokens = measuredOutputTokens
         self.measuredReasoningOutputTokens = measuredReasoningOutputTokens
+    }
+}
+
+/// The observed product stages attached to one harness run. These values are
+/// deliberately separate from model-call outcomes: a successful response can
+/// still fail delivery or remain unconfirmed by the reader.
+nonisolated enum HarnessRunStageResult: String, Equatable, Sendable {
+    case passed
+    case failed
+    case skipped
+    case unavailable
+    case unknown
+}
+
+nonisolated enum HarnessRunUIAcceptance: String, Equatable, Sendable {
+    case accepted
+    case rejected
+    case unavailable
+    case unknown
+
+    var boolValue: Bool? {
+        switch self {
+        case .accepted: return true
+        case .rejected: return false
+        case .unavailable, .unknown: return nil
+        }
+    }
+}
+
+/// A product result suitable for comparing two requested model routes. The
+/// stage fields remain in the usage document so a gap is visible instead of
+/// being collapsed into a single success flag.
+nonisolated enum HarnessRunProductOutcome: String, Equatable, Sendable {
+    case acceptedFullLifecycle
+    case acceptedWithLifecycleGap
+    case generatedNotAccepted
+    case failed
+    case unavailable
+    case unknown
+}
+
+nonisolated enum HarnessRunOutcomeAttributionError: Error, Equatable, Sendable {
+    case unsupportedSchema
+    case invalidRunID
+    case invalidCandidateID
+    case invalidRoute
+    case invalidProviderModel
+    case acceptedWithoutVerification
+    case acceptedWithoutDelivery
+    case acceptedWithoutRelaunch
+}
+
+/// Counts-only evidence that connects a model route to the product lifecycle
+/// it produced. It contains no prompts, responses, paths or credentials.
+///
+/// Acceptance is intentionally constrained: a reader cannot be recorded as
+/// having accepted an edit until the independently observed verification,
+/// delivery and relaunch stages all passed. Undo is tracked separately because
+/// an accepted edit may be usable while a recovery path is unavailable.
+nonisolated struct HarnessRunOutcomeAttribution: Equatable, Sendable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let runID: String
+    let candidateID: String?
+    let requestedRoute: HarnessModelRoute
+    let providerConfirmedModel: String?
+    let elapsedNanoseconds: UInt64?
+    let verification: HarnessRunStageResult
+    let delivery: HarnessRunStageResult
+    let relaunch: HarnessRunStageResult
+    let undo: HarnessRunStageResult
+    let uiAcceptance: HarnessRunUIAcceptance
+    let outcome: HarnessRunProductOutcome
+
+    init(
+        schemaVersion: Int = Self.currentSchemaVersion,
+        runID: String,
+        candidateID: String? = nil,
+        requestedRoute: HarnessModelRoute,
+        providerConfirmedModel: String? = nil,
+        elapsedNanoseconds: UInt64? = nil,
+        verification: HarnessRunStageResult,
+        delivery: HarnessRunStageResult,
+        relaunch: HarnessRunStageResult,
+        undo: HarnessRunStageResult = .unknown,
+        uiAcceptance: HarnessRunUIAcceptance
+    ) throws {
+        guard Self.schemaIsCurrent(schemaVersion) else {
+            throw HarnessRunOutcomeAttributionError.unsupportedSchema
+        }
+        guard Self.validText(runID, maximumUTF8Bytes: 256) else {
+            throw HarnessRunOutcomeAttributionError.invalidRunID
+        }
+        if let candidateID,
+           !Self.validText(candidateID, maximumUTF8Bytes: 256) {
+            throw HarnessRunOutcomeAttributionError.invalidCandidateID
+        }
+        guard Self.validText(requestedRoute.model, maximumUTF8Bytes: 160),
+              Self.validText(requestedRoute.effort, maximumUTF8Bytes: 32) else {
+            throw HarnessRunOutcomeAttributionError.invalidRoute
+        }
+        if let providerConfirmedModel,
+           !Self.validText(providerConfirmedModel, maximumUTF8Bytes: 160) {
+            throw HarnessRunOutcomeAttributionError.invalidProviderModel
+        }
+        if uiAcceptance == .accepted {
+            guard verification == .passed else {
+                throw HarnessRunOutcomeAttributionError.acceptedWithoutVerification
+            }
+            guard delivery == .passed else {
+                throw HarnessRunOutcomeAttributionError.acceptedWithoutDelivery
+            }
+            guard relaunch == .passed else {
+                throw HarnessRunOutcomeAttributionError.acceptedWithoutRelaunch
+            }
+        }
+
+        self.schemaVersion = schemaVersion
+        self.runID = runID
+        self.candidateID = candidateID
+        self.requestedRoute = requestedRoute
+        self.providerConfirmedModel = providerConfirmedModel
+        self.elapsedNanoseconds = elapsedNanoseconds
+        self.verification = verification
+        self.delivery = delivery
+        self.relaunch = relaunch
+        self.undo = undo
+        self.uiAcceptance = uiAcceptance
+        self.outcome = Self.deriveOutcome(
+            verification: verification,
+            delivery: delivery,
+            relaunch: relaunch,
+            undo: undo,
+            uiAcceptance: uiAcceptance
+        )
+    }
+
+    var uiAccepted: Bool? {
+        uiAcceptance.boolValue
+    }
+
+    var isAcceptedLifecycle: Bool {
+        outcome == .acceptedFullLifecycle
+    }
+
+    private static func schemaIsCurrent(_ value: Int) -> Bool {
+        value == currentSchemaVersion
+    }
+
+    private static func validText(_ value: String, maximumUTF8Bytes: Int) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, value.utf8.count <= maximumUTF8Bytes else {
+            return false
+        }
+        return !value.unicodeScalars.contains { scalar in
+            scalar.value < 0x20 || scalar.value == 0x7F
+        }
+    }
+
+    private static func deriveOutcome(
+        verification: HarnessRunStageResult,
+        delivery: HarnessRunStageResult,
+        relaunch: HarnessRunStageResult,
+        undo: HarnessRunStageResult,
+        uiAcceptance: HarnessRunUIAcceptance
+    ) -> HarnessRunProductOutcome {
+        let stages = [verification, delivery, relaunch, undo]
+        let hasFailure = stages.contains(.failed)
+        switch uiAcceptance {
+        case .accepted:
+            return undo == .passed ? .acceptedFullLifecycle : .acceptedWithLifecycleGap
+        case .rejected:
+            return hasFailure ? .failed : .generatedNotAccepted
+        case .unavailable:
+            return hasFailure ? .failed : .unavailable
+        case .unknown:
+            return hasFailure ? .failed : .unknown
+        }
     }
 }
 
@@ -436,7 +625,9 @@ nonisolated public struct HarnessRunLedger: Sendable {
                 : nil,
             measuredReasoningOutputTokens: allSettledReasoningOutputTokensKnown && !settledRecords.isEmpty
                 ? totalReasoningOutputTokens
-                : nil
+                : nil,
+            maxCalls: settings.maxCalls,
+            maxInputBytes: settings.maxInputBytes
         )
     }
 

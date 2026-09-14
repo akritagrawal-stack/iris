@@ -7,10 +7,16 @@ final class IrisTestRunUsage {
     private let startedAt = Date()
     private let implementationArm: HarnessImplementationArm?
     private var inputCountsByReservationID: [HarnessRunReservationID: HarnessModelInputCounts] = [:]
+    private var latestSnapshot: HarnessRunLedgerSnapshot?
+    private var outcomeAttribution: HarnessRunOutcomeAttribution?
 
     init(implementationArm: HarnessImplementationArm? = nil) {
         self.implementationArm = implementationArm
     }
+
+    /// The opaque identifier callers use when they attach observed delivery
+    /// and reader-acceptance facts to this run.
+    var runIdentifier: String { runID }
 
     /// Serialize one settled call without retaining prompt or response data.
     /// The reservation is the authoritative submitted-input accounting even
@@ -66,10 +72,13 @@ final class IrisTestRunUsage {
         startedAt: Date,
         snapshot: HarnessRunLedgerSnapshot,
         calls: [[String: Any]],
-        implementationArm: HarnessImplementationArm? = nil
+        implementationArm: HarnessImplementationArm? = nil,
+        outcomeAttribution: HarnessRunOutcomeAttribution? = nil
     ) -> [String: Any] {
         func count(_ value: UInt64?) -> Any { value.map { $0 as Any } ?? NSNull() }
+        func value<T>(_ value: T?) -> Any { value.map { $0 as Any } ?? NSNull() }
         let allCallsSettled = snapshot.inFlightCallCount == 0
+        let requestedRoute = outcomeAttribution?.requestedRoute ?? implementationArm?.route
         let ledgerState: String
         switch snapshot.status {
         case .running: ledgerState = "running"
@@ -81,11 +90,27 @@ final class IrisTestRunUsage {
             "startedAt": ISO8601DateFormatter().string(from: startedAt),
             "elapsedSeconds": Date().timeIntervalSince(startedAt),
             "requestedPlanner": HarnessModelRoute.planner.description,
-            "requestedEditor": implementationArm.map { $0.route.description as Any } ?? NSNull(),
-            "providerConfirmedModel": NSNull(),
-            "modelIdentity": "requested, not provider-confirmed",
+            "requestedEditor": requestedRoute.map { $0.description as Any } ?? NSNull(),
+            "requestedModel": requestedRoute.map { $0.model as Any } ?? NSNull(),
+            "requestedEffort": requestedRoute.map { $0.effort as Any } ?? NSNull(),
+            "providerConfirmedModel": value(outcomeAttribution?.providerConfirmedModel),
+            "modelIdentity": outcomeAttribution?.providerConfirmedModel == nil
+                ? "requested, not provider-confirmed"
+                : "provider-confirmed",
             "ledgerState": ledgerState,
-            "uiAccepted": NSNull(),
+            "candidateID": value(outcomeAttribution?.candidateID),
+            "verificationResult": value(outcomeAttribution?.verification.rawValue),
+            "deliveryResult": value(outcomeAttribution?.delivery.rawValue),
+            "relaunchResult": value(outcomeAttribution?.relaunch.rawValue),
+            "undoResult": value(outcomeAttribution?.undo.rawValue),
+            "uiAccepted": value(outcomeAttribution?.uiAccepted),
+            "productOutcome": value(outcomeAttribution?.outcome.rawValue),
+            "acceptedLifecycle": value(outcomeAttribution?.isAcceptedLifecycle),
+            "elapsedNanoseconds": value(outcomeAttribution?.elapsedNanoseconds),
+            "maxCalls": count(snapshot.maxCalls),
+            "maxInputBytes": count(snapshot.maxInputBytes),
+            "remainingCalls": remaining(snapshot.maxCalls, used: snapshot.admittedCallCount),
+            "remainingInputBytes": remaining(snapshot.maxInputBytes, used: snapshot.accountedInputBytes),
             "admittedCalls": snapshot.admittedCallCount,
             "settledCalls": snapshot.settledCallCount,
             "inFlightCalls": snapshot.inFlightCallCount,
@@ -100,14 +125,62 @@ final class IrisTestRunUsage {
         ]
     }
 
-    func record(_ snapshot: HarnessRunLedgerSnapshot) {
+    /// Record a ledger checkpoint and, when supplied, the observed product
+    /// result. A mismatched or second conflicting attribution is ignored so a
+    /// stale async callback cannot overwrite the current run's evidence.
+    func record(
+        _ snapshot: HarnessRunLedgerSnapshot,
+        outcome: HarnessRunOutcomeAttribution? = nil
+    ) {
+        latestSnapshot = snapshot
+        if let outcome {
+            guard acceptOutcome(outcome) else { return }
+        }
+        write(snapshot)
+    }
+
+    /// Attach lifecycle evidence after delivery or the reader's answer. The
+    /// latest ledger checkpoint is rewritten so the evidence and token totals
+    /// remain in one bounded run document across relaunch and Undo.
+    func recordOutcome(
+        _ outcome: HarnessRunOutcomeAttribution,
+        snapshot: HarnessRunLedgerSnapshot? = nil
+    ) {
+        guard acceptOutcome(outcome) else { return }
+        if let snapshot {
+            record(snapshot)
+        } else if let latestSnapshot {
+            write(latestSnapshot)
+        }
+    }
+
+    private func acceptOutcome(_ outcome: HarnessRunOutcomeAttribution) -> Bool {
+        guard outcome.runID == runID else {
+            irisTrace("Iris Test ignored lifecycle evidence for another run")
+            return false
+        }
+        if let implementationArm,
+           implementationArm.route != outcome.requestedRoute {
+            irisTrace("Iris Test ignored lifecycle evidence for another model route")
+            return false
+        }
+        if let existing = outcomeAttribution, existing != outcome {
+            irisTrace("Iris Test ignored conflicting lifecycle evidence")
+            return false
+        }
+        outcomeAttribution = outcome
+        return true
+    }
+
+    private func write(_ snapshot: HarnessRunLedgerSnapshot) {
         guard IrisTestEnvironment.isEnabled else { return }
         let document = Self.snapshotDocument(
             runID: runID,
             startedAt: startedAt,
             snapshot: snapshot,
             calls: snapshot.settledCalls.map { callDocument(for: $0) },
-            implementationArm: implementationArm
+            implementationArm: implementationArm,
+            outcomeAttribution: outcomeAttribution
         )
         do {
             let directory = IrisTestEnvironment.logsDirectory.appendingPathComponent("harness-usage")
@@ -117,5 +190,10 @@ final class IrisTestRunUsage {
         } catch {
             irisTrace("Iris Test could not save a usage checkpoint")
         }
+    }
+
+    private static func remaining(_ limit: UInt64?, used: UInt64) -> Any {
+        guard let limit else { return NSNull() }
+        return limit >= used ? limit - used : 0
     }
 }

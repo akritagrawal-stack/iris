@@ -174,6 +174,46 @@ func runUsageAttributionChecks() async throws {
                     && (settledDocuments[1]["reasoningOutputTokens"] as? UInt64) == 5,
                 "settled per-call reasoning token records were not retained")
 
+    let acceptedAttribution = try HarnessRunOutcomeAttribution(
+        runID: "usage-check-settled",
+        candidateID: "candidate-usage-check",
+        requestedRoute: HarnessImplementationArm.lunaXHigh.route,
+        providerConfirmedModel: "gpt-5.6-luna-2026-09-14",
+        elapsedNanoseconds: 4_000_000_000,
+        verification: .passed,
+        delivery: .passed,
+        relaunch: .passed,
+        undo: .passed,
+        uiAcceptance: .accepted
+    )
+    let attributedDocument = IrisTestRunUsage.snapshotDocument(
+        runID: "usage-check-settled",
+        startedAt: Date(timeIntervalSince1970: 0),
+        snapshot: settledSnapshot,
+        calls: settledDocuments,
+        implementationArm: .lunaXHigh,
+        outcomeAttribution: acceptedAttribution
+    )
+    try require((attributedDocument["requestedModel"] as? String) == "gpt-5.6-luna"
+                    && (attributedDocument["requestedEffort"] as? String) == "xhigh",
+                "usage did not preserve the requested route dimensions")
+    try require((attributedDocument["providerConfirmedModel"] as? String) == "gpt-5.6-luna-2026-09-14",
+                "provider confirmation was not retained as a separate field")
+    try require((attributedDocument["uiAccepted"] as? Bool) == true
+                    && (attributedDocument["productOutcome"] as? String) == "acceptedFullLifecycle",
+                "accepted lifecycle evidence was not attributed")
+    try require((attributedDocument["acceptedLifecycle"] as? Bool) == true
+                    && (attributedDocument["verificationResult"] as? String) == "passed"
+                    && (attributedDocument["deliveryResult"] as? String) == "passed"
+                    && (attributedDocument["relaunchResult"] as? String) == "passed"
+                    && (attributedDocument["undoResult"] as? String) == "passed",
+                "lifecycle stage evidence was not retained")
+    try require((attributedDocument["maxCalls"] as? UInt64) == 2
+                    && (attributedDocument["maxInputBytes"] as? UInt64) == 100
+                    && (attributedDocument["remainingCalls"] as? UInt64) == 0
+                    && (attributedDocument["remainingInputBytes"] as? UInt64) == 60,
+                "hard budget and remaining capacity were not recorded")
+
     struct TransportFailure: Error {}
     let failedUsage = IrisTestRunUsage()
     let failedSystemPrompt = "FAILED_PAYLOAD_SENTINEL"

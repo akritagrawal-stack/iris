@@ -799,6 +799,8 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
 
         // The executor owns one child process. Keep these probes serial so a
         // stop request always owns and terminates the active child.
+        let topLevelResult = try await runGit(["rev-parse", "--show-toplevel"], in: source)
+        try throwIfOperationWasCancelled(request.runID)
         let headResult = try await runGit(["rev-parse", "--verify", "HEAD^{commit}"], in: source)
         try throwIfOperationWasCancelled(request.runID)
         let originResult = try await runGit(["remote", "get-url", "origin"], in: source)
@@ -830,9 +832,19 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                 expected: request.expectedOrigin, observed: observedOrigin
             )
         }
-        guard statusResult.exitCode == 0, commonResult.exitCode == 0,
+        guard topLevelResult.exitCode == 0, statusResult.exitCode == 0, commonResult.exitCode == 0,
+              !topLevelResult.outputWasTruncated,
               !statusResult.outputWasTruncated else {
-            throw GuideSourceWorkspacePreparationError.sourceUnavailable("Git status or common directory could not be read")
+            throw GuideSourceWorkspacePreparationError.sourceUnavailable("Git checkout identity could not be read")
+        }
+        let topLevelText = topLevelResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !topLevelText.isEmpty else {
+            throw GuideSourceWorkspacePreparationError.sourceUnavailable("Git checkout root could not be read")
+        }
+        let topLevel = URL(fileURLWithPath: topLevelText).standardizedFileURL
+        guard topLevel.path == source.path,
+              topLevel.path == topLevel.resolvingSymlinksInPath().standardizedFileURL.path else {
+            throw GuideSourceWorkspacePreparationError.sourceUnavailable("select the Git repository root")
         }
         let workingTreeFingerprint = try fingerprint(
             source: source, porcelain: statusResult.output

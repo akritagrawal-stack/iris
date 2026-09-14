@@ -238,6 +238,15 @@ struct SourceWorkspaceChecks {
         guard case .failure(.invalidRequest) = await service.inspect(unsafeProjectRequest) else {
             throw SourceWorkspaceCheckError.failed("project identifier escaped the destination name")
         }
+        let nestedCheckoutRequest = GuideSourceWorkspaceRequest(
+            runID: UUID(), guideID: request.guideID, guideRevision: request.guideRevision,
+            projectID: request.projectID, sourcePath: source.appendingPathComponent("apps/mobile").path,
+            expectedOrigin: request.expectedOrigin, expectedCommit: request.expectedCommit,
+            ownedProjectsRoot: request.ownedProjectsRoot
+        )
+        guard case .failure(.sourceUnavailable) = await service.inspect(nestedCheckoutRequest) else {
+            throw SourceWorkspaceCheckError.failed("nested repository folder was accepted as a source checkout")
+        }
         let inspectionResult = await service.inspect(request)
         guard case .success(.isolatedCopyOffered(let identity)) = inspectionResult else {
             throw SourceWorkspaceCheckError.failed("dirty matching source did not offer an isolated workspace")

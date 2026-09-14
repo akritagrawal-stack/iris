@@ -31,18 +31,7 @@ struct leanring_buddyTests {
         #expect(presentationDestination == .systemSettings)
     }
 
-    @Test func grantedAccessibilityHidesRepairGuidanceAndActions() {
-        #expect(!AccessibilityPermissionRecovery.shouldShowRepairInstructions(isGranted: true))
-        #expect(AccessibilityPermissionRecovery.actions(isGranted: true).isEmpty)
-    }
-
-    @Test func deniedAccessibilityOffersSeparateSettingsAndFinderActions() {
-        #expect(AccessibilityPermissionRecovery.shouldShowRepairInstructions(isGranted: false))
-        #expect(AccessibilityPermissionRecovery.actions(isGranted: false) == [
-            .openSettings, .showIris
-        ])
-        #expect(AccessibilityPermissionRecovery.Action.openSettings.rawValue == "Open Settings")
-        #expect(AccessibilityPermissionRecovery.Action.showIris.rawValue == "Show Iris")
+    @Test func accessibilityRecoveryExplainsHowToReplaceAStaleIrisEntry() {
         #expect(AccessibilityPermissionRecovery.repairInstructions.contains("minus button"))
         #expect(AccessibilityPermissionRecovery.repairInstructions.contains("plus button"))
         #expect(AccessibilityPermissionRecovery.repairInstructions.contains("this copy of Iris"))

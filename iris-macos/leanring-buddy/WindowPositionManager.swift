@@ -21,20 +21,7 @@ enum PermissionRequestPresentationDestination: Equatable {
 /// the system APIs makes the recovery path consistent in Settings and testable
 /// without prompting macOS.
 enum AccessibilityPermissionRecovery {
-    enum Action: String, Equatable {
-        case openSettings = "Open Settings"
-        case showIris = "Show Iris"
-    }
-
-    static func shouldShowRepairInstructions(isGranted: Bool) -> Bool {
-        !isGranted
-    }
-
-    static func actions(isGranted: Bool) -> [Action] {
-        isGranted ? [] : [.openSettings, .showIris]
-    }
-
-    static let repairInstructions = "If Iris is missing in Accessibility, use Show Iris, remove any stale Iris entry with the minus button, then add this copy with the plus button."
+    static let repairInstructions = "If Iris is missing in Accessibility, use Show Iris, remove any stale Iris entry with the minus button, then add this copy of Iris with the plus button."
 }
 
 @MainActor

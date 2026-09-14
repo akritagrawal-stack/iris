@@ -1,3 +1,7 @@
+### 2026-09-14 native Kneecap guide computer-use check
+
+The rebuilt signed RC was launched as the isolated Iris Test bundle. Through the native UI, Settings accepted `kneecap`, opened the real marketplace guide, and advanced from the initial terminal step to **step 5 of 15**. The guide reported that Terminal was open and that its prompt was inside the Kneecap folder. This proves guide admission, step progression, and terminal-state recognition in the native app. It does not prove installation completion, source mutation safety across all candidate folders, or physical-phone acceptance.
+
 # Native RC evidence, 2026-09-14
 
 ### 2026-09-14 automated regression rerun

@@ -295,3 +295,9 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 - Xcode GUI built the integrated `Iris Test` scheme after routing commit `016053f`; the resulting app was copied to `/Users/Shared/Iris-RC-20260914-v7/Iris Test.app`.
 - Strict code-signature verification passed. Executable SHA-256: `bc572ec21ceafe003cf4ee4950de0b57a0f45334087a1afffde39f3c66f73b14`.
 - The build was launched through Xcode and then stopped cleanly. This establishes a named integrated artifact, but does not close native spatial permissions, live-provider transfer, or physical-device acceptance.
+
+### 2026-09-14 NitroAI transfer lane checkpoint
+
+- The NitroAI source remains clean at `6d4209c`. Settings exposes `Export notes and folders` and `Import notes and folders`; the database import path validates v1 envelopes, preserves existing records, copies changed same-ID notes, rejects dangling or duplicate folders, and restores atomically on failure.
+- The isolated transfer oracle passed `2/2` with private temporary roots. Iris harness remains `161/161`.
+- This does not close the Iris-mediated complex-feature gate. The last native provider attempt made eight setup calls that reread repository/oracle context without producing an edit or delivery; the next action is a single convergent provider run followed by native delivery, relaunch, and readback.

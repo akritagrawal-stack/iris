@@ -239,6 +239,12 @@ data contains both records; the remaining defect is UI navigation/readback
 stability after the first duplicate-title note is opened and its last-opened
 grouping changes.
 
+A controlled repeat after stabilizing dashboard grouping returned to the earlier
+record-count failure (five instead of six), confirming that the persistence loss
+is independent of duplicate-title card ordering. The oracle is therefore still
+red at the transfer journey's preservation boundary, and no complex-feature
+acceptance claim is made.
+
 ## Current Iris model-route policy, September 14
 
 New planner and implementation work uses Luna by default. GPT-5.5 is available

@@ -108,7 +108,50 @@ struct AppDeliveryChecks {
         try save()
         try require(RepoRecipeService.deriveRecipe(repoRootPath: root.path).ecosystemIdentifier == "rust/tauri",
                     "Electron dependency without a shipping entry displaced Tauri")
+
+        let staticConfigRoot = fixtureRoot.appendingPathComponent("electron-static-files-config")
+        try FileManager.default.createDirectory(
+            at: staticConfigRoot.appendingPathComponent("electron"), withIntermediateDirectories: true
+        )
+        try Data("console.log('entry');".utf8).write(
+            to: staticConfigRoot.appendingPathComponent("electron/main.mjs")
+        )
+        try writePackageJSON(
+            at: staticConfigRoot,
+            scripts: ["dist:mac": "electron-builder --mac"],
+            dependencies: ["electron": "1"]
+        )
+        let staticConfig = staticConfigRoot.appendingPathComponent("electron-builder.cjs")
+        try Data("module.exports = {\n  files: [\"electron/**\"],\n};\n".utf8).write(to: staticConfig)
+        let staticSummary = try requireNonempty(
+            RepoRecipeElectronShippingEvidence.nativeReviewSummary(
+                repoRootPath: staticConfigRoot.path,
+                changedPaths: ["electron/iris-test-preload.cjs"]
+            ),
+            "static Electron Builder files configuration had no review summary"
+        )
+        try require(
+            staticSummary.contains("covering electron/iris-test-preload.cjs"),
+            "literal Electron Builder files configuration did not prove changed preload inclusion"
+        )
+        try Data("const files = [\"electron/**\"];\nmodule.exports = { files };\n".utf8).write(to: staticConfig)
+        let computedSummary = try requireNonempty(
+            RepoRecipeElectronShippingEvidence.nativeReviewSummary(
+                repoRootPath: staticConfigRoot.path,
+                changedPaths: ["electron/iris-test-preload.cjs"]
+            ),
+            "computed Electron Builder configuration had no review summary"
+        )
+        try require(
+            computedSummary.contains("packaged inclusion as unproven"),
+            "computed Electron Builder files configuration was treated as affirmative evidence"
+        )
         pass("Recipe picks the declared Electron shell, preserves Tauri and rejects weak or ambiguous shipping evidence")
+    }
+
+    private static func requireNonempty(_ value: String?, _ message: String) throws -> String {
+        guard let value, !value.isEmpty else { throw AppDeliveryCheckError.failed(message) }
+        return value
     }
 
     @MainActor

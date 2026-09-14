@@ -140,11 +140,17 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
         }
 
         if !safeChangedElectronPaths.isEmpty {
-            let coveredPaths = manifestCoveredElectronPaths(
+            let manifestCoveredPaths = manifestCoveredElectronPaths(
                 changedPaths: Array(safeChangedElectronPaths),
                 packageJSON: packageJSON,
                 configurationPaths: configurationPaths
             )
+            let configurationCoveredPaths = staticConfigurationCoveredElectronPaths(
+                changedPaths: Array(safeChangedElectronPaths),
+                configurationPaths: configurationPaths,
+                repoRootPath: repoRootPath
+            )
+            let coveredPaths = Array(Set(manifestCoveredPaths + configurationCoveredPaths)).sorted()
             if coveredPaths.isEmpty {
                 lines.append(
                     "- File-selection evidence: no bounded allowlist was found covering the changed Electron path(s) \(boundedSafePathList(Array(safeChangedElectronPaths))); the reviewer must treat packaged inclusion as unproven."
@@ -324,6 +330,73 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
         return changedPaths.filter { path in
             patterns.contains { manifestPattern($0, covers: path) }
         }
+    }
+
+    /// A configuration file is normally too expressive to parse as proof. The
+    /// narrow exception is a single, same-line, literal `files: ["..."]`
+    /// property in an Electron Builder config. That is enough to cover the
+    /// common static configuration shape without evaluating JavaScript,
+    /// interpolating config contents into a prompt, or treating a comment or
+    /// computed array as package evidence. Every other configuration remains
+    /// deliberately unproven.
+    private static func staticConfigurationCoveredElectronPaths(
+        changedPaths: [String],
+        configurationPaths: [String],
+        repoRootPath: String
+    ) -> [String] {
+        guard configurationPaths.count == 1,
+              let configurationPath = configurationPaths.first,
+              ["electron-builder.js", "electron-builder.cjs", "electron-builder.mjs"].contains(configurationPath),
+              let text = RepoRecipeFiles.readText(configurationPath, underRepoRoot: repoRootPath),
+              let patterns = staticSameLineFilesArray(in: text),
+              !patterns.isEmpty,
+              !patterns.contains(where: { $0.hasPrefix("!") })
+        else { return [] }
+        return changedPaths.filter { path in
+            patterns.contains { manifestPattern($0, covers: path) }
+        }
+    }
+
+    /// Parse only `files: ["literal", "literal"]` on one configuration line.
+    /// The parser refuses escapes, non-string expressions, duplicate `files`
+    /// properties, comments before the property, and multiline values.
+    private static func staticSameLineFilesArray(in configuration: String) -> [String]? {
+        let candidates = configuration.split(whereSeparator: \.isNewline).compactMap { rawLine -> String? in
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("files:") else { return nil }
+            return String(line.dropFirst("files:".count)).trimmingCharacters(in: .whitespaces)
+        }
+        guard candidates.count == 1,
+              let opening = candidates[0].firstIndex(of: "["),
+              opening == candidates[0].startIndex,
+              let closing = candidates[0].firstIndex(of: "]")
+        else { return nil }
+        let suffix = candidates[0][candidates[0].index(after: closing)...]
+            .trimmingCharacters(in: .whitespaces)
+        guard suffix.isEmpty || suffix == "," || suffix.hasPrefix("//") else { return nil }
+        let body = String(candidates[0][candidates[0].index(after: opening)..<closing])
+        guard body.utf8.count <= 4_096 else { return nil }
+        var remaining = body[...]
+        var patterns: [String] = []
+        while true {
+            remaining = remaining.drop(while: { $0.isWhitespace })
+            if remaining.isEmpty { break }
+            guard remaining.first == "\"" else { return nil }
+            remaining = remaining.dropFirst()
+            guard let quote = remaining.firstIndex(of: "\"") else { return nil }
+            let pattern = String(remaining[..<quote])
+            guard !pattern.contains("\\"),
+                  pattern.utf8.count <= 256,
+                  !containsPromptUnsafeScalars(pattern) else { return nil }
+            patterns.append(pattern)
+            guard patterns.count <= maximumManifestFilePatternCount else { return nil }
+            remaining = remaining[remaining.index(after: quote)...]
+            remaining = remaining.drop(while: { $0.isWhitespace })
+            if remaining.isEmpty { break }
+            guard remaining.first == "," else { return nil }
+            remaining = remaining.dropFirst()
+        }
+        return patterns
     }
 
     /// This is intentionally not a general glob engine. Exact files and a

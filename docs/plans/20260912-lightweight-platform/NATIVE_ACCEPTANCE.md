@@ -288,3 +288,13 @@ same-run source-workspace recovery. In the Xcode test run, the new
 red in unrelated pre-existing risk, overlay, watch, and recipe fixtures; those
 failures are retained for separate triage rather than counted as native product
 acceptance.
+
+## Test determinism and risk gate, September 14
+
+Autopilot risk tests now pass an explicit autonomy state instead of reading the
+user's persisted grant, so a prior interactive session cannot make destructive
+commands appear safe in CI. The focused risk run passed 7 of 8 tests; the only
+remaining failure is the source fixture lookup because this integration checkout
+has no `lib/guides` directory. The safety rules themselves passed. The RC was
+rebuilt from this state and its debug dylib hash is recorded in
+`/Users/Shared/Iris-RC-20260914/ARTIFACT_SHA256.txt`.

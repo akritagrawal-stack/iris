@@ -224,3 +224,11 @@ not a passed transfer claim. No user NitroAI profile was modified; failure artif
 were retained for diagnosis. The next bounded action is to reconcile the fixture's
 current UI contract with the oracle, then rerun the same round-trip and atomic-failure
 cases without generating a second implementation.
+
+## Current Iris model-route policy, September 14
+
+New planner and implementation work uses Luna by default. GPT-5.5 is available
+for bounded coding and Terra is review-only. Astra remains in the source only as
+decodable historical comparison metadata and fixtures; the current composer label
+now shows `Luna Max plan · GPT-5.5 edit`. Fresh harness and usability runs passed
+159 and 136 tests respectively after this policy was applied.

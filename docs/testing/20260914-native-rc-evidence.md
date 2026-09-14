@@ -233,3 +233,22 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 - Rebuilt RC v2 at `/Users/Shared/Iris-RC-20260914-v2/Iris Test.app` with executable SHA-256 `8c8308954bc1c915aff7910bb4b9b111e4a9de4dd4042f3abec4e78756d3a6fa`; strict code-signature verification passed.
 - Native relaunch check with RC v2 reopened Kneecap, reloaded to step 6, and admitted the persisted staged workspace without asking for the source folder again. This verifies binding persistence across relaunch. Clicking `Let Iris run it` again reached `Installing kneecap 6/15`; opening `Show terminal` closed the guide surface without exposing a terminal transcript, so command exit and device handoff remain unverified.
 - RC v4 at `/Users/Shared/Iris-RC-20260914-v4/Iris Test.app` includes the command-boundary fix that rewrites legacy `~/kneecap` references even when a structural workspace binding is present. Native computer-use rerun reached `Installing kneecap 6/15` and returned to the normal `Let Iris run it` state without the prior `Install paused. A step failed.` surface. This is evidence that the mapped step completed; terminal transcript and later mobile/device steps remain open.
+
+### 2026-09-14 native RC v5: mapped install/build and Xcode handoff
+
+- RC v5 at `/Users/Shared/Iris-RC-20260914-v5/Iris Test.app` was rebuilt from
+  the integrated worktree and passed strict `codesign --verify --deep --strict`.
+  Executable SHA-256: `2891efd9812d9cf697b8e58ce30ac0cc0714d6c2c54c941615b8065320954789`.
+- Native computer use relaunched the guide from the persisted Kneecap binding.
+  Step 7 (`bun install`) was admitted and completed in the staged worktree;
+  the original `/Users/akrit/kneecap` checkout retained its prior dirty state.
+  Step 8 (editor build) then completed and advanced the guide to step 9.
+- Step 9 is a manual Xcode handoff. The reader-facing card identified Xcode as
+  the required action; clicking `Let Iris run it` handed the step to the reader.
+  Computer use confirmed Xcode was open on the real `leanring-buddy` workspace.
+  This proves app launch/handoff, but not licence acceptance, signing, or a
+  physical iPhone install. Those native/device gates remain open.
+- The Xcode test navigator currently shows an unrelated broad historical test
+  run with failures (1427 tests, 147 issues); it is not counted as evidence for
+  the RC. The broad run was not used to claim a pass. Focused spatial and
+  offline-harness suites remain the authoritative automated checks.

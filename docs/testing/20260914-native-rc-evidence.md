@@ -188,3 +188,17 @@ Focused verification after this change: harness `159/159` tests in 7 suites,
 source-workspace `5/5`, and mobile catalog `18/18` passed. These are unit and
 service checks; they do not substitute for the pending native picker,
 device-install, or physical iPhone acceptance evidence.
+
+## Recovery-state follow-through
+
+Commits `7977747`, `8e23ace`, and `b163bf0` make the legacy-workspace refusal
+state explicit and keep the recovery affordance attached to that refusal. The
+final rebuilt RC passed strict signing and is installed at
+`/Users/Shared/Iris-RC-20260914/Iris Test.app`; executable SHA-256:
+`1ae7b2c9e1df4f443422155af8d8110aea710d0d9f0f7c01fb2e2a1827d2e91b`.
+
+Computer-use testing reached the live Kneecap step and reproduced the refusal
+message on this RC. The remaining acceptance action is selecting
+`/Users/Shared/Iris-RC-20260914/Kneecap-validated-fc48ba48`, preparing its
+isolated copy, and verifying the mapped commands and device handoff. That
+interaction has not been claimed complete.

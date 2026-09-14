@@ -164,3 +164,14 @@ covers retry/cancellation/session freshness and the spatial invalidation,
 movement, ambiguity, bounds, and app/window-change checks. It remains headless
 source evidence; native AX target reacquisition still needs a connected
 screen-help provider and live UI interaction.
+
+## Current timeout outcome accounting, September 14
+
+Commit `0885fbf` closes a timed-out or cancelled model session as an explicit
+uncertain/failure lifecycle outcome after settling its admitted attempt exactly
+once. The regression now asserts the stopped ledger state and terminal reason;
+`swift test --package-path iris-macos/tools/harness-tests` passes **159 tests in
+7 suites** after the fix. A fresh feature-host build and `--checks` run completed
+through the accepted-candidate and repair-window checks; no duplicate-settlement
+failure remains. This records bounded terminal accounting, not provider-side late
+usage from a real network call.

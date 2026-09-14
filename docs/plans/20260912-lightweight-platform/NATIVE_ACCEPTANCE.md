@@ -407,3 +407,10 @@ src/lib/db/db.test.ts` passed **10/10**, `npm run typecheck` passed, and
 source-level positive path and conflict behavior; it does not yet prove Iris
 delivered the controls or that the real Electron export/import/restart journey
 passes through the installed RC.
+
+The bounded Electron oracle was then run against the explicit approved
+`/Users/akrit/NitroAI` target root and passed **2/2 tests** in 17.57 seconds.
+This provides app-level evidence for the real download, file-input import,
+restart readback, duplicate/conflict, malformed-envelope, dangling-reference,
+and atomic-abort paths. It remains separate from Iris RC delivery acceptance;
+the native RC still must execute the complex feature through its UI.

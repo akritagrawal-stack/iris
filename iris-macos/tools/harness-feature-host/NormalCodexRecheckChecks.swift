@@ -173,9 +173,10 @@ func runNormalCodexRecheckChecks() async throws {
         appDeliveryReceiptStore: AppDeliveryReceiptStore(
             baseDirectory: resubmitRoot.appendingPathComponent("receipts")
         ),
+        runLogDirectoryPath: resubmitRoot.appendingPathComponent("run-logs").path,
         editReadiness: { .ready }
     )
-    let runDirectory = OnDemandEditRunLog.runsDirectoryPath
+    let runDirectory = resubmitRoot.appendingPathComponent("run-logs").path
     let runFileSuffix = "-\(resubmitSlug).log"
     func resubmitRunPaths() -> [String] {
         (try? FileManager.default.contentsOfDirectory(atPath: runDirectory))?
@@ -185,6 +186,10 @@ func runNormalCodexRecheckChecks() async throws {
     }
     for path in resubmitRunPaths() { try? FileManager.default.removeItem(atPath: path) }
     defer {
+        // `describeRequest` launches a probe task. Cancel/reset it before
+        // deleting the disposable directory so no delayed callback can outlive
+        // this fixture or write into a later test's state.
+        resubmitCoordinator.cancel()
         for path in resubmitRunPaths() { try? FileManager.default.removeItem(atPath: path) }
         resubmitDefaults.removePersistentDomain(forName: resubmitDefaultsName)
     }

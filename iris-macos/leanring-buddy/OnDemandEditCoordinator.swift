@@ -654,6 +654,10 @@ final class OnDemandEditCoordinator: ObservableObject {
     private let installProvenanceStore: InstallProvenanceStore
     private let patchQueue: PatchQueue
     private let clonePathLock: MaintainClonePathLock
+    /// The normal app keeps its established per-run log location. Isolated
+    /// hosts provide a disposable directory so creating a test run cannot
+    /// prune a reader's historical transcripts.
+    private let runLogDirectoryPath: String
     // Only an isolated lab host supplies this. The normal app stays on its
     // existing route until separate runtime state has been validated.
     private let makeHarnessWorkflow: (() throws -> HarnessFeatureWorkflow)?
@@ -1055,11 +1059,13 @@ final class OnDemandEditCoordinator: ObservableObject {
         appDeliveryReceiptStore: AppDeliveryReceiptStore? = nil,
         makeHarnessWorkflow: (() throws -> HarnessFeatureWorkflow)? = nil,
         harnessPlanningWatchdogNanoseconds: UInt64? = nil,
+        runLogDirectoryPath: String? = nil,
         editReadiness: (@MainActor () -> OnDemandEditReadiness)? = nil
     ) {
         self.installProvenanceStore = installProvenanceStore
         self.patchQueue = patchQueue
         self.clonePathLock = clonePathLock ?? .shared
+        self.runLogDirectoryPath = runLogDirectoryPath ?? OnDemandEditRunLog.runsDirectoryPath
         self.makeHarnessWorkflow = makeHarnessWorkflow
         self.harnessPlanningWatchdogNanoseconds = max(
             1, harnessPlanningWatchdogNanoseconds ?? Self.defaultHarnessPlanningWatchdogNanoseconds
@@ -1082,6 +1088,17 @@ final class OnDemandEditCoordinator: ObservableObject {
         self.appDeliveryReceiptStore = appDeliveryReceiptStore ?? AppDeliveryReceiptStore()
         loadInterruptedUndoRecoveryForReview()
         refreshSavedUndoArchives()
+    }
+
+    private func makeRunLog(
+        appSlug: String, kind: OnDemandEditKind, scrubbedRequest: String
+    ) -> OnDemandEditRunLog? {
+        OnDemandEditRunLog(
+            appSlug: appSlug,
+            kindLabel: kind == .feature ? "feature" : "bug fix",
+            scrubbedRequest: scrubbedRequest,
+            directoryPath: runLogDirectoryPath
+        )
     }
 
     private func refreshSavedUndoArchives() {
@@ -1659,10 +1676,8 @@ final class OnDemandEditCoordinator: ObservableObject {
         requestProbeGeneration += 1
         let probeGeneration = requestProbeGeneration
         if makeHarnessWorkflow == nil {
-            runLog = OnDemandEditRunLog(
-                appSlug: activeAppSlug ?? "unknown-app",
-                kindLabel: kind == .feature ? "feature" : "bug fix",
-                scrubbedRequest: scrubbed
+            runLog = makeRunLog(
+                appSlug: activeAppSlug ?? "unknown-app", kind: kind, scrubbedRequest: scrubbed
             )
         }
         isAssessingRequest = true
@@ -2218,10 +2233,8 @@ final class OnDemandEditCoordinator: ObservableObject {
         // The persisted run transcript — what makes a failed run diagnosable
         // after the fact. Best-effort: a nil log never affects the run.
         if runLog == nil {
-            runLog = OnDemandEditRunLog(
-                appSlug: slug,
-                kindLabel: kind == .feature ? "feature" : "bug fix",
-                scrubbedRequest: scrubbed
+            runLog = makeRunLog(
+                appSlug: slug, kind: kind, scrubbedRequest: scrubbed
             )
         }
         recordNormalCodexUsageCheckpointIfCurrent()

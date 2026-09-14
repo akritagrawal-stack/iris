@@ -33,3 +33,13 @@ adapter. Signed distribution destinations, on-device installation, app launch,
 media permissions, background/resume and export remain untested. Current
 Kneecap source capabilities and a working setup hyperlink do not establish any
 of those outcomes.
+
+## Current hub routing observation, September 14
+
+The running hub at `http://127.0.0.1:4177/` loaded the live catalog with **27
+apps**, including `kneecap`. Through the UI, switching iPhone to Android and
+then Computer updated the selected-device state and every app's support message
+without a page reload. Refresh returned to a ready catalog state. The current
+catalog truthfully reports `support unknown` and no download route for these
+devices, so this verifies routing and fail-closed messaging only; it does not
+prove an install, open, restart, or physical-device journey.

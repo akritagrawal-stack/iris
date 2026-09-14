@@ -307,3 +307,11 @@ forged-route rejection are covered. The hub intentionally exposes no actionable
 iPhone route while the catalog has no verified native destination; completing the
 phone install/open/restart journey requires a published verified iOS artifact and
 a connected trusted iPhone.
+
+## Focused native test pass, September 14
+
+The Xcode `GuideSetupRecoveryTests` target completed **7/7 tests passed** on the
+integrated RC. The `GuidePositionLiveTests` target completed its non-live contract
+check; the real model-backed position test stayed skipped because
+`IRIS_POSITION_LIVE=1` is not enabled. This preserves the distinction between
+local guidance logic and live screen/model acceptance.

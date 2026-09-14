@@ -1036,7 +1036,7 @@ final class AccountService: ObservableObject {
     /// Iris's screenshot-and-tool screen-help transport. Keep this separate so
     /// callers that need current machine context still require screen help.
     var canAnswerTypedQuestionsThroughCodex: Bool {
-        !canAnswerQuestions && CodexCLILogin.currentState().isUsable
+        !canAnswerQuestions && codexLoginState.isUsable
     }
 
     var canAnswerTypedQuestions: Bool {

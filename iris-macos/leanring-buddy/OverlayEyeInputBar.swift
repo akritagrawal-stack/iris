@@ -926,6 +926,10 @@ struct OverlayEyeInputBarView: View {
             }
         }
         .onAppear {
+            // Codex login can change outside Iris while the panel is closed.
+            // Refresh before rendering the connection label so it agrees with
+            // the send gate instead of showing a stale cached capability.
+            accountService.refreshCodexLoginState()
             // The panel has to be key before the field can take focus, and it
             // becomes key one runloop turn after it is ordered front.
             DispatchQueue.main.async {
@@ -2457,6 +2461,10 @@ struct OverlayEyeInputBarView: View {
     /// this file exists to fix: a question asked at the eye is answered at the
     /// eye, a few lines below where it was typed.
     private func send(_ messageText: String) {
+        // A login/logout can happen in another terminal between panel open and
+        // Send. Re-read the single observable snapshot before admitting work;
+        // the label, button and dispatch then share one truth.
+        accountService.refreshCodexLoginState()
         // Door B: an explicit instruction to EDIT the frontmost catalog app
         // (a "fix a bug in…" / "add a feature to…" chip, or the same phrasing
         // typed) opens the on-demand edit card instead of asking Iris a

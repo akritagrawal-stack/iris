@@ -148,7 +148,8 @@ struct GuidePanelView: View {
                         unsupportedPairExplanation(unsupportedPair)
                     } else {
                         if guideSessionController.guideOffersSourceWorkspaceSetup
-                            || guideSessionController.guideNeedsPublisherWorkspaceMigration {
+                            || guideSessionController.guideNeedsPublisherWorkspaceMigration
+                            || guideSessionController.guideHasPinnedSourceIdentity {
                             sourceWorkspaceSetupCard
                         }
                         if let setupRecoveryState = guideSessionController.setupRecoveryState {

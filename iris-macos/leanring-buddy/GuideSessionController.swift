@@ -524,6 +524,17 @@ final class GuideSessionController: ObservableObject {
         return guide.sourceCommit != nil && Self.sourceOrigin(for: guide) != nil
     }
 
+    /// A pinned guide still needs the source setup affordance even when an
+    /// older publisher payload has an origin spelling the strict parser cannot
+    /// normalize. The picker will fail closed with a readable identity error;
+    /// hiding it would strand the reader on a hard-coded legacy path.
+    var guideHasPinnedSourceIdentity: Bool {
+        guard let guide = guideBeingFollowed else { return false }
+        return guide.sourceCommit != nil
+            && !guide.sourceOwner.isEmpty
+            && !guide.sourceRepo.isEmpty
+    }
+
     /// A structural workspace declaration is the publisher's proof that a
     /// project command is intended to run in the prepared tree. Older guides
     /// retain their home-relative commands for manual following only.

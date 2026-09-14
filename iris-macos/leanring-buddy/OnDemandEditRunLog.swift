@@ -114,6 +114,25 @@ final class OnDemandEditRunLog {
         fileHandle = nil
     }
 
+    /// A Codex process may settle after cancellation closed this transcript.
+    /// Append only this payload-free usage correction to the originating run;
+    /// it never reopens the normal narrative channel or touches another run.
+    func recordLateUsageSettlement(_ summary: String, at date: Date = Date()) {
+        let line = "late usage settlement: " + summary
+        if fileHandle != nil {
+            record(line, at: date)
+            return
+        }
+        let stamp = lineTimestampFormatter.string(from: date)
+        let scrubbedLine = GuideAutopilotOutputBuffer.scrubbed(
+            GuideAutopilotOutputBuffer.strippedOfControlSequences(line)
+        )
+        guard let handle = FileHandle(forWritingAtPath: filePath) else { return }
+        defer { try? handle.close() }
+        handle.seekToEndOfFile()
+        handle.write(Data("[\(stamp)] \(scrubbedLine)\n".utf8))
+    }
+
     /// Keep the newest `maximumKeptRunLogFiles - 1` files (the run being
     /// created makes it the maximum). Names are timestamp-first, so a plain
     /// descending sort is newest-first.

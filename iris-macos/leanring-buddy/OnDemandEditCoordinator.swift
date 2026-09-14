@@ -1388,6 +1388,7 @@ final class OnDemandEditCoordinator: ObservableObject {
     /// the caller only decides whether its snapshot still owns the current flow.
     static func normalCodexUsageObserver(
         for usage: CodexRunUsageAccounting,
+        runLog: OnDemandEditRunLog? = nil,
         didChange: @escaping @MainActor () -> Void = {}
     ) -> CodexProcessAttemptObserver {
         CodexProcessAttemptObserver(
@@ -1423,11 +1424,14 @@ final class OnDemandEditCoordinator: ObservableObject {
                             reasoningOutputTokens: count(usage.reasoningOutputTokens)
                         )
                     }
-                    usage.settle(
+                    let settled = usage.settle(
                         attemptID: result.context.attemptID,
                         outcome: outcome,
                         usage: measuredUsage
                     )
+                    if settled, !usage.isRunning {
+                        runLog?.recordLateUsageSettlement(usage.summary)
+                    }
                     didChange()
                 }
             }
@@ -1437,7 +1441,7 @@ final class OnDemandEditCoordinator: ObservableObject {
     private func normalCodexAttemptObserver(
         for usage: CodexRunUsageAccounting
     ) -> CodexProcessAttemptObserver {
-        Self.normalCodexUsageObserver(for: usage) { [weak self, usage] in
+        Self.normalCodexUsageObserver(for: usage, runLog: runLog) { [weak self, usage] in
             guard self?.normalCodexUsage === usage else { return }
             self?.normalCodexRunSnapshot = usage.snapshot
         }
@@ -1643,6 +1647,13 @@ final class OnDemandEditCoordinator: ObservableObject {
         }
         requestProbeGeneration += 1
         let probeGeneration = requestProbeGeneration
+        if makeHarnessWorkflow == nil {
+            runLog = OnDemandEditRunLog(
+                appSlug: activeAppSlug ?? "unknown-app",
+                kindLabel: kind == .feature ? "feature" : "bug fix",
+                scrubbedRequest: scrubbed
+            )
+        }
         isAssessingRequest = true
         statusLine = nil
         let clonePathForProbe = provenanceClonePath(forAppSlug: activeAppSlug ?? "")
@@ -2195,11 +2206,13 @@ final class OnDemandEditCoordinator: ObservableObject {
         editRunner.beginRun(appName: activeAppName ?? slug, kind: kind)
         // The persisted run transcript — what makes a failed run diagnosable
         // after the fact. Best-effort: a nil log never affects the run.
-        runLog = OnDemandEditRunLog(
-            appSlug: slug,
-            kindLabel: kind == .feature ? "feature" : "bug fix",
-            scrubbedRequest: scrubbed
-        )
+        if runLog == nil {
+            runLog = OnDemandEditRunLog(
+                appSlug: slug,
+                kindLabel: kind == .feature ? "feature" : "bug fix",
+                scrubbedRequest: scrubbed
+            )
+        }
         recordNormalCodexUsageCheckpointIfCurrent()
 
         let runID = UUID()

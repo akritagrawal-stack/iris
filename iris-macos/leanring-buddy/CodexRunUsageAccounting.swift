@@ -15,6 +15,7 @@ final class CodexRunUsageAccounting {
     }
 
     var snapshot: HarnessRunLedgerSnapshot { ledger.snapshot }
+    var isRunning: Bool { ledger.isRunning }
 
     func admit(
         attemptID: UUID,
@@ -34,13 +35,19 @@ final class CodexRunUsageAccounting {
         reservations[attemptID] = reservation
     }
 
+    @discardableResult
     func settle(
         attemptID: UUID,
         outcome: HarnessCallOutcome,
         usage: HarnessMeasuredUsage?
-    ) {
-        guard let reservation = reservations.removeValue(forKey: attemptID) else { return }
-        try? ledger.settle(reservation, outcome: outcome, usage: usage, at: Self.now())
+    ) -> Bool {
+        guard let reservation = reservations.removeValue(forKey: attemptID) else { return false }
+        do {
+            try ledger.settle(reservation, outcome: outcome, usage: usage, at: Self.now())
+            return true
+        } catch {
+            return false
+        }
     }
 
     @discardableResult

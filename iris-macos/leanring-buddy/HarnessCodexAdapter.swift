@@ -101,8 +101,15 @@ enum HarnessCodexAdapter {
 }
 
 @MainActor
-protocol HarnessPhaseAwareModelProviding {
+protocol HarnessPhaseAwareModelProviding: MaintainRunPhaseProviding {
     func setHarnessPhase(_ phase: HarnessRunTaskKind)
+}
+
+@MainActor
+extension HarnessPhaseAwareModelProviding {
+    func setRunPhase(_ phase: HarnessRunTaskKind) {
+        setHarnessPhase(phase)
+    }
 }
 
 /// The fixer sends this only after a successful response and after removing
@@ -155,7 +162,7 @@ protocol HarnessReviewBudgetProviding {
 /// Uses the original Iris executor with the accepted brief pinned in each
 /// request, including after its ordinary conversation window is compacted.
 @MainActor
-final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhaseAwareModelProviding, MaintainRunPhaseProviding, HarnessOpeningRuntimeImageRetirementObserving, HarnessBehaviorReviewProviding, HarnessExecutionObserving, HarnessReviewBudgetProviding {
+final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhaseAwareModelProviding, HarnessOpeningRuntimeImageRetirementObserving, HarnessBehaviorReviewProviding, HarnessExecutionObserving, HarnessReviewBudgetProviding {
     let workflow: HarnessFeatureWorkflow
     private var phase: HarnessRunTaskKind = .edit
     private(set) var executionJournal = HarnessExecutionJournal()
@@ -272,10 +279,6 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
     func setHarnessPhase(_ phase: HarnessRunTaskKind) {
         self.phase = phase
         if phase == .edit || phase == .repair { behaviorAssessment = nil }
-    }
-
-    func setRunPhase(_ phase: HarnessRunTaskKind) {
-        setHarnessPhase(phase)
     }
 
     func openingRuntimeImageWasRetired(rawImageBytes: UInt64) {

@@ -1385,6 +1385,13 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
             at: parent, includingPropertiesForKeys: nil
         ) else { throw RetentionError.unreadableInventory }
         return try entries.map { entry in
+            // Finder may add harmless metadata files to a directory that has
+            // been opened by a user. They are not receipt payloads and must
+            // not turn a safe retention preview into a corrupt-inventory
+            // refusal. Every other unexpected file still fails closed below.
+            if entry.lastPathComponent == ".DS_Store" {
+                return nil
+            }
             var metadata = stat()
             guard lstat(entry.path, &metadata) == 0 else {
                 throw RetentionError.unreadableInventory
@@ -1395,7 +1402,7 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                 throw RetentionError.corruptInventory
             }
             return entry
-        }
+        }.compactMap { $0 }
     }
 
     private func isReceiptPayloadEligibleForCleanup(_ receipt: AppDeliveryReceipt) -> Bool {

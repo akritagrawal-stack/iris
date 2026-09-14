@@ -1075,6 +1075,11 @@ struct BackupRetentionChecks {
         )
         let frameworkDestination = framework.backupRoot
             .appendingPathComponent("com.fixture.retention/new/Retention.app", isDirectory: true)
+        // Finder metadata is routinely introduced when a user opens the
+        // backup directory. It is not a payload and must not block a preview.
+        try Data("finder metadata".utf8).write(
+            to: framework.backupRoot.appendingPathComponent("com.fixture.retention/.DS_Store")
+        )
         guard try framework.store.admitBackup(
             sourcePath: framework.installed.path, destinationPath: frameworkDestination.path,
             policy: framework.policy, recoveryStore: framework.recoveryStore

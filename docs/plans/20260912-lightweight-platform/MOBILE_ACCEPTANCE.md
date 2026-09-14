@@ -43,3 +43,16 @@ without a page reload. Refresh returned to a ready catalog state. The current
 catalog truthfully reports `support unknown` and no download route for these
 devices, so this verifies routing and fail-closed messaging only; it does not
 prove an install, open, restart, or physical-device journey.
+
+## Current published Kneecap iPhone guide observation, September 14
+
+The visible published guide exposes a 17-step Mac+iPhone path pinned to reviewed
+commit `fc48ba4`, including Git/Node/Bun checks, source validation, `bun install`,
+mobile build, Capacitor sync/open, Apple signing, device trust, and export
+verification. It explicitly states that the mobile shell is not yet present in
+the Kneecap repository and that the build is pre-release with seven-day
+unsigned provisioning. The guide still uses `~/kneecap` as its source location
+and refuses a non-clean or wrong-origin folder. This is useful source and UX
+evidence, but it confirms that the actual iPhone install journey remains
+unverified and that multiple local Kneecap folders need Iris workspace selection
+rather than blind path reuse.

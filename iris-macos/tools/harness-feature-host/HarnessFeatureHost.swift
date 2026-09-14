@@ -164,6 +164,8 @@ struct HarnessFeatureHost {
 
     @MainActor private static func checkOutputBudget() async throws {
         try await runUsageAttributionChecks()
+        try runCodexTextOnlyAskChecks()
+        print("PASS typed Codex Ask: enabled only for non-empty unsized text and clearly names the screen-help boundary")
         try await runNormalCodexRecheckChecks()
         let complete = (1...120).map { "line \($0): " + String(repeating: "x", count: 50) }.joined(separator: "\n")
         guard MaintainTierCFixer.outputForModel(complete) != complete,

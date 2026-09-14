@@ -86,12 +86,14 @@ import Testing
         #expect(chosen == nil)
     }
 
-    /// A packaging failure must remain retryable after Iris Test restarts, but
-    /// this small record is intentionally only an identity handoff: it cannot
-    /// retain a prompt, diff, API key, or built app. The coordinator still
+    /// A packaging failure must remain retryable after Iris Test restarts. This
+    /// simulates the restart boundary with an isolated defaults suite, then
+    /// feeds the decoded identity into the coordinator's UI-admission gate.
+    /// The record is intentionally only an identity handoff: it cannot retain
+    /// a prompt, diff, API key, or built app. The live coordinator still
     /// rechecks this identity against Git and the Iris Test registry before it
     /// exposes a retry action.
-    @Test func savedDeliveryRetryRecordRoundTripsAndCanBeDiscarded() {
+    @Test func savedDeliveryRetryRecordRestoresIntoCoordinatorRetryAdmission() throws {
         let suiteName = "iris.saved-delivery-retry-test.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             Issue.record("the isolated UserDefaults suite could not be created")
@@ -113,9 +115,20 @@ import Testing
 
         #expect(store.load() == nil)
         store.save(record)
-        #expect(store.load() == record)
-        store.clear()
-        #expect(store.load() == nil)
+        let restored = try #require(store.load())
+        #expect(restored == record)
+
+        // These are the state values the coordinator publishes after a
+        // valid saved source has been rechecked on startup. No edit task,
+        // Undo recovery, or installed replacement may suppress the retry.
+        #expect(OnDemandEditCoordinator.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: true,
+            hasSavedDeliveryIdentity: restored.identity == record.identity,
+            phase: .done,
+            hasEditTask: false,
+            undoNeedsRecovery: false,
+            installedCopyReplaced: false
+        ))
     }
 
     /// The undo snapshot lives under Application Support, keyed by a

@@ -298,3 +298,12 @@ remaining failure is the source fixture lookup because this integration checkout
 has no `lib/guides` directory. The safety rules themselves passed. The RC was
 rebuilt from this state and its debug dylib hash is recorded in
 `/Users/Shared/Iris-RC-20260914/ARTIFACT_SHA256.txt`.
+
+## Mobile hub evidence, September 14
+
+The dependency-free mobile hub checks pass 18/18. Catalog refresh, cache fallback,
+timeouts, bounded bodies, icon validation, duplicate/oversized manifests, and
+forged-route rejection are covered. The hub intentionally exposes no actionable
+iPhone route while the catalog has no verified native destination; completing the
+phone install/open/restart journey requires a published verified iOS artifact and
+a connected trusted iPhone.

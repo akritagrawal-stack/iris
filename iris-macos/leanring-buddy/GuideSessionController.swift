@@ -1084,6 +1084,14 @@ final class GuideSessionController: ObservableObject {
         self.makeAutopilotRunner = makeAutopilotRunner
         let defaultWorkspaceRoot = IrisTestEnvironment.applicationSupportDirectory
             .appendingPathComponent("GuideSourceWorkspaces", isDirectory: true)
+        // The destination validator deliberately requires the owned root to
+        // already exist. Create it before the service is constructed so the
+        // first native picker attempt can stage a workspace instead of being
+        // misreported as a destination collision.
+        try? FileManager.default.createDirectory(
+            at: defaultWorkspaceRoot,
+            withIntermediateDirectories: true
+        )
         self.sourceWorkspaceService = sourceWorkspaceService ?? GuideSourceWorkspaceService(
             store: GuideSourceWorkspaceStore(directory: defaultWorkspaceRoot.appendingPathComponent("records", isDirectory: true)),
             destinationIsOwned: { root in

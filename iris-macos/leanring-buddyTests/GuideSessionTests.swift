@@ -21,6 +21,18 @@ import Testing
 @MainActor
 struct GuideSessionTests {
 
+    @Test func marketplaceGuideAdmissionRequiresExplicitNativeAcceptanceOrFixture() {
+        #expect(!IrisTestEnvironment.allowsMarketplaceGuides(
+            hasOfflineFixture: false, nativeAcceptanceMode: false
+        ))
+        #expect(IrisTestEnvironment.allowsMarketplaceGuides(
+            hasOfflineFixture: true, nativeAcceptanceMode: false
+        ))
+        #expect(IrisTestEnvironment.allowsMarketplaceGuides(
+            hasOfflineFixture: false, nativeAcceptanceMode: true
+        ))
+    }
+
     @Test func sourceWorkspaceContractDistinguishesPublishedLegacyPathsFromTheOwnedStructuralFixture() async throws {
         let guideService = try Self.guideServiceAnsweredByTheStub()
 

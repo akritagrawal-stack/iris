@@ -55,6 +55,22 @@ public nonisolated enum IrisTestEnvironment {
         runtimeIdentity.isTestApplication
     }
 
+    /// Marketplace guide execution is opt-in for the separately signed Test
+    /// app. This keeps ordinary Test runs isolated while allowing a reviewed
+    /// native acceptance session to exercise the real guide flow against an
+    /// explicitly staged workspace.
+    static var isNativeAcceptanceMode: Bool {
+        guard isEnabled, !isUnitTestProcess else { return false }
+        return ProcessInfo.processInfo.environment["IRIS_TEST_NATIVE_ACCEPTANCE"] == "1"
+    }
+
+    static func allowsMarketplaceGuides(
+        hasOfflineFixture: Bool,
+        nativeAcceptanceMode: Bool = isNativeAcceptanceMode
+    ) -> Bool {
+        hasOfflineFixture || nativeAcceptanceMode
+    }
+
     /// XCTest loads the Iris Test product into an isolated test host. That host
     /// cannot drive a marketplace install, but it must be able to exercise the
     /// controller's local state transitions using its own stubbed guide service.

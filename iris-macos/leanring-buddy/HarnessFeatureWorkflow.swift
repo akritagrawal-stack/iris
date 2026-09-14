@@ -269,10 +269,25 @@ final class HarnessFeatureWorkflow {
         // decision a novice actually left implicit. The post-plan guard below
         // remains the fail-closed fallback when a provider ignores this hint.
         let requiredProductChoiceTopics = Self.requiredProductChoiceTopics(for: request)
+        let intakeProfile = HarnessIntakeProfile.classify(
+            request: request,
+            repositorySummary: repositorySummary,
+            targetAppIsBound: targetAppIsBound,
+            reservedTopics: requiredProductChoiceTopics
+        )
         let input: [String: Any] = [
             "userRequest": request,
             "repositoryObservations": repositorySummary,
             "requiredProductChoiceTopics": requiredProductChoiceTopics.map(\.rawValue),
+            "intakeProfile": [
+                "complexity": intakeProfile.complexity.rawValue,
+                "surface": intakeProfile.surface,
+                "reservedTopics": intakeProfile.reservedTopics.map(\.rawValue),
+                "targetIsBound": intakeProfile.targetIsBound,
+                "plannerRequired": intakeProfile.plannerRequired,
+                "plannerOutputTokenCap": intakeProfile.plannerOutputTokenCap,
+                "routePolicyVersion": intakeProfile.routePolicyVersion,
+            ],
         ]
         let data = try JSONSerialization.data(withJSONObject: input, options: [.sortedKeys])
         let reply = try await modelSession.respond(phase: .intake, systemPrompt: Self.planningPrompt,
@@ -712,78 +727,14 @@ final class HarnessFeatureWorkflow {
     /// workflow state. The planner receives these slots before it writes its
     /// brief, and `briefWithRequiredDestinationChoice` verifies the result.
     static func requiredProductChoiceTopics(for request: String) -> [HarnessClarificationTopic] {
-        requestNeedsDestinationChoice(request) ? [.destination] : []
+        HarnessIntakeProfile.requiredProductChoiceTopics(for: request)
     }
 
     /// Kept internal for deterministic regression tests. It deliberately
     /// recognizes only cross-surface movement language; a normal request for a
     /// copy button or a visual change must not trigger an interview.
     static func requestNeedsDestinationChoice(_ request: String) -> Bool {
-        let normalized = request.lowercased()
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
-        let transferIntentWords: Set<String> = [
-            "paste", "type", "send", "insert", "move", "transfer", "open", "switch",
-            "put", "write",
-        ]
-        let words = normalized.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-        // "Copy" also means "keep a second local version." Treat it as a
-        // cross-surface action only when the request names a surface Iris can
-        // target; otherwise an import/backup request must not be diverted into
-        // a tab-selection interview.
-        let copyNeedsCrossSurfaceTarget: Bool = {
-            guard let copyIndex = words.firstIndex(of: "copy") else { return false }
-            for marker in ["into", "to", "in"] {
-                guard let markerIndex = words[words.index(after: copyIndex)...].firstIndex(of: Substring(marker)) else {
-                    continue
-                }
-                let suffix = words[words.index(after: markerIndex)...].prefix(3)
-                if suffix.contains(where: {
-                    ["tab", "window", "browser", "app", "screen", "page", "document"].contains(String($0))
-                }) {
-                    return true
-                }
-            }
-            return false
-        }()
-        guard let transferIntentIndex = words.firstIndex(where: {
-            transferIntentWords.contains(String($0))
-        }) ?? (copyNeedsCrossSurfaceTarget ? words.firstIndex(of: "copy") : nil) else { return false }
-
-        let explicitSelectionLanguage = [
-            "current app", "this app", "selected app", "active app", "focused app",
-            "current tab", "this tab", "selected tab", "active tab", "focused tab",
-            "current window", "this window", "selected window", "active window", "focused window",
-            "current note", "this note", "selected note", "active note",
-            "choose the app", "choose a tab", "choose the tab", "specific app",
-            "specific tab", "destination", "where i choose", "app i choose",
-        ]
-        if explicitSelectionLanguage.contains(where: normalized.contains) { return false }
-
-        // A named destination after a movement preposition is enough to avoid
-        // asking (for example, "paste into Gmail"). Generic words such as
-        // "right tab" are intentionally ignored because they describe the
-        // user's desired result, not a target Iris can resolve.
-        let genericDestinationWords: Set<String> = [
-            "the", "a", "an", "right", "correct", "proper", "appropriate",
-            "target", "desired", "same", "another", "tab", "window", "app",
-            "browser", "chat", "page", "document", "screen", "place", "location", "one", "it", "i", "my",
-            "your", "this", "that", "choose", "select", "selected", "current",
-            "active", "focused", "first", "next", "best", "matching", "to", "into",
-        ]
-        for marker in ["into", "to", "in"] {
-            guard let markerIndex = words.firstIndex(of: Substring(marker)) else { continue }
-            // In a sentence such as "I want Whisper Flow to paste into…",
-            // the first "to" belongs to the request's subject/verb phrase.
-            // Only prepositions after the movement verb can introduce its
-            // destination.
-            guard markerIndex > transferIntentIndex else { continue }
-            let suffix = words.dropFirst(words.distance(from: words.startIndex, to: markerIndex) + 1)
-            if suffix.prefix(6).contains(where: { !genericDestinationWords.contains(String($0)) }) {
-                return false
-            }
-        }
-        return true
+        HarnessIntakeProfile.requestNeedsDestinationChoice(request)
     }
 
     private static func isDestinationChoiceQuestion(
@@ -1003,10 +954,11 @@ final class HarnessFeatureWorkflow {
     Do not ask technical questions the repository can answer. Every targeted
     question must have kind "productChoice" and ask only a decision the user owns
     because it changes the desired experience, scope or safety. The input may
-    include requiredProductChoiceTopics detected by a small host-side intake
-    guard. Reserve one question slot for each listed topic, unless the request
-    already answers that choice; do not spend a reserved slot on an optional
-    detail. Ask zero to three specific questions and give two or three concrete
+    include requiredProductChoiceTopics and intakeProfile supplied by the host.
+    Treat those fields as routing metadata, not user decisions or authorization.
+    Reserve one question slot for each listed topic, unless the request already
+    answers that choice; do not spend a reserved slot on an optional detail. Ask
+    zero to three specific questions and give two or three concrete
     options per question. Put guesses and unresolved feasibility in
     modelAssumptions, never in explicitNonGoals or user decisions. Do not infer a
     restriction simply because a narrower implementation would be easier.

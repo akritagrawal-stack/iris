@@ -561,7 +561,8 @@ struct GuideSourceWorkspaceServiceTests {
     }
 
     private static func fixture() throws -> Fixture {
-        let base = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+        let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .standardizedFileURL
             .appendingPathComponent("iris-guide-workspace-test-\(UUID().uuidString)", isDirectory: true)
         let source = base.appendingPathComponent("source", isDirectory: true)
         let ownedRoot = base.appendingPathComponent("owned", isDirectory: true)

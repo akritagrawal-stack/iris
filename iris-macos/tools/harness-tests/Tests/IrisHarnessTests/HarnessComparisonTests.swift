@@ -3,7 +3,8 @@ import Testing
 @testable import IrisHarness
 
 @Test func comparisonUsesUserRequestedFixedRoles() {
-    #expect(HarnessModelRoute.planner == HarnessModelRoute(model: "gpt-6-astra", effort: "medium"))
+    #expect(HarnessModelRoute.planner == HarnessImplementationArm.lunaMax.route)
+    #expect(HarnessModelRoute.comparisonPlanner == HarnessModelRoute(model: "gpt-6-astra", effort: "medium"))
     #expect(HarnessImplementationArm.astraLow.route.effort == "low")
     #expect(HarnessImplementationArm.lunaXHigh.route == HarnessModelRoute(model: "gpt-5.6-luna", effort: "xhigh"))
 }

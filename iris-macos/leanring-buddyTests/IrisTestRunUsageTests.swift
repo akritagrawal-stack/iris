@@ -242,6 +242,7 @@ struct IrisTestRunUsageTests {
             implementationArm: .astraLow,
             outcomeAttribution: attribution
         )
+        #expect(document["requestedPlanner"] as? String == HarnessImplementationArm.lunaMax.route.description)
         #expect(document["requestedModel"] as? String == "gpt-6-astra")
         #expect(document["requestedEffort"] as? String == "low")
         #expect(document["providerConfirmedModel"] as? String == "gpt-6-astra-2026-09-14")

@@ -25,7 +25,15 @@ nonisolated enum HarnessImplementationArm: String, Codable, CaseIterable, Sendab
 nonisolated struct HarnessModelRoute: Codable, Equatable, Sendable {
     let model: String
     let effort: String
-    static let planner = HarnessModelRoute(model: "gpt-6-astra", effort: "medium")
+
+    /// The route used for new planner reservations. Keep this derived from
+    /// the implementation policy so usage documents cannot advertise the
+    /// historical comparison model as if it handled a live Iris run.
+    static let planner = HarnessImplementationArm.lunaMax.route
+
+    /// Frozen baseline metadata for the completed model comparison. This is
+    /// intentionally named so callers cannot mistake it for the live route.
+    static let comparisonPlanner = HarnessModelRoute(model: "gpt-6-astra", effort: "medium")
 
     var description: String { "Requested: \(model), effort: \(effort)" }
 }
@@ -220,7 +228,7 @@ nonisolated struct HarnessFrozenComparison: Codable, Equatable, Sendable {
         self.sourceDigest = Self.digest(sourceManifest)
         self.acceptedBriefDigest = Self.digest(acceptedBrief)
         self.acceptanceContractDigest = Self.digest(acceptanceContract)
-        self.plannerRoute = .planner
+        self.plannerRoute = .comparisonPlanner
     }
 
     func validate(sourceManifest: Data, acceptedBrief: Data, acceptanceContract: Data) throws {

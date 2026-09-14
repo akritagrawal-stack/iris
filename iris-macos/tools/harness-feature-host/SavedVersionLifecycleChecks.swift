@@ -35,6 +35,8 @@ struct SavedVersionLifecycleChecks {
         do {
             try checkReceiptRoundTripAndPayloadIdentity()
             print("PASS receipt source/base and installed bundle identity survive restart")
+            try checkUndoOfferRequiresInstalledReceipt()
+            print("PASS clone-only launches never offer Undo; installed receipt and backup are required")
             try checkRecoveryMarkerRefusesFinalSymlink()
             print("PASS Undo recovery marker refuses final symlink and preserves review gate")
             try await checkChangedSourceAndPayloadRefusal()
@@ -103,6 +105,56 @@ struct SavedVersionLifecycleChecks {
             replacementBundleIdentity: metadataOnly, backupBundleIdentity: metadataOnly)
         try require(partial.isValid && !partial.hasCompleteUndoMetadata,
                     "metadata-only legacy bundle identities incorrectly enabled Undo")
+    }
+
+    private static func checkUndoOfferRequiresInstalledReceipt() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        try require(fixture.receipt.hasCompleteUndoMetadata,
+                    "fixture did not produce a complete installed receipt")
+        try require(OnDemandEditCoordinator.installedDeliveryUndoIsAvailable(
+            installedCopyReplaced: true,
+            installedPath: fixture.installed.path,
+            backupPath: fixture.backup.path,
+            receipt: fixture.receipt
+        ), "a complete installed receipt with an existing backup was not Undoable")
+        try require(!OnDemandEditCoordinator.installedDeliveryUndoIsAvailable(
+            installedCopyReplaced: false,
+            installedPath: fixture.installed.path,
+            backupPath: fixture.backup.path,
+            receipt: fixture.receipt
+        ), "a clone-only launch exposed the installed Undo action")
+        try require(!OnDemandEditCoordinator.installedDeliveryUndoIsAvailable(
+            installedCopyReplaced: true,
+            installedPath: fixture.installed.path,
+            backupPath: fixture.backup.path,
+            receipt: nil
+        ), "missing durable receipt exposed the installed Undo action")
+
+        let prepared = AppDeliveryReceipt(
+            identifier: UUID(), bundleIdentifier: fixture.receipt.bundleIdentifier,
+            installedPath: fixture.receipt.installedPath,
+            sourceArtifactPath: fixture.receipt.sourceArtifactPath,
+            backupPath: fixture.receipt.backupPath,
+            phase: .prepared,
+            sourceIdentity: fixture.receipt.sourceIdentity,
+            installedBundleIdentity: fixture.receipt.installedBundleIdentity,
+            replacementBundleIdentity: fixture.receipt.replacementBundleIdentity,
+            backupBundleIdentity: fixture.receipt.backupBundleIdentity
+        )
+        try require(!OnDemandEditCoordinator.installedDeliveryUndoIsAvailable(
+            installedCopyReplaced: true,
+            installedPath: fixture.installed.path,
+            backupPath: fixture.backup.path,
+            receipt: prepared
+        ), "a prepared receipt exposed Undo before the installed transition")
+        try require(!OnDemandEditCoordinator.installedDeliveryUndoIsAvailable(
+            installedCopyReplaced: true,
+            installedPath: fixture.installed.path,
+            backupPath: fixture.root.appendingPathComponent("backups/missing.app").path,
+            receipt: fixture.receipt
+        ), "a missing backup exposed the installed Undo action")
     }
 
     private static func checkRecoveryMarkerRefusesFinalSymlink() throws {

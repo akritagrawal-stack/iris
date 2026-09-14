@@ -1361,11 +1361,13 @@ struct OnDemandEditCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: 8) {
-                Button("Undo this change") { coordinator.undoDeliveredChange() }
-                    .irisTinyButton()
-                    .help("Attempts to restore the previous installed version of \(appName) and discard this change.")
-                Spacer(minLength: 0)
+            if coordinator.canRetryUndo {
+                HStack(spacing: 8) {
+                    Button("Undo this change") { coordinator.undoDeliveredChange() }
+                        .irisTinyButton()
+                        .help("Attempts to restore the previous installed version of \(appName) and discard this change.")
+                    Spacer(minLength: 0)
+                }
             }
         }
     }
@@ -1683,7 +1685,7 @@ struct OnDemandEditCard: View {
                             .help("More ways to share the saved branch.")
                         }
 
-                        if coordinator.deliveredChangeCanBeUndone {
+                        if coordinator.canRetryUndo {
                             Button("Undo") { coordinator.undoDeliveredChange() }
                                 .irisTinyButton()
                                 .help("Restores the previous app version and checks the result. Keeps the edit history for recovery.")
@@ -1838,7 +1840,7 @@ struct OnDemandEditCard: View {
                     .irisTinyButton()
                     .help("Posts to publik's public listing that this app got this change. A separate, public step — asked every time.")
             }
-            if coordinator.deliveredChangeCanBeUndone {
+            if coordinator.canRetryUndo {
                 Button("Undo") { coordinator.undoDeliveredChange() }
                     .irisTinyButton()
                     .help("Restores the previous app version and checks the result. Keeps the edit history for recovery.")

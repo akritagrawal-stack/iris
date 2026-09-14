@@ -912,13 +912,74 @@ final class MaintainTierCFixer {
             at: URL(fileURLWithPath: backupDirectory), withIntermediateDirectories: true
         )
 #endif
-        _ = try? await runner.run(
-            "rm -rf '\(gitBackup)'; mv .git '\(gitBackup)' 2>/dev/null || true", deadline: 60
-        )
-        func restoreGit() async {
-            _ = try? await runner.run(
-                "rm -rf .git 2>/dev/null; mv '\(gitBackup)' .git 2>/dev/null || true", deadline: 60
+        let shellSingleQuoted: (String) -> String = { raw in
+            "'" + raw.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+        var gitMetadataIsDetached = false
+        var gitRestoreWasConfirmed = false
+
+        /// Restore the repository metadata and prove that the move completed.
+        /// A best-effort `mv ... || true` made a failed restore look like a
+        /// clean tree later, which produced the false "changed nothing" result
+        /// and could leave the clone without its Git directory.
+        func restoreGit() async -> Bool {
+            if gitRestoreWasConfirmed { return true }
+            guard gitMetadataIsDetached else { return false }
+            let backup = shellSingleQuoted(gitBackup)
+            let result = try? await runner.run(
+                "if [ -e .git ] && [ ! -e \(backup) ]; then "
+                    + "git rev-parse --git-dir >/dev/null 2>&1; exit $?; fi; "
+                    + "test ! -e .git && test -e \(backup) && mv \(backup) .git "
+                    + "&& test -e .git && test ! -e \(backup)",
+                deadline: 60
             )
+            guard result?.succeeded == true else { return false }
+            gitMetadataIsDetached = false
+            gitRestoreWasConfirmed = true
+            return true
+        }
+
+        let backup = shellSingleQuoted(gitBackup)
+        let detachResult = try? await runner.run(
+            "test -e .git && test ! -e \(backup) && mv .git \(backup) && test -e \(backup)",
+            deadline: 60
+        )
+        guard detachResult?.succeeded == true else {
+            // `mv` may have completed even if the final proof command was
+            // interrupted. Detect that state and attempt the recovery before
+            // returning, so a transient probe failure never strands the clone
+            // without its Git metadata.
+            let moved = (try? await runner.run(
+                "test ! -e .git && test -e \(backup)", deadline: 15
+            ))?.succeeded == true
+            if moved {
+                gitMetadataIsDetached = true
+                guard await restoreGit() else {
+                    return .couldNotFix(
+                        reason: "Iris could not restore the clone's Git metadata after a partial detach. Source changes were not started; the clone was left for checked recovery and the installed app was not updated."
+                    )
+                }
+            }
+            // The backup path may be left by an interrupted earlier run. Do
+            // not delete it or guess whether another run still owns it.
+            let detail = detachResult.map {
+                "exit \($0.exitCode), timed out=\($0.timedOut)"
+            } ?? "the command could not be started"
+            return .couldNotFix(
+                reason: "Iris could not detach the clone's Git metadata safely (\(detail)). No model edit was started."
+            )
+        }
+        gitMetadataIsDetached = true
+
+        /// Every normal exit below restores `.git`; this helper keeps failure
+        /// reporting explicit if that recovery itself is unavailable.
+        func restoreGitOrReport() async -> EditLoopOutcome? {
+            guard await restoreGit() else {
+                return .couldNotFix(
+                    reason: "Iris could not restore the clone's Git metadata after editing. Source changes remain for checked recovery; the installed app was not updated."
+                )
+            }
+            return nil
         }
 
         /// Undo everything for a READER-initiated stop: `.git` back, the
@@ -926,7 +987,7 @@ final class MaintainTierCFixer {
         /// removed. Safe because the coordinator refuses a dirty tree up front
         /// — the only files this can touch are ones the loop itself made.
         func revertEverythingForAReaderStop() async -> EditLoopOutcome {
-            await restoreGit()
+            if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
             _ = try? await runner.run("git checkout -- . && git clean -fd --quiet", deadline: 120)
             return .couldNotFix(reason: Self.stoppedByReaderReason)
         }
@@ -1022,7 +1083,7 @@ final class MaintainTierCFixer {
             nativeVerification = try IrisTestVerificationPlan.capture(
                 repoRootPath: clonePath, commands: verificationCommandsThisRunWillBeJudgedBy)
         } catch {
-            await restoreGit()
+            if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
             return .couldNotFix(reason: "the declared desktop verification plan needs review before editing: \(error)")
         }
         if let confined = nativeVerification?.declaration.confinedCommands(
@@ -1083,7 +1144,7 @@ final class MaintainTierCFixer {
             let startingDiffCommand = "git --git-dir=\(quote(gitBackup)) --work-tree=\(quote(clonePath)) diff --quiet HEAD --"
             guard let beforeStartingTests = try? await runner.run(startingDiffCommand, deadline: 10),
                   beforeStartingTests.succeeded else {
-                await restoreGit()
+                if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
                 return .couldNotFix(reason: "Iris could not confirm a clean starting source before checking the tests. No model edit was started.")
             }
             let subdirectory = verificationCommandsThisRunWillBeJudgedBy.commandSubdirectory
@@ -1116,7 +1177,7 @@ final class MaintainTierCFixer {
                 """))
             let afterStartingTests = try? await runner.run(startingDiffCommand, deadline: 10)
             if afterStartingTests?.succeeded != true {
-                await restoreGit()
+                if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
                 return .couldNotFix(reason: "The starting tests changed tracked source, or its state could not be verified. Iris stopped and preserved that state for inspection.")
             }
         }
@@ -1273,7 +1334,7 @@ final class MaintainTierCFixer {
                 if cancellationCheck?() == true {
                     return await revertEverythingForAReaderStop()
                 }
-                await restoreGit()
+                if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
                 return .couldNotFix(reason: Self.modelCallFailureReason(for: error))
             }
             // Stop may arrive while the provider is producing a reply. Do not
@@ -1557,7 +1618,7 @@ final class MaintainTierCFixer {
                     ))
                     continue
                 }
-                await restoreGit()
+                if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
                 _ = try? await runner.run("git checkout -- . && git clean -fd --quiet", deadline: 120)
                 irisTrace("maintain: tier-c model requested a machine command at step \(step)")
                 return .machineRequested(command: machine.command, why: machine.why)
@@ -1574,7 +1635,7 @@ final class MaintainTierCFixer {
                     ))
                     continue
                 }
-                await restoreGit()
+                if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
                 _ = try? await runner.run("git checkout -- . && git clean -fd --quiet", deadline: 120)
                 irisTrace("maintain: tier-c model declared BLOCKED at step \(step)")
                 return .blockedByModel(explanation: blocked.explanation, questionForUser: blocked.question)
@@ -1654,7 +1715,7 @@ final class MaintainTierCFixer {
             guard let jailed = MaintainSandbox.jailedInvocation(
                 forCommand: command, repoRootPath: clonePath, policy: processPolicy
             ) else {
-                await restoreGit()
+                if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
                 return .couldNotFix(reason: "could not build the sandbox for a command")
             }
             defer { try? FileManager.default.removeItem(atPath: jailed.profilePath) }
@@ -1733,7 +1794,7 @@ final class MaintainTierCFixer {
                             // without build files. Fail NOW with the same honest
                             // reason the end-guard uses, rather than burning
                             // forty more steps toward the same rejection.
-                            await restoreGit()
+                            if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
                             _ = try? await runner.run("git checkout -- . && git clean -fd --quiet", deadline: 120)
                             irisTrace("maintain: tier-c edit BLOCKED mid-loop — kept editing build-script file(s)")
                             return .couldNotFix(
@@ -1818,7 +1879,11 @@ final class MaintainTierCFixer {
         // The loop made its edits with no network; verification (build+suite)
         // needs the network and runs outside the jail through the ordinary
         // runner. .git is back, so a passing tree can be committed.
-        await restoreGit()
+        guard await restoreGit() else {
+            return .couldNotFix(
+                reason: "Iris could not restore the clone's Git metadata after editing. Source changes remain for checked recovery; the installed app was not updated."
+            )
+        }
 
         // A stop that landed during the loop's final step: nothing proceeds to
         // verification or commit — the reader asked for their clone back.
@@ -1869,8 +1934,16 @@ final class MaintainTierCFixer {
         // Did the agent actually change anything? A pending manifest
         // declaration counts — a fix that IS "add this plist key" has no source
         // edit of its own and is applied by Iris below, after consent.
-        let dirty = try? await runner.run("git status --porcelain", deadline: 30)
-        let treeHasChanges = dirty?.outputTail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let dirty = try? await runner.run(
+            "git status --porcelain=v1 --untracked-files=all", deadline: 30
+        )
+        let treeObservation = Self.workingTreeChangeObservation(from: dirty)
+        guard treeObservation != .unavailable else {
+            return .couldNotFix(
+                reason: "Iris could not verify the edited source after restoring Git metadata. Source changes remain for checked recovery; the installed app was not updated."
+            )
+        }
+        let treeHasChanges = treeObservation == .changed
         guard treeHasChanges || declaredManifestChange != nil else {
             return .couldNotFix(reason: reachedHarnessReviewReserve
                 ? "the editing budget ended before any source change was made"
@@ -3052,6 +3125,29 @@ final class MaintainTierCFixer {
             return []
         }
         return Array(Set(tracked + untracked)).sorted()
+    }
+
+    /// The final Git status probe is a safety gate, not a best-effort hint.
+    /// A missing or failed result must not be collapsed into an empty output,
+    /// because that is how a real edit can be reported as "changed nothing"
+    /// when Git metadata was not restored or the probe could not run.
+    enum WorkingTreeChangeObservation: Equatable {
+        case changed
+        case clean
+        case unavailable
+    }
+
+    static func workingTreeChangeObservation(
+        from statusResult: MaintainCommandResult?
+    ) -> WorkingTreeChangeObservation {
+        guard let statusResult,
+              statusResult.succeeded,
+              statusResult.bytesDroppedBeforeTail == 0 else {
+            return .unavailable
+        }
+        return statusResult.outputTail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? .clean
+            : .changed
     }
 
     /// The change's touched paths — tracked changes against HEAD plus untracked

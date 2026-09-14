@@ -395,3 +395,15 @@ requirements into accepted results.
 The named RC was rebuilt from the current integrated HEAD after this check. Its
 debug dylib SHA-256 is now
 `ca04fa6ad47dcfdb29c3c865583a6c37ef4f6afe5fad21a20bf7e88c858b87ea`.
+
+## NitroAI transfer source coverage, September 14
+
+The NitroAI checkout already contains real Settings controls for exporting and
+importing the `nitroai-library` v1 envelope. Focused repository coverage was
+added for rich note/folder transfer, duplicate-folder rejection with existing
+data preserved, and changed same-ID note copy handling. `npm test -- --run
+src/lib/db/db.test.ts` passed **10/10**, `npm run typecheck` passed, and
+`git diff --check` passed in NitroAI commit `5754ccd`. This establishes the
+source-level positive path and conflict behavior; it does not yet prove Iris
+delivered the controls or that the real Electron export/import/restart journey
+passes through the installed RC.

@@ -177,6 +177,58 @@ import Testing
         #expect(recipe.provenanceByField[.package] == .explicitProjectConfig)
     }
 
+    @Test func nativeReviewSummaryAddsElectronPackagingContextWithoutLeakingConfig() throws {
+        let repoRootPath = try Self.makeFixtureRepo(files: [
+            "package.json": #"""
+            {
+              "main": "electron/main.mjs",
+              "scripts": { "dist:mac": "electron-builder --mac" },
+              "dependencies": { "electron": "43.1.1" },
+              "build": {
+                "files": ["dist/**", "electron/**"],
+                "publish": { "token": "manifest-secret-value" }
+              }
+            }
+            """#,
+            "electron/main.mjs": "export {}\n",
+            "electron/iris-test-preload.cjs": "module.exports = {}\n",
+            "electron-builder.cjs": #"""
+            module.exports = {
+              files: ["dist/**", "electron/**"],
+              publish: { token: "config-secret-value" }
+            };
+            """#,
+        ])
+        defer { Self.removeFixtureRepo(repoRootPath) }
+
+        let summary = try #require(
+            RepoRecipeElectronShippingEvidence.nativeReviewSummary(
+                repoRootPath: repoRootPath,
+                changedPaths: ["electron/iris-test-preload.cjs", "electron/main.mjs"]
+            )
+        )
+
+        #expect(summary.contains("SANITIZED ELECTRON SHIPPING EVIDENCE"))
+        #expect(summary.contains("electron/main.mjs"))
+        #expect(summary.contains("electron-builder.cjs"))
+        #expect(summary.contains("electron/iris-test-preload.cjs"))
+        #expect(summary.contains("allowlist"))
+        #expect(!summary.contains("manifest-secret-value"))
+        #expect(!summary.contains("config-secret-value"))
+        #expect(!summary.contains("module.exports"))
+        #expect(Data(summary.utf8).count <= 4 * 1024 + 256)
+
+        let (_, reviewUser) = FeatureEditAdversarialReviewer.reviewPrompt(
+            request: "Add a test-only desktop marker",
+            kind: .feature,
+            unifiedDiff: "+electron/iris-test-preload.cjs",
+            evidenceLog: ["Build: exit 0"],
+            shippingEvidence: summary
+        )
+        #expect(reviewUser.contains("Sanitized shipping evidence"))
+        #expect(reviewUser.contains("electron-builder.cjs"))
+    }
+
     @Test func incidentalElectronToolingDoesNotDisplaceARealTauriRecipe() throws {
         // Electron is present as a dependency, but there is no root Electron
         // entrypoint or packaging declaration. The Tauri config is therefore

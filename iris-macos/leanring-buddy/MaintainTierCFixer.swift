@@ -260,11 +260,13 @@ final class MaintainTierCFixer {
     /// vocabulary.
     nonisolated static func reviewPrompt(
         request: String, kind: OnDemandEditKind, unifiedDiff: String, evidenceLog: [String],
-        repositoryContext: FeatureEditRepositoryContext? = nil
+        repositoryContext: FeatureEditRepositoryContext? = nil,
+        shippingEvidence: String? = nil
     ) -> (system: String, user: String) {
         FeatureEditAdversarialReviewer.reviewPrompt(
             request: request, kind: kind, unifiedDiff: unifiedDiff, evidenceLog: evidenceLog,
-            repositoryContext: repositoryContext
+            repositoryContext: repositoryContext,
+            shippingEvidence: shippingEvidence
         )
     }
 
@@ -2084,6 +2086,7 @@ final class MaintainTierCFixer {
             if !unifiedDiff.isEmpty, cancellationCheck?() != true {
                 progressHandler?(.runningAdversarialReview)
                 var repositoryContext: FeatureEditRepositoryContext?
+                var shippingEvidence: String?
                 if provider is HarnessPhaseAwareModelProviding {
                     let changedPaths = await Self.changedFilePaths(runner: runner)
                     let changedDirectories = Set(changedPaths.map { ($0 as NSString).deletingLastPathComponent })
@@ -2112,6 +2115,12 @@ final class MaintainTierCFixer {
                             in: Self.boundedReviewDiff(unifiedDiff)),
                         isNativeFinalReview: isNativeFinalReview,
                         maxFileCount: 24, maxBytes: 64 * 1024)
+                    if purpose == .nativeCodeAdmission {
+                        shippingEvidence = RepoRecipeElectronShippingEvidence.nativeReviewSummary(
+                            repoRootPath: clonePath,
+                            changedPaths: changedPaths
+                        )
+                    }
                     if let context = repositoryContext {
                         let metadata: [String: Any] = [
                             "changedOrder": changedPaths.prefix(24).map { String($0.prefix(160)) },
@@ -2157,7 +2166,8 @@ final class MaintainTierCFixer {
                     request: request, kind: kind,
                     unifiedDiff: Self.boundedReviewDiff(unifiedDiff),
                     evidenceLog: verification.evidenceLog,
-                    repositoryContext: repositoryContext
+                    repositoryContext: repositoryContext,
+                    shippingEvidence: shippingEvidence
                 )
                 let verdict: AdversarialVerdict
                 (provider as? MaintainRunPhaseProviding)?.setRunPhase(.review)

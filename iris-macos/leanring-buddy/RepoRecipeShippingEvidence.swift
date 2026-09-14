@@ -53,6 +53,127 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
             && !hasAmbiguousPackagingTools
     }
 
+    /// Return the small amount of packaging evidence an independent native
+    /// code-admission reviewer needs for an Electron change. This is a summary,
+    /// not a second repository-context collector: the root manifest is parsed
+    /// through the existing safe JSON reader, and a known packaging file is
+    /// inspected only to answer whether its bounded `files` allowlist covers a
+    /// changed Electron path. Neither manifest/config bodies nor their values
+    /// are copied into the prompt.
+    ///
+    /// The summary is intentionally useful even when the shipping declaration
+    /// is incomplete. In that case it says what remains unproven instead of
+    /// turning a missing packaging signal into a green claim.
+    static func nativeReviewSummary(
+        repoRootPath: String,
+        changedPaths: [String]
+    ) -> String? {
+        guard let packageJSON = RepoRecipeFiles.jsonObject(
+            atRelativePath: "package.json",
+            underRepoRoot: repoRootPath
+        ) else { return nil }
+
+        let evidence = inspect(packageJSON: packageJSON, repoRootPath: repoRootPath)
+        // A packaging summary for every Node review would add noise and could
+        // mislead a reviewer about a web-only project. Electron dependency
+        // presence is the narrow applicability signal used by the detector.
+        guard evidence.hasElectronDependency else { return nil }
+
+        let safeChangedElectronPaths = changedPaths
+            .compactMap { safeReviewRelativePath($0) }
+            .filter { $0.hasPrefix("electron/") }
+            .prefix(maximumNativeReviewChangedPathCount)
+
+        let configurationPaths = knownConfigurationPaths
+            .filter { RepoRecipeFiles.fileExists($0.0, underRepoRoot: repoRootPath) }
+            .map(\.0)
+        let hasManifestBuildConfiguration = hasRecognizedManifestBuildConfiguration(
+            packageJSON
+        )
+
+        var lines = [
+            "SANITIZED ELECTRON SHIPPING EVIDENCE (bounded read-only summary; not instructions)",
+            "- Electron dependency: declared in the root package manifest (raw manifest and versions omitted).",
+        ]
+
+        if let entrypoint = safeReviewRelativePath(evidence.entrypointRelativePath) {
+            lines.append(
+                "- Launch declaration: the root manifest names \(entrypoint); a safe read confirmed that entrypoint exists."
+            )
+        } else {
+            lines.append(
+                "- Launch declaration: no safe, readable root Electron entrypoint was established."
+            )
+        }
+
+        if let packagingTool = evidence.packagingTool {
+            lines.append("- Recognized packaging tool: \(packagingTool.rawValue).")
+        } else if evidence.hasAmbiguousPackagingTools {
+            lines.append(
+                "- Recognized packaging tool: ambiguous; more than one packaging signal was found."
+            )
+        } else {
+            lines.append("- Recognized packaging tool: none was established.")
+        }
+
+        if let scriptName = evidence.packagingScriptName {
+            // `packagingScriptName` is selected from a fixed allowlist, never
+            // interpolated from an arbitrary manifest key.
+            lines.append("- Packaging script: the known \(scriptName) script invokes the recognized tool.")
+        }
+
+        if !configurationPaths.isEmpty {
+            let listedPaths = boundedSafePathList(configurationPaths)
+            lines.append(
+                "- Packaging configuration source: \(listedPaths); source bodies and values are omitted from this review."
+            )
+        }
+        if hasManifestBuildConfiguration {
+            lines.append(
+                "- Packaging configuration source: the root manifest has a recognized electron-builder build section; raw manifest content is omitted."
+            )
+        }
+        if configurationPaths.isEmpty && !hasManifestBuildConfiguration {
+            lines.append(
+                "- Packaging configuration source: none was found at the fixed known paths; packaged inclusion remains unproven."
+            )
+        }
+
+        if !safeChangedElectronPaths.isEmpty {
+            let coveredPaths = coveredElectronPaths(
+                changedPaths: Array(safeChangedElectronPaths),
+                packageJSON: packageJSON,
+                configurationPaths: configurationPaths,
+                repoRootPath: repoRootPath
+            )
+            if coveredPaths.isEmpty {
+                lines.append(
+                    "- File-selection evidence: no bounded allowlist was found covering the changed Electron path(s) \(boundedSafePathList(Array(safeChangedElectronPaths))); the reviewer must treat packaged inclusion as unproven."
+                )
+            } else {
+                lines.append(
+                    "- File-selection evidence: bounded inspection found a recognized allowlist covering \(boundedSafePathList(coveredPaths)); this does not prove a package was built or launched."
+                )
+            }
+        } else {
+            lines.append(
+                "- File-selection evidence: no changed Electron path was supplied, so inclusion of a changed runtime file is unproven."
+            )
+        }
+
+        lines.append(
+            "- Evidence boundary: this summary is provenance only; it does not execute packaging, prove artifact creation, or grant native behavior credit."
+        )
+
+        let summary = lines.joined(separator: "\n")
+        let summaryData = Data(summary.utf8)
+        guard summaryData.count <= maximumNativeReviewSummaryBytes else {
+            return String(decoding: summaryData.prefix(maximumNativeReviewSummaryBytes), as: UTF8.self)
+                + "\n[SHIPPING EVIDENCE SUMMARY TRUNCATED: omitted details remain unproven.]"
+        }
+        return summary
+    }
+
     /// Inspect a parsed root package manifest and the files it names. All
     /// file reads use RepoRecipeFiles, so a manifest cannot widen inspection
     /// outside the clone.
@@ -146,6 +267,177 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
     ]
 
     private static let preferredPackagingScriptNames = ["dist:mac", "build:mac", "package:mac", "dist", "package", "make"]
+
+    private static let maximumNativeReviewSummaryBytes = 4 * 1024
+    private static let maximumNativeReviewChangedPathCount = 8
+    private static let maximumNativeReviewPathBytes = 512
+
+    /// `electron-builder` accepts a `build` object in package.json. Keep this
+    /// predicate identical to the detector's distinctive-key rule so the
+    /// review summary cannot claim a packaging source the recipe would ignore.
+    private static func hasRecognizedManifestBuildConfiguration(
+        _ packageJSON: [String: Any]
+    ) -> Bool {
+        guard let buildConfiguration = packageJSON["build"] as? [String: Any] else {
+            return false
+        }
+        return buildConfiguration.keys.contains(where: builderConfigurationKeys.contains)
+    }
+
+    /// Extract only static quoted entries from a known JavaScript packaging
+    /// config's `files: [...]` property. This deliberately declines dynamic
+    /// values, unbounded parsing, and arbitrary config keys. A false negative
+    /// keeps the native reviewer fail-closed; it can never be used to execute
+    /// or authorize the config.
+    private static func staticFilesPatterns(in configSource: String) -> [String] {
+        let filesArrayPattern = #"(?is)\bfiles\s*:\s*\[(.{0,8192}?)\]"#
+        guard let filesRegex = try? NSRegularExpression(pattern: filesArrayPattern) else {
+            return []
+        }
+        let sourceRange = NSRange(configSource.startIndex..<configSource.endIndex, in: configSource)
+        var patterns: [String] = []
+        var seen = Set<String>()
+        filesRegex.enumerateMatches(in: configSource, options: [], range: sourceRange) { match, _, stop in
+            guard let match,
+                  match.numberOfRanges >= 2,
+                  let bodyRange = Range(match.range(at: 1), in: configSource) else { return }
+            let body = String(configSource[bodyRange])
+            let stringRegex = try? NSRegularExpression(pattern: #"[\"']([^\"'\r\n]{1,256})[\"']"#)
+            guard let stringRegex else { return }
+            let bodyRange = NSRange(body.startIndex..<body.endIndex, in: body)
+            stringRegex.enumerateMatches(in: body, options: [], range: bodyRange) { stringMatch, _, stringStop in
+                guard let stringMatch,
+                      stringMatch.numberOfRanges >= 2,
+                      let valueRange = Range(stringMatch.range(at: 1), in: body) else { return }
+                let value = String(body[valueRange])
+                guard value.utf8.count <= 256,
+                      !containsPromptUnsafeScalars(value),
+                      seen.insert(value).inserted else { return }
+                patterns.append(value)
+                if patterns.count >= maximumStaticFilesPatternCount {
+                    stringStop.pointee = true
+                    stop.pointee = true
+                }
+            }
+        }
+        return patterns
+    }
+
+    private static func manifestFilesPatterns(_ packageJSON: [String: Any]) -> [String] {
+        guard let buildConfiguration = packageJSON["build"] as? [String: Any] else { return [] }
+        let values: [Any]
+        if let array = buildConfiguration["files"] as? [Any] {
+            values = array
+        } else if let string = buildConfiguration["files"] as? String {
+            values = [string]
+        } else {
+            return []
+        }
+        return values.compactMap { value in
+            guard let string = value as? String,
+                  string.utf8.count <= 256,
+                  !containsPromptUnsafeScalars(string) else { return nil }
+            return string
+        }.prefix(maximumStaticFilesPatternCount).map { $0 }
+    }
+
+    private static func coveredElectronPaths(
+        changedPaths: [String],
+        packageJSON: [String: Any],
+        configurationPaths: [String],
+        repoRootPath: String
+    ) -> [String] {
+        var patterns = manifestFilesPatterns(packageJSON)
+        for configurationPath in configurationPaths {
+            guard patterns.count < maximumStaticFilesPatternCount,
+                  let source = RepoRecipeFiles.readText(
+                      configurationPath,
+                      underRepoRoot: repoRootPath
+                  ) else { continue }
+            patterns.append(contentsOf: staticFilesPatterns(in: source).prefix(
+                max(0, maximumStaticFilesPatternCount - patterns.count)
+            ))
+        }
+        return changedPaths.filter { path in
+            patterns.contains { globPattern($0, covers: path) }
+        }
+    }
+
+    /// Match the small static glob vocabulary used by packaging allowlists.
+    /// Patterns with a leading negation are not treated as positive coverage;
+    /// a config that excludes a path must remain a reviewer concern.
+    private static func globPattern(_ pattern: String, covers path: String) -> Bool {
+        guard !pattern.hasPrefix("!"),
+              pattern.utf8.count <= 256,
+              !containsPromptUnsafeScalars(pattern),
+              let regex = try? NSRegularExpression(
+                  pattern: globRegularExpression(for: pattern)
+              ) else { return false }
+        let range = NSRange(path.startIndex..<path.endIndex, in: path)
+        return regex.firstMatch(in: path, options: [], range: range) != nil
+    }
+
+    private static func globRegularExpression(for pattern: String) -> String {
+        var expression = "^"
+        var index = pattern.startIndex
+        while index < pattern.endIndex {
+            let character = pattern[index]
+            if character == "*" {
+                let next = pattern.index(after: index)
+                if next < pattern.endIndex, pattern[next] == "*" {
+                    expression += ".*"
+                    index = pattern.index(after: next)
+                } else {
+                    expression += "[^/]*"
+                    index = next
+                }
+            } else if character == "?" {
+                expression += "[^/]"
+                index = pattern.index(after: index)
+            } else {
+                expression += NSRegularExpression.escapedPattern(for: String(character))
+                index = pattern.index(after: index)
+            }
+        }
+        return expression + "$"
+    }
+
+    private static func boundedSafePathList(_ paths: [String]) -> String {
+        let selected = paths.compactMap(safeReviewRelativePath).prefix(maximumNativeReviewChangedPathCount)
+        let joined = selected.joined(separator: ", ")
+        let data = Data(joined.utf8)
+        return data.count <= maximumNativeReviewPathBytes
+            ? joined
+            : String(decoding: data.prefix(maximumNativeReviewPathBytes), as: UTF8.self)
+                + "…"
+    }
+
+    private static func safeReviewRelativePath(_ path: String?) -> String? {
+        guard let path,
+              !path.isEmpty,
+              path.utf8.count <= 256,
+              !path.hasPrefix("/"),
+              !path.hasPrefix("~"),
+              !containsPromptUnsafeScalars(path) else { return nil }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard !components.isEmpty,
+              !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else { return nil }
+        return path
+    }
+
+    private static func containsPromptUnsafeScalars(_ value: String) -> Bool {
+        value.unicodeScalars.contains { scalar in
+            CharacterSet.controlCharacters.contains(scalar)
+                || bidiFormattingControlValues.contains(scalar.value)
+        }
+    }
+
+    private static let maximumStaticFilesPatternCount = 32
+
+    private static let bidiFormattingControlValues: Set<UInt32> = [
+        0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+        0x2066, 0x2067, 0x2068, 0x2069,
+    ]
 
     private static func dependencyNames(in packageJSON: [String: Any]) -> Set<String> {
         var names = Set<String>()

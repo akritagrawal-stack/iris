@@ -241,6 +241,12 @@ enum MaintainSavedChangeRechecker {
                 maxFileCount: 24,
                 maxBytes: 64 * 1024
             )
+            let shippingEvidence = purpose == .nativeCodeAdmission
+                ? RepoRecipeElectronShippingEvidence.nativeReviewSummary(
+                    repoRootPath: clonePath,
+                    changedPaths: reviewPaths
+                )
+                : nil
             let suppliedFiles: [String: String] = Dictionary(uniqueKeysWithValues: repositoryContext.files.map {
                 ($0.repoRelativePath, $0.utf8Text)
             })
@@ -278,7 +284,8 @@ enum MaintainSavedChangeRechecker {
                 kind: kind,
                 unifiedDiff: MaintainTierCFixer.boundedReviewDiff(reviewDiff),
                 evidenceLog: verificationEvidence,
-                repositoryContext: repositoryContext
+                repositoryContext: repositoryContext,
+                shippingEvidence: shippingEvidence
             )
             progress?(.runningAdversarialReview)
             guard await currentGate(isCurrent: isCurrent, cancellation: cancellation) else {

@@ -72,3 +72,15 @@ provider request was sent during this check.
 Spatial pointing, a delivered complex transfer through the live composer, and
 physical iPhone install/open/restart still require their respective live
 acceptance runs. Offline suites remain separate evidence.
+
+## Kneecap source-root guard
+
+Commit `ae44885` adds a production workspace check that runs `git rev-parse
+--show-toplevel` and refuses a selected nested folder with `select the Git
+repository root`. The focused service harness exercised the actual dirty
+`/Users/akrit/kneecap` checkout and recorded: nested folder refused, dirty
+pinned source required isolation, and detached staging used the exact
+`fc48ba487a1e0d0cd10b30d6600acd2895ffdbed` revision. The original checkout was
+left unchanged. The live guide remains a proposal and has no served device
+handoff, so this proves source selection and staging only, not iPhone
+installation.

@@ -362,4 +362,7 @@ import Testing
     #expect(cancelled)
     #expect(session.ledger.snapshot.admittedCallCount == 1)
     #expect(session.ledger.snapshot.inFlightCallCount == 0)
+    #expect(session.ledger.snapshot.status == .stopped(.uncertainFailure))
+    #expect(session.taskLifecycle.snapshot.state == .failed)
+    #expect(session.taskLifecycle.snapshot.terminalReason?.contains("before completion") == true)
 }

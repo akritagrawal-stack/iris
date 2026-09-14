@@ -208,22 +208,42 @@ final class HarnessModelSession {
                 return first
             }
         } catch {
+            let measuredUsage = (error as? HarnessModelTransportFailure)?.usage
             try ledger.settle(reservation, outcome: Task.isCancelled ? .cancelled : .failed,
-                              usage: (error as? HarnessModelTransportFailure)?.usage,
-                              at: .init(nanoseconds: now()))
-            recordSettledRoute(reservation, usage: (error as? HarnessModelTransportFailure)?.usage)
+                              usage: measuredUsage, at: .init(nanoseconds: now()))
+            recordSettledRoute(reservation, usage: measuredUsage)
             markLifecycleProgress(at: .init(nanoseconds: now()))
             ledgerDidChange?(ledger.snapshot)
-            throw (error as? HarnessModelTransportFailure)?.cause ?? error
+            let surfacedError = (error as? HarnessModelTransportFailure)?.cause ?? error
+            if Task.isCancelled {
+                _ = finish(reason: .cancelled)
+            } else if (error as? SessionError) == .deadlineReached {
+                // The transport was accounted for exactly once above. Close
+                // the run separately so a deadline cannot leave Mission
+                // Control showing a running task after its final attempt.
+                _ = finish(reason: .uncertainFailure)
+            }
+            throw surfacedError
         }
         try ledger.settle(reservation, outcome: Task.isCancelled ? .cancelled : .succeeded,
                           usage: reply.usage, at: .init(nanoseconds: now()))
         recordSettledRoute(reservation, usage: reply.usage)
         markLifecycleProgress(at: .init(nanoseconds: now()))
         ledgerDidChange?(ledger.snapshot)
-        try Task.checkCancellation()
-        guard now() < deadline else { throw SessionError.deadlineReached }
-        guard reply.text.utf8.count <= maximumReplyBytes else { throw SessionError.responseTooLarge }
+        do {
+            try Task.checkCancellation()
+        } catch {
+            _ = finish(reason: .cancelled)
+            throw error
+        }
+        guard now() < deadline else {
+            _ = finish(reason: .uncertainFailure)
+            throw SessionError.deadlineReached
+        }
+        guard reply.text.utf8.count <= maximumReplyBytes else {
+            _ = finish(reason: .failed)
+            throw SessionError.responseTooLarge
+        }
         return reply.text
     }
 

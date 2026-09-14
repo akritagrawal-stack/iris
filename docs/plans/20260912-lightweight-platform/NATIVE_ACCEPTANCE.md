@@ -333,3 +333,6 @@ mobile hub tests **18/18**. The frozen NitroAI transfer oracle also completed
 hash unchanged. Native acceptance is still pending the existing permission
 state and a connected trusted iPhone; no new native claim is inferred from
 these local reruns.
+
+The RC was rebuilt from integration commit `4cd082a`; the debug dylib hash
+remains `ae3e80a56a34368dc56d80bb488e65df83f5dc03ea94ed0f40dc9459b7045eeb`.

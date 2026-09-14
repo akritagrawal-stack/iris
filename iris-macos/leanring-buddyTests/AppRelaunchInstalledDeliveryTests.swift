@@ -24,6 +24,18 @@ import Testing
     private static let buildDirCopy =
         "/Users/someone/whimprflow/target/release/bundle/macos/WhimprFlow.app"
 
+    /// Receipt storage deliberately rejects symlinked path components. Keep
+    /// these disposable bundles under Iris Test's real Application Support
+    /// root rather than macOS's `/var` temporary-directory alias, so the
+    /// fixture exercises the same trusted-path policy used by delivery.
+    private static func isolatedFixtureRoot(_ label: String) -> URL {
+        let root = IrisTestEnvironment.applicationSupportDirectory
+            .appendingPathComponent("test-fixtures", isDirectory: true)
+            .appendingPathComponent("\(label)-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
     /// A copy under /Applications is what gets replaced, even when Launch
     /// Services' registered copy is the clone's own build output — which is
     /// exactly the case that misfired: the running copy was the build-dir one,
@@ -81,7 +93,9 @@ import Testing
         let backupPath = AppRelaunchService.deliveryBackupPath(
             forBundleId: "com.whimpr.whimprflow", appBundleName: "WhimprFlow.app"
         )
-        #expect(backupPath.contains("Application Support/Iris/edit-delivery-backups"))
+        #expect(backupPath.contains(
+            "Application Support/\(IrisTestEnvironment.applicationSupportDirectoryName)/edit-delivery-backups"
+        ))
         #expect(backupPath.contains("com.whimpr.whimprflow"))
         #expect(backupPath.hasSuffix("WhimprFlow.app"))
     }
@@ -128,8 +142,7 @@ import Testing
     /// recognize that exact on-disk state, recover the receipt, and make the
     /// completed delivery undoable instead of leaving it stranded as pending.
     @Test func startupReconcilesAReceiptInterruptedAfterTheInstalledSwap() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("iris-delivery-reconcile-(UUID().uuidString)")
+        let root = Self.isolatedFixtureRoot("iris-delivery-reconcile")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let installedPath = root.appendingPathComponent("Applications/Demo.app").path
@@ -178,8 +191,7 @@ import Testing
     /// history entry. The prepared receipt remains available for diagnosis and
     /// retry, while reconciliation leaves every app bundle untouched.
     @Test func startupKeepsAChangedPreparedDeliveryPendingForRecovery() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("iris-delivery-unconfirmed-\(UUID().uuidString)")
+        let root = Self.isolatedFixtureRoot("iris-delivery-unconfirmed")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let installedPath = root.appendingPathComponent("Applications/Demo.app").path
@@ -230,8 +242,7 @@ import Testing
     /// no model, no network. This is the one corruption-risking primitive, so it
     /// earns a real round trip rather than a mocked one.
     @Test func swappingABundleReplacesItInPlaceAndTheSnapshotRestoresIt() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("iris-delivery-live-\(UUID().uuidString)")
+        let root = Self.isolatedFixtureRoot("iris-delivery-live")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let installedPath = root.appendingPathComponent("Applications/Demo.app").path
@@ -263,8 +274,7 @@ import Testing
     /// A private recovery store is honored by the real swap primitive, so a
     /// harness can keep its Undo protection separate from Iris's normal store.
     @Test func swappingABundleUsesAnInjectedUndoRecoveryStore() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("iris-delivery-private-recovery-\(UUID().uuidString)")
+        let root = Self.isolatedFixtureRoot("iris-delivery-private-recovery")
         defer { try? FileManager.default.removeItem(at: root) }
 
         let installedPath = root.appendingPathComponent("Applications/Demo.app").path
@@ -302,8 +312,7 @@ import Testing
     /// than inventing a target or failing. Uses a real fresh build on disk so
     /// the early "is the build there" guard is not what returns.
     @Test func installOverInstalledAppReportsNoInstalledCopyForAnUnknownBundleId() async {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("iris-delivery-none-\(UUID().uuidString)")
+        let root = Self.isolatedFixtureRoot("iris-delivery-none")
         defer { try? FileManager.default.removeItem(at: root) }
         let clonePath = root.appendingPathComponent("clone").path
         let freshBuildPath = root.appendingPathComponent("clone/build/Nope.app").path

@@ -229,3 +229,4 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 
 - Spatial lifecycle fix `2113226`: stale target outlines now clear when a step disappears, refresh cannot reacquire the target, or the guide tears down. Focused guide regressions passed 72 tests across 5 suites; native movement/tab-switch acceptance remains open.
 - Version-history bound `bbe3530`: saved-version preview uses the 1,024-record cleanup ceiling consistently, with over-cap assertions preserving newest and rollback records. Focused retention and offline harness checks passed; a pre-existing exact-cap write-boundary check remains separately tracked.
+- A broad macOS `xcodebuild test` invocation was terminated after its test app remained live for more than six minutes at sustained CPU without producing completion output. It is not counted as a pass; focused suites remain the authoritative automated evidence for these changes.

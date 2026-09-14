@@ -1,3 +1,7 @@
+### 2026-09-14 legacy Kneecap workspace routing fix
+
+The native run proved the public guide still used HOME-relative `~/kneecap` commands and blocked autopilot. Iris now requires a validated isolated source binding before allowing that legacy guide, then revalidates the binding at each command boundary and translates only the legacy project path to the staged workspace. Unrelated HOME commands remain unchanged. The Test configuration rebuilt successfully from `db779fc`; strict signing passed. The updated RC executable SHA-256 is `b8aab4504a52f6ea4f092c3f81d921641b0df5f069dc7f92342fa9860484bfd9`.
+
 ### 2026-09-14 native Kneecap guide computer-use check
 
 The rebuilt signed RC was launched as the isolated Iris Test bundle. Through the native UI, Settings accepted `kneecap`, opened the real marketplace guide, and advanced from the initial terminal step to **step 5 of 15**. The guide reported that Terminal was open and that its prompt was inside the Kneecap folder. This proves guide admission, step progression, and terminal-state recognition in the native app. It does not prove installation completion, source mutation safety across all candidate folders, or physical-phone acceptance.

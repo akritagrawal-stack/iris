@@ -271,7 +271,9 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   this commit.
 - Integrated RC v6 was built through the Xcode GUI, copied to
   `/Users/Shared/Iris-RC-20260914-v6/Iris Test.app`, re-signed with the local
-  test identity, and passed strict signature verification. On launch, the real
+  test identity, and passed strict signature verification. Its executable
+  SHA-256 is `787870e782e4696523f4bcca0a41e3692c22887b4f714ce9ff424a6fa14f9b96`.
+  On launch, the real
   app reported that Accessibility and Screen Recording permissions had been
   revoked and presented its native `Grant`/`Show Iris` controls. This is an
   explicit environment gate: no TCC reset or permission claim is made, and

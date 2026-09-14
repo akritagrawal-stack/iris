@@ -241,9 +241,60 @@ nonisolated enum IrisTestProjectRegistry {
     }
 
     private struct Directory: CatalogAppDirectorySource {
+        /// Test builds may edit or deliver only the staged registry projects,
+        /// but discovery must exercise the same public catalog as a shipped
+        /// build. The previous fixture-only directory made every unregistered
+        /// catalog app invisible, so a real search for Kneecap incorrectly
+        /// reported “No apps match.”
+        private let publishedCatalog = PublikCatalogAppDirectory()
+
+        /// A narrow, named discovery fixture. It gives the native Test target
+        /// one phone-only catalog entry even when its read-only public catalog
+        /// request is unavailable, so an acceptance run can verify that Iris
+        /// finds it only on deliberate search and never recommends it as a
+        /// Mac app. This is discovery data only: it is not a staged project,
+        /// cannot be selected for editing, and does not grant install rights.
+        private static let phoneOnlyDiscoveryFixture = CatalogAppDescriptor(
+            slug: "kneecap",
+            name: "kneecap",
+            macBundleId: nil,
+            latestReleaseTag: nil,
+            guideSlug: "kneecap",
+            macCompatibility: .mobileOnly
+        )
+
         func catalogApps() async throws -> [CatalogAppDescriptor] {
-            projects().map { CatalogAppDescriptor(slug: $0.slug, name: $0.name,
-                macBundleId: $0.bundleIdentifier, latestReleaseTag: nil) }
+            // Preserve staged projects even if the read-only catalog is
+            // temporarily unavailable; the Test target must not lose its
+            // isolated edit/recovery fixtures because of a network outage.
+            var published = (try? await publishedCatalog.catalogApps()) ?? []
+            if !published.contains(where: { $0.slug == Self.phoneOnlyDiscoveryFixture.slug }) {
+                published.append(Self.phoneOnlyDiscoveryFixture)
+            }
+            let stagedProjects = projects()
+            var merged = published
+
+            for project in stagedProjects {
+                let existing = published.first { $0.slug == project.slug }
+                let stagedDescriptor = CatalogAppDescriptor(
+                    slug: project.slug,
+                    name: project.name,
+                    macBundleId: project.bundleIdentifier,
+                    latestReleaseTag: existing?.latestReleaseTag,
+                    guideSlug: existing?.guideSlug,
+                    macCompatibility: existing?.macCompatibility ?? .unknown
+                )
+                if let index = merged.firstIndex(where: { $0.slug == project.slug }) {
+                    merged[index] = stagedDescriptor
+                } else {
+                    merged.append(stagedDescriptor)
+                }
+            }
+            return merged
+        }
+
+        func clearCachedCatalogApps() async {
+            await publishedCatalog.clearCachedCatalogApps()
         }
     }
 

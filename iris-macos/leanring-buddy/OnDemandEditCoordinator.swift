@@ -394,7 +394,10 @@ final class OnDemandEditCoordinator: ObservableObject {
                 self.pendingRecheckIdentity = identity
                 if let contract = record.savedFeatureContract {
                     guard let previousRequest,
-                          contract.isBound(to: identity, request: previousRequest) else {
+                          contract.isBound(
+                              toCandidateDigest: identity.bindingDigest,
+                              request: previousRequest
+                          ) else {
                         self.phase = .failed(reason: "The saved change's approved contract no longer matches its source identity. Review the saved files before continuing.")
                         self.statusLine = self.phaseReason
                         return

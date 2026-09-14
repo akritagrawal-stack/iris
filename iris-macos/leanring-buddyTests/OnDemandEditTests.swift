@@ -72,6 +72,53 @@ import Testing
         )
     }
 
+    @Test func symptomUndoCopyMatchesInstalledAndCloneOnlyDelivery() {
+        let installedUndo = OnDemandEditCoordinator.symptomUndoAvailabilityMessage(
+            appName: "Notes", installedCopyReplaced: true, undoAvailable: true
+        )
+        #expect(installedUndo == "Undo to go back to the installed Notes, or try again.")
+
+        let cloneOnly = OnDemandEditCoordinator.symptomUndoAvailabilityMessage(
+            appName: "Notes", installedCopyReplaced: false, undoAvailable: false
+        )
+        #expect(cloneOnly.contains("installed Notes was left unchanged"))
+        #expect(cloneOnly.contains("Undo is unavailable"))
+        #expect(!cloneOnly.contains("Undo to go back"))
+
+        let missingRecovery = OnDemandEditCoordinator.symptomUndoAvailabilityMessage(
+            appName: "Notes", installedCopyReplaced: true, undoAvailable: false
+        )
+        #expect(missingRecovery.contains("installed app was replaced"))
+        #expect(missingRecovery.contains("complete recovery details"))
+    }
+
+    @Test func aBuiltArtifactDoesNotHideAnEligibleDeliveryRetry() {
+        #expect(OnDemandEditCoordinator.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: true,
+            hasSavedDeliveryIdentity: true,
+            phase: .done,
+            hasEditTask: false,
+            undoNeedsRecovery: false,
+            installedCopyReplaced: false
+        ))
+        #expect(!OnDemandEditCoordinator.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: true,
+            hasSavedDeliveryIdentity: true,
+            phase: .done,
+            hasEditTask: false,
+            undoNeedsRecovery: false,
+            installedCopyReplaced: true
+        ))
+        #expect(!OnDemandEditCoordinator.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: true,
+            hasSavedDeliveryIdentity: true,
+            phase: .awaitingSymptomConfirmation,
+            hasEditTask: false,
+            undoNeedsRecovery: false,
+            installedCopyReplaced: false
+        ))
+    }
+
     // MARK: - Per-clone lock (mutual exclusion + canonicalization)
 
     @Test func theLockExcludesASecondHolderOnTheSamePath() {

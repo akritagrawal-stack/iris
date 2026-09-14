@@ -1072,64 +1072,36 @@ final class GuideAutopilotShellSession: GuideAutopilotShellSessionDriving {
     /// `cd` and exports, and a rebuild drops all of it. Only the escape hatch,
     /// which has already handed the step back to the reader, rebuilds.
     ///
-    /// After the reader's files are sourced, the command also asks npm for its
-    /// configured global prefix and pnpm for its global bin directory. Those
-    /// are read-only probes: only an absolute, existing, searchable directory
-    /// without a PATH separator or control character is prepended, and no
-    /// probe output is printed. The cwd captured before sourcing is restored
-    /// before the next guide step.
+    /// After the reader's files are sourced, the command adds common per-user
+    /// install directories when they exist. The cwd captured before sourcing
+    /// is restored before the next guide step.
     ///
     /// A non-zsh login shell has no ZDOTDIR, so the `[ -r … ]` test simply
     /// fails and the line degrades to the pager exports and `hash -r`.
     nonisolated static let reloadTheReadersEnvironmentCommand = #"""
         __IRIS_REFRESH_SAVED_PWD="$PWD"
         if [ -r "$ZDOTDIR/.zshrc" ]; then
-          source "$ZDOTDIR/.zshrc" >/dev/null 2>&1
+          source "$ZDOTDIR/.zshrc" >/dev/null 2>&1 || :
         fi
         builtin cd -- "$__IRIS_REFRESH_SAVED_PWD" 2>/dev/null || :
         export PAGER=cat GIT_PAGER=cat LESS=-FRX GIT_TERMINAL_PROMPT=0
+        # A reader may install a tool while this shell is already alive. Keep
+        # the refresh useful even when their rc file does not export the path
+        # (or a framework returns early): these are the standard per-user
+        # install locations used by the guides and are safe to add only when
+        # they exist. This remains one shell and one bounded command.
+        for __IRIS_COMMON_BIN in "$HOME/.bun/bin" "$HOME/.local/bin" "$HOME/.cargo/bin"; do
+          if [ -d "$__IRIS_COMMON_BIN" ] && [ -x "$__IRIS_COMMON_BIN" ]; then
+            case ":$PATH:" in
+              *":$__IRIS_COMMON_BIN:"*) ;;
+              *) PATH="$__IRIS_COMMON_BIN:$PATH" ;;
+            esac
+          fi
+        done
+        unset __IRIS_COMMON_BIN
         hash -r
-        if command -v npm >/dev/null 2>&1; then
-          while IFS= read -r __IRIS_NPM_PREFIX; do
-            case "$__IRIS_NPM_PREFIX" in
-              /*)
-                __IRIS_NPM_BIN="${__IRIS_NPM_PREFIX%/}/bin"
-                case "$__IRIS_NPM_BIN" in
-                  *:*|*[[:cntrl:]]*) ;;
-                  *)
-                    if [ -d "$__IRIS_NPM_BIN" ] && [ -x "$__IRIS_NPM_BIN" ]; then
-                      case ":$PATH:" in
-                        *":$__IRIS_NPM_BIN:"*) ;;
-                        *) PATH="$__IRIS_NPM_BIN:$PATH" ;;
-                      esac
-                    fi
-                    ;;
-                esac
-                ;;
-            esac
-          done < <(command npm prefix -g 2>/dev/null)
-        fi
-        if command -v pnpm >/dev/null 2>&1; then
-          while IFS= read -r __IRIS_PNPM_BIN; do
-            case "$__IRIS_PNPM_BIN" in
-              /*)
-                case "$__IRIS_PNPM_BIN" in
-                  *:*|*[[:cntrl:]]*) ;;
-                  *)
-                    if [ -d "$__IRIS_PNPM_BIN" ] && [ -x "$__IRIS_PNPM_BIN" ]; then
-                      case ":$PATH:" in
-                        *":$__IRIS_PNPM_BIN:"*) ;;
-                        *) PATH="$__IRIS_PNPM_BIN:$PATH" ;;
-                      esac
-                    fi
-                    ;;
-                esac
-                ;;
-            esac
-          done < <(command pnpm bin -g 2>/dev/null)
-        fi
         export PATH
-        unset __IRIS_REFRESH_SAVED_PWD __IRIS_NPM_PREFIX __IRIS_NPM_BIN __IRIS_PNPM_BIN
+        unset __IRIS_REFRESH_SAVED_PWD
         hash -r
         """#
 

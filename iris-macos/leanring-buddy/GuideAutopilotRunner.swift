@@ -676,6 +676,12 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
     private var preparedWorkspaceBinding: GuideSourceWorkspaceBinding?
     private var preparedWorkspaceValidator: (@Sendable (GuideSourceWorkspaceBinding) async -> Bool)?
 
+    /// Legacy published guides name the checkout as `~/kneecap` (or another
+    /// app-slug folder) instead of declaring a structural workspace. Once the
+    /// reader has selected a validated binding, commands using that legacy
+    /// path are translated to the staged root at the execution boundary.
+    /// Every retry revalidates the binding before it can touch the shell.
+
     // MARK: - Budget counters
 
     private var modelCallsUsedThisGuide = 0
@@ -911,7 +917,15 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             resolvedWorkspaceDirectory = directory
         }
         guard !Task.isCancelled else { return .stopped }
-        guard let command = step.command else { return .succeeded }
+        guard let rawCommand = step.command else { return .succeeded }
+        var command = rawCommand
+        var resolvedWorkingDirectory = resolvedWorkspaceDirectory
+        if resolvedWorkingDirectory == nil,
+           let legacyWorkingDirectory = step.workingDirectory,
+           let directory = await resolveLegacyPreparedWorkspaceDirectory(legacyWorkingDirectory) {
+            resolvedWorkingDirectory = directory
+            command = rewriteLegacyWorkspaceReferences(in: command, root: directory)
+        }
 
         // Do not advance the UI step generation merely because a second
         // long-running request arrived while the first is still starting. The
@@ -957,7 +971,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         // Put the shell where the step says it runs, before it runs. A step
         // that declares nothing is left exactly where the shell already is —
         // that is every already-published guide, and it must not change.
-        if let folder = resolvedWorkspaceDirectory ?? step.workingDirectory {
+        if let folder = resolvedWorkingDirectory ?? step.workingDirectory {
             switch await moveInto(folder, using: shellSession) {
             case .succeeded:
                 break
@@ -974,7 +988,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
 
         transcript.append(.commandFromTheGuide(text: command))
         let outcome = await runGuideCommand(
-            command, inWorkingDirectory: resolvedWorkspaceDirectory
+            command, inWorkingDirectory: resolvedWorkingDirectory
                 ?? step.workingDirectory ?? shellSession.currentWorkingDirectory
         )
         switch outcome {
@@ -1654,6 +1668,37 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             return nil
         }
         return directory.path
+    }
+
+    private func resolveLegacyPreparedWorkspaceDirectory(
+        _ legacyPath: String
+    ) async -> String? {
+        guard let binding = preparedWorkspaceBinding,
+              let validator = preparedWorkspaceValidator,
+              binding.guideID == guideContext.slug,
+              binding.guideRevision == guideContext.version,
+              binding.projectID == (guideContext.projectID ?? guideContext.slug),
+              let owner = guideContext.sourceOwner,
+              let repo = guideContext.sourceRepo,
+              let commit = guideContext.sourceCommit,
+              GuideSourceWorkspaceOrigin.parse("https://github.com/\(owner)/\(repo)") == binding.expectedOrigin,
+              commit == binding.expectedCommit,
+              await validator(binding),
+              !Task.isCancelled else { return nil }
+        let prefix = "~/\(guideContext.slug)"
+        guard legacyPath == prefix || legacyPath.hasPrefix(prefix + "/") else { return nil }
+        let relative = String(legacyPath.dropFirst(prefix.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return (try? binding.workingDirectory(forRelativePath: relative))?.path
+    }
+
+    private func rewriteLegacyWorkspaceReferences(
+        in command: String,
+        root: String
+    ) -> String {
+        let quotedRoot = "'" + root.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let legacyPrefix = "~/\(guideContext.slug)"
+        return command.replacingOccurrences(of: legacyPrefix, with: quotedRoot)
+            .replacingOccurrences(of: "cd \(guideContext.slug)", with: "cd \(quotedRoot)")
     }
 
     private static func systemFolderDiagnosis(_ folder: String) -> String {

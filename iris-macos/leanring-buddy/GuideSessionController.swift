@@ -2005,12 +2005,22 @@ final class GuideSessionController: ObservableObject {
         // A fixture is an explicitly admitted, pinned test copy. It may keep
         // the published guide's legacy HOME-relative paths so this suite can
         // exercise the install gate; normal controllers always pass nil here.
-        guard !guideNeedsPublisherWorkspaceMigration
-            || IrisTestEnvironment.isUnitTestProcess
-            || offlineNativeFixture != nil else {
-            autopilotBlockedExplanation = "This published guide still names its project folder through HOME-relative commands. Iris will not automate it until Publik publishes structural prepared-workspace steps for this version."
-            irisTrace("autopilot: start refused — source guide needs workspace migration")
-            return
+        if guideNeedsPublisherWorkspaceMigration {
+            let hasValidatedLegacyBinding = selectedWorkspaceBinding.map { binding in
+                binding.guideID == guide.appSlug
+                    && binding.guideRevision == guide.version
+                    && binding.projectID == guide.appSlug
+                    && binding.expectedCommit == guide.sourceCommit
+                    && Self.sourceOrigin(for: guide) == binding.expectedOrigin
+                    && binding.isIsolated
+            } == true
+            guard hasValidatedLegacyBinding
+                || IrisTestEnvironment.isUnitTestProcess
+                || offlineNativeFixture != nil else {
+                autopilotBlockedExplanation = "Choose and prepare the reviewed source workspace before Iris runs this older guide."
+                irisTrace("autopilot: start refused — legacy guide needs a validated workspace binding")
+                return
+            }
         }
         if guideHasStructuralWorkspaceSteps {
             guard let binding = selectedWorkspaceBinding,

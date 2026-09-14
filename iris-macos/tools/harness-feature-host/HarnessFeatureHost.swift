@@ -164,6 +164,8 @@ struct HarnessFeatureHost {
 
     @MainActor private static func checkOutputBudget() async throws {
         try await runUsageAttributionChecks()
+        try runEditVerificationReceiptChecks()
+        print("PASS verification receipt: confined/native failures remain visible and block delivery")
         try runCodexTextOnlyAskChecks()
         print("PASS typed Codex Ask: enabled only for non-empty unsized text and clearly names the screen-help boundary")
         try await runNormalCodexRecheckChecks()

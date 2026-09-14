@@ -38,7 +38,17 @@ nonisolated struct EditVerificationReceipt: Equatable, Sendable {
     }
 
     var anyCheckRan: Bool { buildPassed != nil || testsPassed != nil || confinedTestsPassed != nil || nativeTestsPassed != nil || symptomReproduced }
-    var hasFailure: Bool { buildPassed == false || testsPassed == false }
+
+    /// Every recorded verification rung is a gate. A failed confined or native
+    /// check must not be hidden behind a passing generic suite: that would let
+    /// the coordinator store a success-shaped receipt for an app whose actual
+    /// verification just failed.
+    var hasFailure: Bool {
+        buildPassed == false
+            || testsPassed == false
+            || confinedTestsPassed == false
+            || nativeTestsPassed == false
+    }
 
     static func label(for result: Bool?) -> String {
         switch result {
@@ -54,7 +64,7 @@ nonisolated struct EditVerificationReceipt: Equatable, Sendable {
     }
 
     var testSummary: String {
-        nativeTestsRequired
+        (confinedTestsPassed != nil || nativeTestsPassed != nil || nativeTestsRequired)
             ? "Code: \(Self.label(for: confinedTestsPassed)); desktop: \(Self.label(for: nativeTestsPassed))"
             : Self.label(for: testsPassed)
     }
@@ -67,8 +77,13 @@ nonisolated struct EditVerificationReceipt: Equatable, Sendable {
             case nil: return "\(stage)-not-run"
             }
         }
+        var stages = [token("build", buildPassed), token("suite", testsPassed)]
+        if confinedTestsPassed != nil || nativeTestsPassed != nil || nativeTestsRequired {
+            stages.append(token("confined", confinedTestsPassed))
+            stages.append(token("native", nativeTestsPassed))
+        }
         return (symptomReproduced ? "Verified: repro-legs, " : "Applied: ")
-            + [token("build", buildPassed), token("suite", testsPassed)].joined(separator: ", ")
+            + stages.joined(separator: ", ")
     }
 }
 

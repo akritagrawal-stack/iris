@@ -47,6 +47,12 @@ struct SavedAppVersionsSection: View {
                             Text(receipt.startedAt, style: .date)
                             Text(phaseLabel(receipt.phase))
                             let backupAvailable = receiptStore.backupIsAvailable(for: receipt)
+                            let testProjectFailure = isIrisTestRuntime
+                                ? Self.testProjectUndoFailure(
+                                    receipt: receipt,
+                                    project: testProjects.first(where: { $0.slug == receipt.sourceIdentity?.appSlug })
+                                )
+                                : nil
                             Text(backupAvailable
                                  ? "Previous app files were found. Iris checks their contents before Undo."
                                  : "Previous app files are unavailable at the recorded location.")
@@ -55,7 +61,10 @@ struct SavedAppVersionsSection: View {
                                 Text("Iris will not guess whether this update reached the installed app.")
                                     .foregroundColor(DS.Colors.amber)
                             case .installed:
-                                if receipt.hasCompleteUndoMetadata && backupAvailable {
+                                if let testProjectFailure {
+                                    Text(testProjectFailure)
+                                        .foregroundColor(DS.Colors.amber)
+                                } else if receipt.hasCompleteUndoMetadata && backupAvailable {
                                     if let onUndoReceipt {
                                         Button("Undo") { onUndoReceipt(receipt) }
                                             .irisTinyButton()
@@ -190,6 +199,35 @@ struct SavedAppVersionsSection: View {
         case .installed: return "Last recorded event: app files replaced."
         case .restored: return "Last recorded event: previous app files restored."
         }
+    }
+
+    /// A Test receipt is actionable only while it still names the exact staged
+    /// project that made it. Without this join the Saved Versions card could
+    /// offer Undo, then the coordinator would correctly refuse once recovery
+    /// began. Production inventory uses its own registered-path callback.
+    static func testProjectUndoFailure(
+        receipt: AppDeliveryReceipt,
+        project: IrisTestProjectRegistry.Project?
+    ) -> String? {
+        guard let source = receipt.sourceIdentity else {
+            return "Undo is unavailable because the exact Test project identity was not saved."
+        }
+        guard let project else {
+            return "Undo is unavailable because this Test app is no longer registered."
+        }
+        let sameProject = project.slug == source.appSlug
+            && samePath(project.clonePath, source.clonePath)
+            && samePath(project.applicationPath, receipt.installedPath)
+            && samePath(project.buildArtifactPath, receipt.sourceArtifactPath)
+            && project.bundleIdentifier == receipt.bundleIdentifier
+        return sameProject
+            ? nil
+            : "Undo is unavailable because this Test app's registered identity changed since delivery."
+    }
+
+    private static func samePath(_ left: String, _ right: String) -> Bool {
+        URL(fileURLWithPath: left).standardizedFileURL.path
+            == URL(fileURLWithPath: right).standardizedFileURL.path
     }
 
     /// Xcode's Test scheme injects the Test bundle identity into the app

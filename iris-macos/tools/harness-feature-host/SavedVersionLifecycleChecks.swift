@@ -39,6 +39,8 @@ struct SavedVersionLifecycleChecks {
             print("PASS installed, clone-only, failed-package, and interrupted-before-relaunch states stay distinct")
             try checkUndoOfferRequiresInstalledReceipt()
             print("PASS clone-only launches never offer Undo; installed receipt and backup are required")
+            try checkRegisteredTestProjectUndoGate()
+            print("PASS Saved Versions only offers Test Undo for the exact registered project")
             try checkRecoveryMarkerRefusesFinalSymlink()
             print("PASS Undo recovery marker refuses final symlink and preserves review gate")
             try await checkChangedSourceAndPayloadRefusal()
@@ -228,6 +230,60 @@ struct SavedVersionLifecycleChecks {
             replacementBundleIdentity: metadataOnly, backupBundleIdentity: metadataOnly)
         try require(partial.isValid && !partial.hasCompleteUndoMetadata,
                     "metadata-only legacy bundle identities incorrectly enabled Undo")
+    }
+
+    private static func checkRegisteredTestProjectUndoGate() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let exact = IrisTestProjectRegistry.Project(
+            slug: fixture.sourceIdentity.appSlug,
+            name: fixture.sourceIdentity.appName,
+            clonePath: fixture.sourceIdentity.clonePath,
+            applicationPath: fixture.receipt.installedPath,
+            buildArtifactPath: fixture.receipt.sourceArtifactPath,
+            bundleIdentifier: fixture.receipt.bundleIdentifier,
+            pinnedCommit: fixture.baseCommit
+        )
+        try require(
+            SavedAppVersionsSection.testProjectUndoFailure(receipt: fixture.receipt, project: exact) == nil,
+            "the exact registered Test project did not make Undo available"
+        )
+        try require(
+            SavedAppVersionsSection.testProjectUndoFailure(receipt: fixture.receipt, project: nil)
+                ?.contains("no longer registered") == true,
+            "an unregistered Test receipt still looked Undoable"
+        )
+
+        let changedArtifact = IrisTestProjectRegistry.Project(
+            slug: exact.slug,
+            name: exact.name,
+            clonePath: exact.clonePath,
+            applicationPath: exact.applicationPath,
+            buildArtifactPath: fixture.root.appendingPathComponent("other/Notes.app").path,
+            bundleIdentifier: exact.bundleIdentifier,
+            pinnedCommit: exact.pinnedCommit
+        )
+        try require(
+            SavedAppVersionsSection.testProjectUndoFailure(receipt: fixture.receipt, project: changedArtifact)
+                ?.contains("identity changed") == true,
+            "a changed Test artifact still looked Undoable"
+        )
+
+        let changedBundle = IrisTestProjectRegistry.Project(
+            slug: exact.slug,
+            name: exact.name,
+            clonePath: exact.clonePath,
+            applicationPath: exact.applicationPath,
+            buildArtifactPath: exact.buildArtifactPath,
+            bundleIdentifier: "com.fixture.changed",
+            pinnedCommit: exact.pinnedCommit
+        )
+        try require(
+            SavedAppVersionsSection.testProjectUndoFailure(receipt: fixture.receipt, project: changedBundle)
+                ?.contains("identity changed") == true,
+            "a changed Test bundle identity still looked Undoable"
+        )
     }
 
     private static func checkUndoOfferRequiresInstalledReceipt() throws {

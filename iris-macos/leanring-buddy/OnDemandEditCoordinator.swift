@@ -4358,6 +4358,13 @@ final class OnDemandEditCoordinator: ObservableObject {
         guard let sourceIdentity = receipt.sourceIdentity else {
             return "This saved version has no complete source identity. Iris will not guess which branch to undo."
         }
+        if IrisTestEnvironment.isEnabled,
+           let testProjectFailure = SavedAppVersionsSection.testProjectUndoFailure(
+                receipt: receipt,
+                project: IrisTestProjectRegistry.project(slug: sourceIdentity.appSlug)
+           ) {
+            return testProjectFailure
+        }
         if let registeredPath = installedApplicationPathForApp?(sourceIdentity.appSlug),
            URL(fileURLWithPath: registeredPath).standardizedFileURL.path != receipt.installedPath {
             return "The registered app path changed since delivery. Iris left the installed app alone."

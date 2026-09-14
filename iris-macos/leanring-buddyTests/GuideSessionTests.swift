@@ -160,10 +160,19 @@ struct GuideSessionTests {
 
     @Test func resumeLandsOnTheSavedStepAndSurvivesAVersionBump() async throws {
         let guideService = try Self.guideServiceAnsweredByTheStub()
-        let controller = GuideSessionController(guideService: guideService)
+        let suiteName = "iris.guide.resume.\(UUID().uuidString)"
+        let progressDefaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { progressDefaults.removePersistentDomain(forName: suiteName) }
+        let progressMemory = LastFollowedGuideMemory(userDefaults: progressDefaults)
+        func makeController() -> GuideSessionController {
+            let controller = GuideSessionController(guideService: guideService)
+            controller.lastFollowedGuideMemory = progressMemory
+            return controller
+        }
+        let controller = makeController()
 
         await controller.openGuide(
-            slug: "lunara",
+            slug: "resume-contract",
             requestedVersion: 2,
             branchKeyFromDeepLink: "macos:android",
             stepIndexFromDeepLink: nil
@@ -178,9 +187,9 @@ struct GuideSessionTests {
 
         // Reopening the same guide at the same version puts the reader back
         // where they stopped rather than at the top.
-        let controllerReopeningTheSameGuide = GuideSessionController(guideService: guideService)
+        let controllerReopeningTheSameGuide = makeController()
         await controllerReopeningTheSameGuide.openGuide(
-            slug: "lunara",
+            slug: "resume-contract",
             requestedVersion: 2,
             branchKeyFromDeepLink: "macos:android",
             stepIndexFromDeepLink: nil
@@ -200,9 +209,9 @@ struct GuideSessionTests {
         // `Test6ProgressDurabilityReproTests` covers the other half — a version
         // whose steps genuinely changed — which this stub cannot express,
         // because it serves identical steps for every version of a slug.
-        let controllerOpeningTheNewVersion = GuideSessionController(guideService: guideService)
+        let controllerOpeningTheNewVersion = makeController()
         await controllerOpeningTheNewVersion.openGuide(
-            slug: "lunara",
+            slug: "resume-contract",
             requestedVersion: 3,
             branchKeyFromDeepLink: "macos:android",
             stepIndexFromDeepLink: nil
@@ -687,6 +696,8 @@ final class StubbedGuideURLProtocol: URLProtocol {
             return sourceWorkspaceGuideJSON(slug: slug, version: version, structural: false)
         case "prepared-source-contract":
             return sourceWorkspaceGuideJSON(slug: slug, version: version, structural: true)
+        case "resume-contract":
+            return mobileGuideJSON(slug: slug, version: version, includesClone: false)
         default:
             return mobileGuideJSON(slug: slug, version: version)
         }
@@ -779,8 +790,21 @@ final class StubbedGuideURLProtocol: URLProtocol {
 
     /// A mobile guide with the same branch shape Lunara, NoScroll, and Nut AI
     /// ship: a computer crossed with a phone, one pair of which cannot work.
-    private static func mobileGuideJSON(slug: String, version: Int) -> String {
-        """
+    private static func mobileGuideJSON(
+        slug: String,
+        version: Int,
+        includesClone: Bool = true
+    ) -> String {
+        let androidSourceStep = includesClone
+            ? """
+              {"id": "clone", "kind": "terminal", "title": "Copy Lunara to this Mac",
+               "body": "", "command": "cd ~\\ngit clone https://github.com/Blueturboguy07/lunara.git"},
+              """
+            : """
+              {"id": "prepare", "kind": "terminal", "title": "Prepare the project",
+               "body": "", "command": "printf ready"},
+              """
+        return """
         {
           "appSlug": "\(slug)",
           "appName": "Lunara",
@@ -800,8 +824,7 @@ final class StubbedGuideURLProtocol: URLProtocol {
               "shell": "terminal",
               "setupSteps": [],
               "steps": [
-                {"id": "clone", "kind": "terminal", "title": "Copy Lunara to this Mac",
-                 "body": "", "command": "cd ~\\ngit clone https://github.com/Blueturboguy07/lunara.git"},
+                \(androidSourceStep)
                 {"id": "install", "kind": "terminal", "title": "Install what it needs",
                  "body": "", "command": "npm ci"},
                 {"id": "studio", "kind": "open", "title": "Open Android Studio",

@@ -41,6 +41,8 @@ struct SavedVersionLifecycleChecks {
             print("PASS clone-only launches never offer Undo; installed receipt and backup are required")
             try checkRegisteredTestProjectUndoGate()
             print("PASS Saved Versions only offers Test Undo for the exact registered project")
+            try checkSupersededInstalledReceiptGuard()
+            print("PASS superseded installed receipts are not offered Undo")
             try checkRecoveryMarkerRefusesFinalSymlink()
             print("PASS Undo recovery marker refuses final symlink and preserves review gate")
             try await checkChangedSourceAndPayloadRefusal()
@@ -230,6 +232,86 @@ struct SavedVersionLifecycleChecks {
             replacementBundleIdentity: metadataOnly, backupBundleIdentity: metadataOnly)
         try require(partial.isValid && !partial.hasCompleteUndoMetadata,
                     "metadata-only legacy bundle identities incorrectly enabled Undo")
+    }
+
+    private static func checkSupersededInstalledReceiptGuard() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/iris-saved-receipt-ui-guard")
+        let installedPath = root.appendingPathComponent("installed/Notes.app").path
+
+        func receipt(
+            _ identifier: String,
+            startedAt: TimeInterval,
+            path: String? = nil,
+            phase: AppDeliveryReceipt.Phase = .installed
+        ) -> AppDeliveryReceipt {
+            let id = UUID(uuidString: identifier)!
+            return AppDeliveryReceipt(
+                identifier: id,
+                bundleIdentifier: "com.fixture.savednotes",
+                installedPath: path ?? installedPath,
+                sourceArtifactPath: root.appendingPathComponent("clone/\(id.uuidString).app").path,
+                backupPath: root.appendingPathComponent("backups/\(id.uuidString).app").path,
+                startedAt: Date(timeIntervalSince1970: startedAt),
+                phase: phase
+            )
+        }
+
+        let first = receipt(
+            "00000000-0000-0000-0000-000000000001",
+            startedAt: 1_725_000_000
+        )
+        let second = receipt(
+            "00000000-0000-0000-0000-000000000002",
+            startedAt: 1_725_000_001
+        )
+        let otherPath = receipt(
+            "00000000-0000-0000-0000-000000000003",
+            startedAt: 1_725_000_002,
+            path: root.appendingPathComponent("installed/Other.app").path
+        )
+        let restored = receipt(
+            "00000000-0000-0000-0000-000000000004",
+            startedAt: 1_725_000_003,
+            phase: .restored
+        )
+        let entries: [AppDeliveryReceiptStore.Entry] = [
+            .valid(first), .valid(second), .valid(otherPath), .valid(restored),
+            .corrupt(path: root.appendingPathComponent("corrupt.json").path)
+        ]
+        try require(
+            AppDeliveryReceiptStore.isSupersededInstalledReceipt(first, among: entries),
+            "an older installed receipt remained actionable after a newer delivery"
+        )
+        try require(
+            !AppDeliveryReceiptStore.isSupersededInstalledReceipt(second, among: entries),
+            "the newest installed receipt was incorrectly marked superseded"
+        )
+        try require(
+            !AppDeliveryReceiptStore.isSupersededInstalledReceipt(otherPath, among: entries),
+            "a receipt for another installed path was incorrectly superseded"
+        )
+        try require(
+            !AppDeliveryReceiptStore.isSupersededInstalledReceipt(restored, among: entries),
+            "a restored receipt was incorrectly treated as an actionable installed receipt"
+        )
+
+        let tieOlder = receipt(
+            "00000000-0000-0000-0000-000000000010",
+            startedAt: 1_725_000_004
+        )
+        let tieNewer = receipt(
+            "00000000-0000-0000-0000-000000000011",
+            startedAt: 1_725_000_004
+        )
+        let tieEntries: [AppDeliveryReceiptStore.Entry] = [.valid(tieOlder), .valid(tieNewer)]
+        try require(
+            AppDeliveryReceiptStore.isSupersededInstalledReceipt(tieOlder, among: tieEntries),
+            "same-timestamp receipts did not use UUID order as a deterministic tie-break"
+        )
+        try require(
+            !AppDeliveryReceiptStore.isSupersededInstalledReceipt(tieNewer, among: tieEntries),
+            "same-timestamp newest receipt was incorrectly marked superseded"
+        )
     }
 
     private static func checkRegisteredTestProjectUndoGate() throws {

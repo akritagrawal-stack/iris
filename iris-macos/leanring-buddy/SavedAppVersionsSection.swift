@@ -61,7 +61,12 @@ struct SavedAppVersionsSection: View {
                                 Text("Iris will not guess whether this update reached the installed app.")
                                     .foregroundColor(DS.Colors.amber)
                             case .installed:
-                                if let testProjectFailure {
+                                if AppDeliveryReceiptStore.isSupersededInstalledReceipt(
+                                    receipt, among: records
+                                ) {
+                                    Text("A newer version is installed. Undo the latest saved version first.")
+                                        .foregroundColor(DS.Colors.amber)
+                                } else if let testProjectFailure {
                                     Text(testProjectFailure)
                                         .foregroundColor(DS.Colors.amber)
                                 } else if receipt.hasCompleteUndoMetadata && backupAvailable {

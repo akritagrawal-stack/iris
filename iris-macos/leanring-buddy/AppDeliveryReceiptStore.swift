@@ -594,6 +594,34 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         self.directoryEnumeratorFactory = directoryEnumeratorFactory
     }
 
+    /// Return whether a saved installed receipt has been superseded by a
+    /// newer installed delivery at the same app path. The current installed
+    /// bundle is intentionally not inspected here: this is a synchronous UI
+    /// affordance filter, while the Undo coordinator still performs its full
+    /// identity and payload checks before changing anything.
+    static func isSupersededInstalledReceipt(
+        _ receipt: AppDeliveryReceipt,
+        among entries: [Entry]
+    ) -> Bool {
+        guard receipt.phase == .installed else { return false }
+        let installedPath = URL(fileURLWithPath: receipt.installedPath)
+            .standardizedFileURL.path
+        return entries.contains { entry in
+            guard case .valid(let candidate) = entry,
+                  candidate.phase == .installed,
+                  candidate.identifier != receipt.identifier,
+                  candidate.bundleIdentifier == receipt.bundleIdentifier,
+                  URL(fileURLWithPath: candidate.installedPath)
+                    .standardizedFileURL.path == installedPath else {
+                return false
+            }
+            if candidate.startedAt != receipt.startedAt {
+                return candidate.startedAt > receipt.startedAt
+            }
+            return candidate.identifier.uuidString > receipt.identifier.uuidString
+        }
+    }
+
     /// Measure all existing backup bundles and validate every receipt and
     /// recovery reference before a new snapshot is written. No cleanup is
     /// performed here: unreferenced material remains protected and is counted.

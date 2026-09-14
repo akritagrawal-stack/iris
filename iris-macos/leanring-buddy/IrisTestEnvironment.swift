@@ -55,6 +55,17 @@ public nonisolated enum IrisTestEnvironment {
         runtimeIdentity.isTestApplication
     }
 
+    /// XCTest loads the Iris Test product into an isolated test host. That host
+    /// cannot drive a marketplace install, but it must be able to exercise the
+    /// controller's local state transitions using its own stubbed guide service.
+    /// Keep this distinction here rather than turning the runtime's marketplace
+    /// refusal into a broad test-build exception.
+    static var isUnitTestProcess: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestSessionIdentifier"] != nil
+    }
+
     public static var displayName: String { runtimeIdentity.displayName }
     public static var applicationSupportDirectoryName: String {
         runtimeIdentity.applicationSupportDirectoryName

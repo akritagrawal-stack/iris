@@ -1166,7 +1166,9 @@ final class GuideSessionController: ObservableObject {
         branchKeyFromDeepLink: String?,
         stepIndexFromDeepLink: Int?
     ) async {
-        if IrisTestEnvironment.isEnabled, offlineNativeFixture == nil {
+        if IrisTestEnvironment.isEnabled,
+           !IrisTestEnvironment.isUnitTestProcess,
+           offlineNativeFixture == nil {
             loadState = .guideCouldNotBeLoaded(slug: slug,
                 userFacingMessage: "Iris Test is for editing separate test copies. Use regular Iris for marketplace installations.")
             // The refusal still needs a visible card when opened from Settings.

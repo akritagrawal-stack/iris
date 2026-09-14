@@ -249,11 +249,12 @@ struct SavedVersionLifecycleChecks {
             SavedAppVersionsSection.testProjectUndoFailure(receipt: fixture.receipt, project: exact) == nil,
             "the exact registered Test project did not make Undo available"
         )
-        try require(
-            SavedAppVersionsSection.testProjectUndoFailure(receipt: fixture.receipt, project: nil)
-                ?.contains("no longer registered") == true,
-            "an unregistered Test receipt still looked Undoable"
-        )
+        let missingProjectFailure = SavedAppVersionsSection.testProjectUndoFailure(
+            receipt: fixture.receipt,
+            project: nil
+        ) ?? ""
+        try require(missingProjectFailure.contains("no longer registered"),
+                    "an unregistered Test receipt still looked Undoable")
 
         let changedArtifact = IrisTestProjectRegistry.Project(
             slug: exact.slug,
@@ -264,11 +265,12 @@ struct SavedVersionLifecycleChecks {
             bundleIdentifier: exact.bundleIdentifier,
             pinnedCommit: exact.pinnedCommit
         )
-        try require(
-            SavedAppVersionsSection.testProjectUndoFailure(receipt: fixture.receipt, project: changedArtifact)
-                ?.contains("identity changed") == true,
-            "a changed Test artifact still looked Undoable"
-        )
+        let changedArtifactFailure = SavedAppVersionsSection.testProjectUndoFailure(
+            receipt: fixture.receipt,
+            project: changedArtifact
+        ) ?? ""
+        try require(changedArtifactFailure.contains("identity changed"),
+                    "a changed Test artifact still looked Undoable")
 
         let changedBundle = IrisTestProjectRegistry.Project(
             slug: exact.slug,
@@ -279,11 +281,12 @@ struct SavedVersionLifecycleChecks {
             bundleIdentifier: "com.fixture.changed",
             pinnedCommit: exact.pinnedCommit
         )
-        try require(
-            SavedAppVersionsSection.testProjectUndoFailure(receipt: fixture.receipt, project: changedBundle)
-                ?.contains("identity changed") == true,
-            "a changed Test bundle identity still looked Undoable"
-        )
+        let changedBundleFailure = SavedAppVersionsSection.testProjectUndoFailure(
+            receipt: fixture.receipt,
+            project: changedBundle
+        ) ?? ""
+        try require(changedBundleFailure.contains("identity changed"),
+                    "a changed Test bundle identity still looked Undoable")
     }
 
     private static func checkUndoOfferRequiresInstalledReceipt() throws {

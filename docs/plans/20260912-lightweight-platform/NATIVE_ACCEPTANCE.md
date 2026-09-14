@@ -232,6 +232,13 @@ notes/folders where the contract expects six, indicating that an existing seeded
 record is being lost during the transfer sequence. This is now a data-preservation
 failure to fix, rather than a missing-control or test-setup failure.
 
+After adding an explicit additive-preservation invariant, the oracle advanced
+past the record-count assertion and now fails in native visible readback when
+reopening the second note with the duplicate title `Same title`. The exported
+data contains both records; the remaining defect is UI navigation/readback
+stability after the first duplicate-title note is opened and its last-opened
+grouping changes.
+
 ## Current Iris model-route policy, September 14
 
 New planner and implementation work uses Luna by default. GPT-5.5 is available

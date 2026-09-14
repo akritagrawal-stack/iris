@@ -15,6 +15,35 @@ struct ComposerConnectionPresentationTests {
         ))
     }
 
+    @Test func codexTextOnlyAskCanSendButDoesNotClaimScreenAccess() {
+        #expect(ComposerConnectionPresentation.canSendTypedRequest(
+            hasText: true,
+            requestIsBeingSizedUp: false,
+            context: .screenHelp,
+            helpIsAvailable: false,
+            textOnlyHelpIsAvailable: true
+        ))
+        let presentation = ComposerConnectionPresentation.resolve(
+            context: .screenHelp,
+            help: .codexTextOnly,
+            editing: .codex,
+            codexIsConnected: true
+        )
+        #expect(presentation.connectionLabel == "General questions through Codex")
+        #expect(presentation.inlineMessage?.contains("Connect screen help") == true)
+        #expect(presentation.settingsLinkLabel == "Connect screen help")
+    }
+
+    @Test func codexTextOnlyAskStillCannotSendWhileSizing() {
+        #expect(!ComposerConnectionPresentation.canSendTypedRequest(
+            hasText: true,
+            requestIsBeingSizedUp: true,
+            context: .screenHelp,
+            helpIsAvailable: false,
+            textOnlyHelpIsAvailable: true
+        ))
+    }
+
     @Test func emptyAndAlreadySizingRequestsRemainDisabled() {
         #expect(!ComposerConnectionPresentation.canSendTypedRequest(
             hasText: false, requestIsBeingSizedUp: false, context: .projectEdit, helpIsAvailable: true

@@ -251,6 +251,21 @@ final class AppRelaunchService {
         }
     }
 
+    /// Whether this particular clone has a code-authored packaging route that
+    /// can be attempted for its stack. The stack-only predicate above answers
+    /// a broad capability question, but an Electron clone with no declared
+    /// macOS/dist script is not actually rebuildable by Iris. Keeping the
+    /// clone-specific check beside the command resolver prevents the UI from
+    /// offering a relaunch that will predictably stop at "no packaging step".
+    /// This is still only a preflight: the build must produce a fresh,
+    /// launchable bundle before Iris terminates or replaces anything.
+    static func canPackageFreshMacArtifact(
+        stack: BreakAppStack, clonePath: String
+    ) -> Bool {
+        stackCanProduceARelaunchableMacArtifact(stack)
+            && packageCommand(forStack: stack, clonePath: clonePath) != nil
+    }
+
     // MARK: - Step 1: package a fresh, launchable artifact FROM the clone
 
     /// Run the code-authored, per-stack PACKAGE command in the clone and assert
@@ -807,7 +822,10 @@ final class AppRelaunchService {
             replacementBundleIdentity: replacementIdentity, backupBundleIdentity: installedIdentity)
         do { try store.savePrepared(receipt) }
         catch {
-            return .deliveryFailed(reason: "Iris could not save recovery details. Your installed app was left alone. Check available storage and retry the update.")
+            let storageReason = GuideAutopilotOutputBuffer.scrubbed(String(describing: error))
+            return .deliveryFailed(
+                reason: "Iris could not save recovery details (\(storageReason)). Your installed app was left alone. Check available storage and retry the update."
+            )
         }
         let swap = atomicallyReplaceBundle(installedPath: installedPath,
             withBundleAt: artifactPath, snapshotTo: backupPath, undoRecoveryStore: undoRecoveryStore,
@@ -1286,8 +1304,45 @@ final class AppRelaunchService {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let scripts = json["scripts"] as? [String: Any] else { return nil }
         // Ordered most-specific-macOS first, then general packaging, then forge.
-        for candidate in ["dist:mac", "build:mac", "package:mac", "dist", "package", "make"] {
+        // The darwin spellings are common in Electron projects and are just as
+        // unambiguous on macOS. Keep the generic names for existing projects;
+        // artifact discovery still has the final say after the script runs.
+        for candidate in [
+            "dist:mac", "build:mac", "package:mac", "make:mac",
+            "dist:darwin", "build:darwin", "package:darwin", "release:mac",
+            "dist", "package", "make"
+        ] {
             if scripts[candidate] != nil { return candidate }
+        }
+        // Some projects put the platform-specific invocation under a generic
+        // name such as `build`. Only admit an explicitly macOS-targeting
+        // Electron packager command; arbitrary build scripts remain ineligible
+        // so a web build cannot be mistaken for a relaunchable app.
+        let macPackagingMarkers: Set<String> = [
+            "electron-builder", "electron-forge", "electron-packager"
+        ]
+        for (name, value) in scripts.compactMap({ key, value -> (String, String)? in
+            guard let value = value as? String else { return nil }
+            return (key, value)
+        }).sorted(by: { $0.0 < $1.0 }) {
+            let words = value.lowercased().split {
+                $0.isWhitespace || [";", "&", "|", "(", ")"].contains(String($0))
+            }.map(String.init)
+            let firstExecutable = words.first { !$0.contains("=") }
+            // A printed tool name is not a packaging declaration. This also
+            // keeps the generic-script fallback aligned with the existing
+            // shipping-evidence detector's echo/printf refusal.
+            guard let firstExecutable,
+                  !["echo", "printf", ":", "true", "false"].contains(firstExecutable),
+                  words.contains(where: { word in
+                      macPackagingMarkers.contains(word.split(separator: "/").last.map(String.init) ?? word)
+                  }) else { continue }
+            let hasExplicitMacTarget = words.contains("--mac")
+                || words.contains("darwin")
+                || words.contains("mac")
+                || words.contains(where: { $0 == "--platform=darwin" || $0 == "--platform=mac" })
+            guard hasExplicitMacTarget else { continue }
+            return name
         }
         return nil
     }

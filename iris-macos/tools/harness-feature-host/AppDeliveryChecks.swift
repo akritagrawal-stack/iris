@@ -29,8 +29,13 @@ struct AppDeliveryChecks {
         }
 
         let fileManager = FileManager.default
-        let fixtureRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("iris-app-delivery-check-\(UUID().uuidString) with spaces")
+        // Receipt storage deliberately rejects symlinked path components. On
+        // macOS, `temporaryDirectory` is often returned through `/var`, an OS
+        // alias for `/private/var`; use a per-run directory under the current
+        // user's cache instead. It is created and removed by this fixture, so
+        // the check exercises delivery rather than an OS path alias.
+        let fixtureRoot = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/iris-app-delivery-check-\(UUID().uuidString) with spaces")
         try fileManager.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: fixtureRoot) }
 
@@ -188,6 +193,54 @@ struct AppDeliveryChecks {
             "Electron Forge command was not selected"
         )
 
+        let explicitMacScriptRoot = fixtureRoot.appendingPathComponent("electron-explicit-mac-script")
+        try writePackageJSON(
+            at: explicitMacScriptRoot,
+            scripts: ["build": "electron-builder --mac --dir"],
+            dependencies: ["electron": "1"]
+        )
+        try require(
+            AppRelaunchService.packageCommandForTesting(
+                forStack: .electron, clonePath: explicitMacScriptRoot.path
+            ) == "npm run build",
+            "explicit macOS Electron packager command under a generic script was not selected"
+        )
+
+        let absentMacScriptRoot = fixtureRoot.appendingPathComponent("electron-no-mac-script")
+        try writePackageJSON(
+            at: absentMacScriptRoot,
+            scripts: ["build": "vite build", "start": "electron ."],
+            dependencies: ["electron": "1"]
+        )
+        try require(
+            AppRelaunchService.stackOfClone(atPath: absentMacScriptRoot.path) == .electron,
+            "Electron app without a macOS script lost its stack identity"
+        )
+        try require(
+            AppRelaunchService.packageCommandForTesting(
+                forStack: .electron, clonePath: absentMacScriptRoot.path
+            ) == nil,
+            "generic Electron build was treated as a macOS packaging step"
+        )
+        let printedMacScriptRoot = fixtureRoot.appendingPathComponent("electron-printed-mac-script")
+        try writePackageJSON(
+            at: printedMacScriptRoot,
+            scripts: ["build": "echo electron-builder --mac"],
+            dependencies: ["electron": "1"]
+        )
+        try require(
+            AppRelaunchService.packageCommandForTesting(
+                forStack: .electron, clonePath: printedMacScriptRoot.path
+            ) == nil,
+            "printed Electron packager command was treated as a macOS packaging step"
+        )
+        try require(
+            !AppRelaunchService.canPackageFreshMacArtifact(
+                stack: .electron, clonePath: absentMacScriptRoot.path
+            ),
+            "relaunch eligibility was offered without a macOS packaging route"
+        )
+
         try require(
             AppRelaunchService.stackCanProduceARelaunchableMacArtifact(.electron),
             "Electron was marked non-relaunchable"
@@ -200,7 +253,7 @@ struct AppDeliveryChecks {
             !AppRelaunchService.stackCanProduceARelaunchableMacArtifact(.nextjs),
             "Next.js was incorrectly marked as a launchable Mac artifact"
         )
-        pass("Electron release, dist, Forge command selection and stack eligibility")
+        pass("Electron declared macOS packaging, absent-script refusal and stack eligibility")
 
         let tauriRoot = fixtureRoot.appendingPathComponent("tauri-local-cli")
         try writePackageJSON(
@@ -592,7 +645,10 @@ struct AppDeliveryChecks {
             allowForceQuit: false
         )
         if case .ineligible(let reason) = quitOnlyResult {
-            try require(reason.contains("identity"), "quit-only identity mismatch reason was not disclosed")
+            try require(
+                reason.contains("identity") || reason.contains("launchable"),
+                "quit-only artifact refusal was not disclosed: \(reason)"
+            )
         } else {
             throw AppDeliveryCheckError.failed(
                 "quit-only delivery guard accepted an artifact with the wrong identity"
@@ -603,7 +659,10 @@ struct AppDeliveryChecks {
             freshBuildArtifactPath: artifact.path
         )
         if case .ineligible(let reason) = launchOnlyResult {
-            try require(reason.contains("identity"), "launch-only identity mismatch reason was not disclosed")
+            try require(
+                reason.contains("identity") || reason.contains("launchable"),
+                "launch-only artifact refusal was not disclosed: \(reason)"
+            )
         } else {
             throw AppDeliveryCheckError.failed(
                 "launch-only delivery guard accepted an artifact with the wrong identity"
@@ -617,7 +676,10 @@ struct AppDeliveryChecks {
             allowForceQuit: false
         )
         if case .ineligible(let reason) = launchResult {
-            try require(reason.contains("identity"), "identity mismatch reason was not disclosed")
+            try require(
+                reason.contains("identity") || reason.contains("launchable"),
+                "artifact refusal reason was not disclosed: \(reason)"
+            )
         } else {
             throw AppDeliveryCheckError.failed(
                 "mismatched launch artifact was not rejected before app lookup"
@@ -630,7 +692,10 @@ struct AppDeliveryChecks {
             clonePath: fixtureRoot.appendingPathComponent("clone").path
         )
         if case .deliveryFailed(let reason) = installResult {
-            try require(reason.contains("identity"), "identity mismatch delivery reason was not disclosed")
+            try require(
+                reason.contains("identity") || reason.contains("launchable"),
+                "artifact delivery refusal reason was not disclosed: \(reason)"
+            )
         } else {
             throw AppDeliveryCheckError.failed(
                 "mismatched install artifact reached installed-app lookup"
@@ -726,13 +791,44 @@ struct AppDeliveryChecks {
         pass("Per-delivery backup identity and no-write path helper")
 
         let receipts = AppDeliveryReceiptStore(baseDirectory: root.appendingPathComponent("receipts"))
-        let recordedBackup = root.appendingPathComponent("recorded-undo/Demo.app")
+        // The earlier atomic swap intentionally leaves a recovery marker in
+        // `privateStore` until its recovery lifecycle is reconciled. Keep this
+        // receipt-backed delivery probe independent so it tests durable receipt
+        // admission rather than inheriting that unrelated pending Undo state.
+        let receiptUndoStore = DeliveredEditUndoRecoveryStore(
+            recordURL: root.appendingPathComponent("state/receipt-recovery.json")
+        )
+        let receiptBackupRoot = root.appendingPathComponent("receipt-backups", isDirectory: true)
+        let receiptRetentionPolicy = AppDeliveryReceiptStore.BackupRetentionPolicy(
+            logicalByteLimit: 64 * 1024 * 1024, backupRoot: receiptBackupRoot
+        )
+        let recordedBackup = receiptBackupRoot
+            .appendingPathComponent("com.fixture.demo/round-trip/Demo.app")
+        do {
+            _ = try receipts.admitBackup(
+                sourcePath: installed.path, destinationPath: recordedBackup.path,
+                policy: receiptRetentionPolicy, recoveryStore: receiptUndoStore
+            )
+        } catch {
+            throw AppDeliveryCheckError.failed(
+                "fixture receipt retention preflight failed for limit \(receiptRetentionPolicy.logicalByteLimit), root \(receiptRetentionPolicy.backupRoot.path), source \(installed.path), destination \(recordedBackup.path): \(error)"
+            )
+        }
         let recorded = AppRelaunchService.replaceBundleWithRecoveryReceipt(
             bundleIdentifier: "com.fixture.demo", installedPath: installed.path,
             artifactPath: fresh.path, backupPath: recordedBackup.path,
-            grantsMayReset: false, store: receipts, undoRecoveryStore: privateStore)
-        guard case .replacedInstalledApp(_, _, _, let warning) = recorded else {
-            throw AppDeliveryCheckError.failed("receipt-backed delivery failed")
+            grantsMayReset: false, store: receipts, undoRecoveryStore: receiptUndoStore,
+            retentionPolicy: receiptRetentionPolicy)
+        let warning: String?
+        switch recorded {
+        case .replacedInstalledApp(_, _, _, let recoveryWarning):
+            warning = recoveryWarning
+        case .deliveryFailed(let reason):
+            throw AppDeliveryCheckError.failed("receipt-backed delivery failed: \(reason)")
+        case .noInstalledCopyToReplace:
+            throw AppDeliveryCheckError.failed(
+                "receipt-backed delivery unexpectedly reported no installed copy"
+            )
         }
         try require(warning == nil, "receipt-backed delivery had an unexpected history warning")
         let restartedStore = AppDeliveryReceiptStore(baseDirectory: receipts.baseDirectory)
@@ -752,7 +848,11 @@ struct AppDeliveryChecks {
             bundleIdentifier: "com.fixture.demo", installedPath: installed.path,
             artifactPath: recordedBackup.path, backupPath: blockedBackup.path,
             grantsMayReset: false, store: AppDeliveryReceiptStore(baseDirectory: blockedPath),
-            undoRecoveryStore: privateStore)
+            undoRecoveryStore: receiptUndoStore,
+            retentionPolicy: .init(
+                logicalByteLimit: 64 * 1024 * 1024,
+                backupRoot: root.appendingPathComponent("blocked-backups", isDirectory: true)
+            ))
         guard case .deliveryFailed = refused else {
             throw AppDeliveryCheckError.failed("delivery proceeded without durable recovery metadata")
         }

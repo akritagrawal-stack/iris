@@ -365,19 +365,25 @@ final class CompanionManager: ObservableObject {
         }
 
         // Rebuild → relaunch (Option A). Relaunch is offered only when the
-        // catalog supplies a REAL macBundleId (tri-state — never guessed) AND the
-        // stack produces a relaunchable macOS artifact. The two closures below
-        // package from the clone and then terminate+launch; the coordinator holds
-        // the per-clonePath lock across both so the incident path can't strip
-        // `.git` under the packaging build.
+        // catalog supplies a REAL macBundleId (tri-state — never guessed) AND
+        // this clone has a code-authored packaging route for a relaunchable
+        // macOS artifact. A generic Electron stack without a declared macOS
+        // packaging script therefore stays a truthful manual/source-only flow
+        // instead of offering a button that will fail after the click. The two
+        // closures below package from the clone and then terminate+launch; the
+        // coordinator holds the per-clonePath lock across both so the incident
+        // path can't strip `.git` under the packaging build.
         coordinator.relaunchIsAvailableForApp = { [weak self] appSlug in
             guard let self else { return false }
             let stack = self.appStack(forSlug: appSlug)
+            guard let clonePath = self.installProvenanceStore.provenance(forAppSlug: appSlug)?.clonePath else {
+                return false
+            }
             let macBundleId = self.appInventoryService.installedEntriesForDisplay
                 .first { $0.slug == appSlug }?.macBundleId
             let hasKnownBundleId = (macBundleId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
             return hasKnownBundleId
-                && AppRelaunchService.stackCanProduceARelaunchableMacArtifact(stack)
+                && AppRelaunchService.canPackageFreshMacArtifact(stack: stack, clonePath: clonePath)
         }
         // A STABLE signing identity for rebuilt apps (founder decision, Aug 22
         // 2026): the user's Developer ID when one is in the keychain, else a

@@ -2518,7 +2518,19 @@ struct OverlayEyeInputBarView: View {
         Task {
             let inspection = await guideSessionController.inspectReaderSelectedSourceWorkspace(sourcePath: url.path)
             if case .success = inspection {
-                _ = await guideSessionController.prepareSelectedSourceWorkspace(choice: .createIsolatedWorktree)
+                let preparation = await guideSessionController.prepareSelectedSourceWorkspace(choice: .createIsolatedWorktree)
+                if case .failure(.destinationAlreadyExists) = preparation {
+                    // A cancelled native attempt may have left an owned path
+                    // without a resumable record. Retry with a new request ID;
+                    // never delete or overwrite that failed candidate.
+                    let retryInspection = await guideSessionController.inspectReaderSelectedSourceWorkspace(
+                        sourcePath: url.path,
+                        runID: UUID()
+                    )
+                    if case .success = retryInspection {
+                        _ = await guideSessionController.prepareSelectedSourceWorkspace(choice: .createIsolatedWorktree)
+                    }
+                }
             }
         }
     }

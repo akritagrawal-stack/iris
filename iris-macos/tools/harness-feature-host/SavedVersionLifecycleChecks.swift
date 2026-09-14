@@ -356,6 +356,28 @@ struct SavedVersionLifecycleChecks {
         try require(changedPathReceipt.phase == .installed,
                     "changed registered path blessed the restored receipt")
 
+        let changedSourceFixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: changedSourceFixture.root) }
+        let changedSourceEvents = EventLog()
+        let changedSource = try makeReceiptRepairCoordinator(
+            changedSourceFixture, events: changedSourceEvents
+        )
+        try require(changedSource.undoSavedAppVersion(changedSourceFixture.receipt),
+                    "changed-source receipt-repair fixture was not selected")
+        try await wait(until: { changedSource.undoFailureMessage != nil })
+        try git(["checkout", "main"], at: changedSourceFixture.clone)
+        changedSource.undoDeliveredChange()
+        try await wait(until: {
+            changedSource.undoFailureMessage?.contains("saved Undo recovery information changed") == true
+        })
+        try require(changedSourceEvents.values == ["quit", "restore"],
+                    "changed source reached relaunch/source recovery: \(changedSourceEvents.values)")
+        guard case .valid(let changedSourceReceipt) = changedSourceFixture.store.load(changedSourceFixture.receipt.identifier) else {
+            throw CheckFailure(message: "changed-source fixture lost its receipt")
+        }
+        try require(changedSourceReceipt.phase == .installed,
+                    "changed source blessed the restored receipt")
+
         let missingRecoveryFixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: missingRecoveryFixture.root) }
         let missingRecoveryEvents = EventLog()
@@ -543,9 +565,20 @@ struct SavedVersionLifecycleChecks {
 
     private static func makeFixture() throws -> Fixture {
         let files = FileManager.default
-        let root = files.temporaryDirectory
+        // Receipt writes deliberately reject every symlink component. Keep
+        // app paths in Foundation's canonical temporary spelling, but give
+        // the receipt store the matching physical directory on macOS where
+        // `/var` is a compatibility symlink to `/private/var`.
+        let temporaryDirectory = files.temporaryDirectory
+        let root = temporaryDirectory
             .appendingPathComponent("iris-saved-version-\(UUID().uuidString)")
-            .resolvingSymlinksInPath().standardizedFileURL
+            .standardizedFileURL
+        let receiptRoot: URL
+        if root.path.hasPrefix("/var/") {
+            receiptRoot = URL(fileURLWithPath: "/private" + root.path, isDirectory: true)
+        } else {
+            receiptRoot = root
+        }
         let clone = root.appendingPathComponent("clone", isDirectory: true)
         let installed = root.appendingPathComponent("installed/Notes.app", isDirectory: true)
         let artifact = clone.appendingPathComponent("release/Notes.app", isDirectory: true)
@@ -582,7 +615,7 @@ struct SavedVersionLifecycleChecks {
         guard let installedIdentity, let replacementIdentity, let backupIdentity else {
             throw CheckFailure(message: "fixture bundle identity could not be captured")
         }
-        let store = AppDeliveryReceiptStore(baseDirectory: root.appendingPathComponent("receipts"))
+        let store = AppDeliveryReceiptStore(baseDirectory: receiptRoot.appendingPathComponent("receipts"))
         let prepared = AppDeliveryReceipt(
             bundleIdentifier: "com.fixture.savednotes", installedPath: installed.path,
             sourceArtifactPath: artifact.path, backupPath: backup.path,

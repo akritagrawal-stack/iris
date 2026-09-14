@@ -4252,6 +4252,21 @@ final class OnDemandEditCoordinator: ObservableObject {
               recoveryRecord.originalCommit == source.baseCommit,
               recoveryRecord.originalRef == source.baseRef,
               case .pending(recoveryRecord) = deliveredUndoRecoveryStore.load(),
+              activeAppSlug == source.appSlug,
+              activeAppName == source.appName,
+              committedBranchName == source.branchName,
+              changeId == source.changeId,
+              originalHeadCommit == source.baseCommit,
+              originalHeadRef == source.baseRef,
+              savedDeliveryIdentity == SavedEditDeliveryIdentity(
+                  clonePath: source.clonePath,
+                  branchName: source.branchName,
+                  commit: source.commit
+              ),
+              deliveredReceiptIdentifier == receipt.identifier,
+              deliveredInstalledAppPath == receipt.installedPath,
+              deliveredInstalledBackupPath == receipt.backupPath,
+              (resolvedClonePath ?? savedDeliveryIdentity?.clonePath) == source.clonePath,
               let registeredPath = installedApplicationPathForApp?(source.appSlug),
               URL(fileURLWithPath: registeredPath).standardizedFileURL.path == receipt.installedPath else {
             return false
@@ -4268,9 +4283,16 @@ final class OnDemandEditCoordinator: ObservableObject {
 
     private func repairReceiptForAlreadyRestoredFiles(_ receipt: AppDeliveryReceipt) {
         guard let liveUndoRecoveryRecord,
+              let source = receipt.sourceIdentity,
               hasCurrentRepairIdentity(receipt, recoveryRecord: liveUndoRecoveryRecord),
               undoRecovery.completed.isEmpty,
               !undoIsInProgress else { return }
+
+        let repairSourceIdentity = SavedEditDeliveryIdentity(
+            clonePath: source.clonePath,
+            branchName: source.branchName,
+            commit: source.commit
+        )
 
         let flowGenerationAtStart = flowGeneration
         let repairGeneration = UUID()
@@ -4293,10 +4315,12 @@ final class OnDemandEditCoordinator: ObservableObject {
             let payloadFailure = await self.persistedReceiptPayloadUndoFailure(
                 receipt, restored: true
             )
+            let sourceStillMatches = await repairSourceIdentity.stillMatchesSource()
             guard self.flowGeneration == flowGenerationAtStart,
                   self.undoGeneration == repairGeneration,
                   self.undoIsInProgress else { return }
-            guard self.hasCurrentRepairIdentity(receipt, recoveryRecord: liveUndoRecoveryRecord) else {
+            guard sourceStillMatches,
+                  self.hasCurrentRepairIdentity(receipt, recoveryRecord: liveUndoRecoveryRecord) else {
                 self.failAlreadyRestoredReceiptRepair()
                 return
             }

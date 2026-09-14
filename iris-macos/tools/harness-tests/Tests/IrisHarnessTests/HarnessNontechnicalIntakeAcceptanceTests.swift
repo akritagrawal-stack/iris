@@ -227,6 +227,44 @@ func plannerAddsOneDestinationChoiceWhenANontechnicalRequestLeavesTheTabImplicit
 }
 
 @Test @MainActor
+func plannerDestinationQuestionIsNotDuplicatedWhenItUsesNoviceLanguage() async throws {
+    let request = "I want Whisper Flow to paste into the right tab"
+    let brief = try HarnessTaskBrief(
+        userRequest: request,
+        desiredOutcome: "Put the spoken text in the intended tab",
+        acceptanceCriteria: [
+            .init(id: "insert", statement: "The text appears in the intended tab without being sent")
+        ],
+        targetedQuestions: [
+            .init(
+                id: "where-to-paste",
+                prompt: "Where should Whisper Flow paste it?",
+                options: [
+                    .init(id: "focused", label: "Use the app or tab I am looking at"),
+                    .init(id: "choose", label: "Let me choose the app or tab")
+                ]
+            )
+        ],
+        milestones: [.init(id: "target", title: "Choose the destination")]
+    )
+    let session = try HarnessModelSession(
+        implementationArm: .astraLow,
+        settings: .init(maxCalls: 2, maxInputBytes: 80_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { _ in HarnessModelReply(text: try encodedBrief(brief)) }
+    let workflow = HarnessFeatureWorkflow(modelSession: session)
+
+    let planned = try await workflow.plan(
+        request: request,
+        repositorySummary: "The repository exposes browser tabs, but no single destination is selected by this request."
+    )
+
+    #expect(planned.targetedQuestions.map(\.id) == ["where-to-paste"])
+    #expect(workflow.unansweredQuestionIDs == Set(["where-to-paste"]))
+}
+
+@Test @MainActor
 func destinationGuardRecognizesNoviceWordingButNotGenericDestinations() {
     #expect(HarnessFeatureWorkflow.requestNeedsDestinationChoice(
         "Have Whisper Flow write this into the correct window"

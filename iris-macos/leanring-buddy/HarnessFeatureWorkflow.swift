@@ -779,7 +779,18 @@ final class HarnessFeatureWorkflow {
             || text.contains("how should iris choose")
         let namesSurface = text.contains("tab") || text.contains("app")
             || text.contains("browser") || text.contains("window")
-        return asksForChoice && namesSurface
+        if asksForChoice && namesSurface { return true }
+
+        // A novice-friendly planner may ask "Where should Whisper Flow paste
+        // it?" without repeating the words "tab" or "app". On a transfer
+        // request that is already a destination question; adding a second
+        // destination-selection card would waste one of the three bounded
+        // slots and make the user answer the same decision twice. Require a
+        // movement verb as well so an unrelated "where" question is not
+        // treated as destination coverage.
+        let movementWords = ["paste", "type", "send", "insert", "move", "transfer", "put", "write"]
+        return text.contains("where")
+            && movementWords.contains(where: text.contains)
     }
 
     private func normalizedAnswer(_ value: String) -> String {

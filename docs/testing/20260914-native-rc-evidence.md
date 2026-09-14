@@ -257,3 +257,8 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   3:43 PM and the catalog remained usable, providing native evidence for the
   refresh path and icon/catalog surface. This does not prove every published
   app has a valid guide or close the phone-device gate.
+- Mobile hub continuity commit `ba28ff2` persists the selected device target
+  across browser restarts, rejects invalid stored targets, and allows catalog
+  discovery when storage is unavailable. Its focused Node suite passed `19/19`.
+  This is code and browser-hub evidence only; signed physical iPhone install,
+  launch, restart, and data continuity remain unverified.

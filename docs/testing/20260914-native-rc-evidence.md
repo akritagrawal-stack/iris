@@ -1,3 +1,7 @@
+### 2026-09-14 source-picker fallback after legacy refusal
+
+The native guide exposed a usability gap: the source setup card was not reachable from the legacy guide's autopilot refusal. Iris now exposes **Choose source folder** directly in that refusal row whenever no binding exists, keeping the user on the same step and avoiding a dead end. The Test configuration rebuilt successfully and strict signing passed; the RC executable SHA-256 is `8031b8d34a80fc3ac26b0a7c41557c690725078a7f04a25fe51cf3120863b932`.
+
 ### 2026-09-14 native legacy autopilot gate
 
 Computer use on the updated RC reached Kneecap step 5 and tapped “Let Iris run it.” Iris now surfaced the actionable gate “Choose and prepare the reviewed source workspace before Iris runs this older guide.” The prior generic marketplace-disabled response is gone. No command ran and no user folder changed because no validated binding had been selected.

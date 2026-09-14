@@ -883,6 +883,7 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                   record.stagedPath == destination.path,
                   record.expectedOrigin == request.expectedOrigin,
                   record.expectedCommit == request.expectedCommit,
+                  record.state != .ready,
                   GuideSourceWorkspacePath.validateExistingOwnedDestination(
                       destination, within: root
                   ) else {
@@ -1019,7 +1020,7 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
         identity: GuideSourceWorkspaceIdentity,
         record: GuideSourceWorkspaceRecord
     ) async throws -> GuideSourceWorkspaceBinding {
-        guard [.staging, .cancelled, .failed, .ready].contains(record.state),
+        guard [.staging, .cancelled, .failed].contains(record.state),
               record.originalPath == identity.canonicalPath,
               record.stagedPath == URL(fileURLWithPath: record.stagedPath).standardizedFileURL.path else {
             throw GuideSourceWorkspacePreparationError.destinationNotOwned

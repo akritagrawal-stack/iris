@@ -671,7 +671,17 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                 ownedProjectsRoot: URL(fileURLWithPath: binding.stagedPath).deletingLastPathComponent()
             )
             let original = try await inspectIdentity(originalRequest)
-            guard original == binding.original else {
+            // The source checkout may already be dirty and can legitimately
+            // receive unrelated edits while the isolated worktree is being
+            // used. Isolation pins execution to the staged revision, so do
+            // not invalidate that safe binding merely because the original's
+            // porcelain or fingerprint changed. Keep its location, origin,
+            // revision, and Git common directory anchored.
+            guard original.canonicalPath == binding.original.canonicalPath,
+                  original.origin == binding.original.origin,
+                  original.head == binding.original.head,
+                  original.expectedCommitIsPresent,
+                  original.commonGitDirectory == binding.commonGitDirectory else {
                 throw GuideSourceWorkspacePreparationError.sourceRevisionMismatch(
                     expected: binding.original.head, observed: original.head
                 )

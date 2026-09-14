@@ -43,6 +43,15 @@ enum IrisTestFixtureSandbox {
 
         return MaintainSandbox.testProcessPolicy(
             scratchDirectoryPath: canonicalScratchPath,
+            // The fixture may run the same git/node/pnpm/cargo commands as Iris
+            // Test. These are read-only executable and dynamic-library roots;
+            // the writable boundary remains this one exact disposable clone
+            // plus the per-test scratch directory above.
+            additionalReadOnlyPaths: [
+                "/System", "/usr", "/bin", "/sbin", "/etc", "/private/etc",
+                "/private/var/select", "/private/var/db", "/opt/homebrew",
+                "/usr/local", "/Library/Developer", "/Applications/Xcode.app", "/dev",
+            ],
             repositoryIsRegistered: { candidate in
                 candidate == canonicalClonePath
             }

@@ -169,13 +169,19 @@ actor PublikCatalogAppDirectory: CatalogAppDirectorySource {
     }
 
     /// The directory omits platform fields, so read the published guide's
-    /// metadata. At most four requests run together, with one eight-second
+    /// metadata. At most eight requests run together, with one eight-second
     /// budget for all guide metadata. Misses remain unknown. Results, including
     /// unknowns, share the directory's session cache, not every panel refresh.
     private func resolvingMacCompatibility(
         for descriptors: [CatalogAppDescriptor]
     ) async -> [CatalogAppDescriptor] {
         guard !descriptors.isEmpty, !Task.isCancelled else { return descriptors }
+        // Compatibility is what lets a deliberate search distinguish a phone
+        // guide from a Mac app. Four concurrent reads routinely left entries
+        // near the end of the public catalog unresolved before the existing
+        // eight-second ceiling; eight keeps the same bounded deadline while
+        // letting the full small catalog make meaningful progress.
+        let maximumConcurrentGuideReads = 8
         let deadline = Date().addingTimeInterval(8)
         let apiBase = self.apiBase
         let urlSession = self.urlSession
@@ -208,7 +214,7 @@ actor PublikCatalogAppDirectory: CatalogAppDirectorySource {
                 }
             }
 
-            while nextIndex < min(4, descriptors.count) {
+            while nextIndex < min(maximumConcurrentGuideReads, descriptors.count) {
                 enqueue(nextIndex)
                 nextIndex += 1
             }

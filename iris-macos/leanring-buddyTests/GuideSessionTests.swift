@@ -24,7 +24,9 @@ struct GuideSessionTests {
     @Test func sourceWorkspaceContractDistinguishesPublishedLegacyPathsFromTheOwnedStructuralFixture() async throws {
         let guideService = try Self.guideServiceAnsweredByTheStub()
 
-        let legacy = GuideSessionController(guideService: guideService)
+        let legacy = try Self.makeController(
+            guideID: "legacy-source-contract", revision: 5, guideService: guideService
+        )
         await legacy.openGuide(
             slug: "legacy-source-contract", requestedVersion: 5,
             branchKeyFromDeepLink: "macos:ios", stepIndexFromDeepLink: nil
@@ -32,12 +34,20 @@ struct GuideSessionTests {
         #expect(legacy.guideOffersSourceWorkspaceSetup)
         #expect(legacy.guideNeedsPublisherWorkspaceMigration)
         #expect(!legacy.guideHasStructuralWorkspaceSteps)
-        legacy.startAutopilot()
-        #expect(!legacy.autopilotIsRunning)
-        #expect(legacy.autopilotBlockedExplanation?.contains("structural prepared-workspace") == true,
-                "the production start action must refuse legacy HOME-bound project commands")
+        // An admitted native fixture is deliberately allowed through the
+        // Iris-Test marketplace gate. The dedicated refusal test below pins
+        // that gate; this test keeps the source-shape contract separate from
+        // the fixture's explicit test-only execution admission.
+        if !IrisTestEnvironment.isEnabled {
+            legacy.startAutopilot()
+            #expect(!legacy.autopilotIsRunning)
+            #expect(legacy.autopilotBlockedExplanation?.contains("structural prepared-workspace") == true,
+                    "the production start action must refuse legacy HOME-bound project commands")
+        }
 
-        let structural = GuideSessionController(guideService: guideService)
+        let structural = try Self.makeController(
+            guideID: "prepared-source-contract", revision: 6, guideService: guideService
+        )
         await structural.openGuide(
             slug: "prepared-source-contract", requestedVersion: 6,
             branchKeyFromDeepLink: "macos:ios", stepIndexFromDeepLink: nil
@@ -175,12 +185,14 @@ struct GuideSessionTests {
         let progressDefaults = try #require(UserDefaults(suiteName: suiteName))
         defer { progressDefaults.removePersistentDomain(forName: suiteName) }
         let progressMemory = LastFollowedGuideMemory(userDefaults: progressDefaults)
-        func makeController() -> GuideSessionController {
-            let controller = GuideSessionController(guideService: guideService)
+        func makeController(revision: Int) throws -> GuideSessionController {
+            let controller = try Self.makeController(
+                guideID: "resume-contract", revision: revision, guideService: guideService
+            )
             controller.lastFollowedGuideMemory = progressMemory
             return controller
         }
-        let controller = makeController()
+        let controller = try makeController(revision: 2)
 
         await controller.openGuide(
             slug: "resume-contract",
@@ -198,7 +210,7 @@ struct GuideSessionTests {
 
         // Reopening the same guide at the same version puts the reader back
         // where they stopped rather than at the top.
-        let controllerReopeningTheSameGuide = makeController()
+        let controllerReopeningTheSameGuide = try makeController(revision: 2)
         await controllerReopeningTheSameGuide.openGuide(
             slug: "resume-contract",
             requestedVersion: 2,
@@ -220,7 +232,7 @@ struct GuideSessionTests {
         // `Test6ProgressDurabilityReproTests` covers the other half — a version
         // whose steps genuinely changed — which this stub cannot express,
         // because it serves identical steps for every version of a slug.
-        let controllerOpeningTheNewVersion = makeController()
+        let controllerOpeningTheNewVersion = try makeController(revision: 3)
         await controllerOpeningTheNewVersion.openGuide(
             slug: "resume-contract",
             requestedVersion: 3,
@@ -269,8 +281,7 @@ struct GuideSessionTests {
     /// asks to surface the card the moment a guide starts opening; this pins
     /// that the picker's exact call fires that request.
     @Test func openingAGuideFromThePickerAsksToSurfaceItsCard() async throws {
-        let guideService = try Self.guideServiceAnsweredByTheStub()
-        let controller = GuideSessionController(guideService: guideService)
+        let controller = try Self.makeController(guideID: "lunara", revision: 2)
 
         var timesTheGuideCardWasAskedToSurface = 0
         controller.surfaceTheGuideCardAtTheEye = {
@@ -288,8 +299,7 @@ struct GuideSessionTests {
     /// from an `iris://guide/…` link is not silently loaded into a hidden bar
     /// either — the second blocker shared the first's root cause.
     @Test func openingAGuideFromADeepLinkAlsoAsksToSurfaceItsCard() async throws {
-        let guideService = try Self.guideServiceAnsweredByTheStub()
-        let controller = GuideSessionController(guideService: guideService)
+        let controller = try Self.makeController(guideID: "lunara", revision: 2)
 
         var timesTheGuideCardWasAskedToSurface = 0
         controller.surfaceTheGuideCardAtTheEye = {
@@ -315,8 +325,9 @@ struct GuideSessionTests {
         var sentencesSeen: [String] = []
 
         for (slug, requestedVersion) in Self.slugsThatFailAndTheVersionToAskFor {
-            let guideService = try Self.guideServiceAnsweredByTheStub()
-            let controller = GuideSessionController(guideService: guideService)
+            let controller = try Self.makeController(
+                guideID: slug, revision: requestedVersion ?? 2
+            )
             await controller.openGuide(
                 slug: slug,
                 requestedVersion: requestedVersion,
@@ -354,8 +365,7 @@ struct GuideSessionTests {
     // MARK: - Unsupported device pairs
 
     @Test func anUnsupportedDevicePairExplainsItselfAndOffersNoSteps() async throws {
-        let guideService = try Self.guideServiceAnsweredByTheStub()
-        let controller = GuideSessionController(guideService: guideService)
+        let controller = try Self.makeController(guideID: "lunara", revision: 2)
 
         await controller.openGuide(
             slug: "lunara",
@@ -389,8 +399,7 @@ struct GuideSessionTests {
     // MARK: - Links Iris is not allowed to open
 
     @Test func aStepWhoseLinkHostIsNotAllowlistedReportsTheActionAsUnavailable() async throws {
-        let guideService = try Self.guideServiceAnsweredByTheStub()
-        let controller = GuideSessionController(guideService: guideService)
+        let controller = try Self.makeController(guideID: "blocked-link", revision: 1)
 
         await controller.openGuide(
             slug: "blocked-link",
@@ -436,8 +445,7 @@ struct GuideSessionTests {
     // MARK: - Navigation
 
     @Test func stepNavigationClampsAtBothEnds() async throws {
-        let guideService = try Self.guideServiceAnsweredByTheStub()
-        let controller = GuideSessionController(guideService: guideService)
+        let controller = try Self.makeController(guideID: "lunara", revision: 2)
 
         await controller.openGuide(
             slug: "lunara",
@@ -487,8 +495,7 @@ struct GuideSessionTests {
     // MARK: - Step rendering
 
     @Test func aCommandStepOffersCopyAndThenIRanIt() async throws {
-        let guideService = try Self.guideServiceAnsweredByTheStub()
-        let controller = GuideSessionController(guideService: guideService)
+        let controller = try Self.makeController(guideID: "lunara", revision: 2)
 
         await controller.openGuide(
             slug: "lunara",
@@ -528,8 +535,7 @@ struct GuideSessionTests {
     }
 
     @Test func aCheckStepListsItsToolsWithoutRunningAnythingOnArrival() async throws {
-        let guideService = try Self.guideServiceAnsweredByTheStub()
-        let controller = GuideSessionController(guideService: guideService)
+        let controller = try Self.makeController(guideID: "tool-check", revision: 1)
 
         await controller.openGuide(
             slug: "tool-check",
@@ -634,6 +640,42 @@ struct GuideSessionTests {
             apiBase: GuideService.defaultAPIBase,
             urlSession: URLSession(configuration: stubbedSessionConfiguration),
             userDefaults: isolatedUserDefaults
+        )
+    }
+
+    /// Opens a stubbed guide through the same Iris-Test admission path used by
+    /// the native repro suites. The fixture is disposable and pinned to the
+    /// guide identity so tests cannot accidentally exercise a live marketplace
+    /// guide or a user's real workspace.
+    static func makeController(
+        guideID: String,
+        revision: Int,
+        guideService: GuideService? = nil
+    ) throws -> GuideSessionController {
+        let repository: (owner: String, name: String) = switch guideID {
+        case "legacy-source-contract", "prepared-source-contract":
+            ("example", guideID)
+        case "lunara", "resume-contract":
+            ("Blueturboguy07", "lunara")
+        default:
+            ("Blueturboguy07", guideID)
+        }
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/iris-native-guide-fixture-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let origin = try #require(
+            GuideSourceWorkspaceOrigin.parse("https://github.com/\(repository.owner)/\(repository.name)")
+        )
+        let fixture = try #require(GuideOfflineNativeFixture(
+            guideID: guideID,
+            guideRevision: revision,
+            expectedOrigin: origin,
+            expectedCommit: "0123456789abcdef0123456789abcdef01234567",
+            workspaceRoot: root
+        ))
+        return GuideSessionController(
+            guideService: try guideService ?? Self.guideServiceAnsweredByTheStub(),
+            offlineNativeFixture: fixture
         )
     }
 }
@@ -796,7 +838,7 @@ final class StubbedGuideURLProtocol: URLProtocol {
           "status": "pilot",
           "sourceOwner": "Blueturboguy07",
           "sourceRepo": "\(slug)",
-          "sourceCommit": null,
+          "sourceCommit": "0123456789abcdef0123456789abcdef01234567",
           "outputType": "desktop_app",
           "estimatedMinutes": 12,
           "readmeSectionIds": [],
@@ -850,7 +892,7 @@ final class StubbedGuideURLProtocol: URLProtocol {
           "status": "pilot",
           "sourceOwner": "Blueturboguy07",
           "sourceRepo": "lunara",
-          "sourceCommit": null,
+          "sourceCommit": "0123456789abcdef0123456789abcdef01234567",
           "outputType": "mobile_app",
           "estimatedMinutes": 45,
           "readmeSectionIds": [],
@@ -915,7 +957,7 @@ final class StubbedGuideURLProtocol: URLProtocol {
           "status": "pilot",
           "sourceOwner": "Blueturboguy07",
           "sourceRepo": "blocked-link",
-          "sourceCommit": null,
+          "sourceCommit": "0123456789abcdef0123456789abcdef01234567",
           "outputType": "desktop_app",
           "estimatedMinutes": 5,
           "readmeSectionIds": [],
@@ -952,7 +994,7 @@ final class StubbedGuideURLProtocol: URLProtocol {
           "status": "pilot",
           "sourceOwner": "Blueturboguy07",
           "sourceRepo": "tool-check",
-          "sourceCommit": null,
+          "sourceCommit": "0123456789abcdef0123456789abcdef01234567",
           "outputType": "local_web",
           "estimatedMinutes": 10,
           "readmeSectionIds": [],

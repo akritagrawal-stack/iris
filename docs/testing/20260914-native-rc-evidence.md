@@ -36,6 +36,12 @@ isolated bundle identity), strict code-signature verification passed, and the
 native Settings panel relaunched successfully. The executable SHA-256 is
 `5b6a6ca93aaa6bbaf1bd915c9e90238a5d551504e46d113b2699628e9438c8f3`.
 
+The first native run on this refreshed RC used the frozen NitroAI transfer
+request. After 120 seconds with no provider progress, the new ceiling ended it
+and the usage record settled one call as failed with unknown product outcome;
+no source or clone files changed. This validates the shorter bound but does not
+yet satisfy the provider-backed feature-delivery gate.
+
 ### 2026-09-14 bounded complex transfer attempt
 
 The signed RC was exercised through the native UI with an explicit **Feature** route. The request was intentionally scoped to the existing NitroAI transfer design: add Settings export/import controls, preserve folder and note identity, keep both copies on same-ID collisions, reject malformed or dangling references atomically, and run the focused tests/build.

@@ -1554,8 +1554,6 @@ final class MaintainTierCFixer {
                 // repair round, and earns no final verification credit.
                 if verificationRepairRoundsRemaining < Self.maximumVerificationRepairRoundsPerRun,
                    !hasCheckedTheFirstRepairWrite, replyChangedSource,
-                   let reviewBudget = provider as? HarnessReviewBudgetProviding,
-                   !reviewBudget.shouldYieldEditingToVerification,
                    let testCommand = verificationCommandsThisRunWillBeJudgedBy.testCommand {
                     if cancellationCheck?() == true { return await revertEverythingForAReaderStop() }
                     hasCheckedTheFirstRepairWrite = true

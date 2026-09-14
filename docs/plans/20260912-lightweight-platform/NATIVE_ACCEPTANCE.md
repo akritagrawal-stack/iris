@@ -345,11 +345,11 @@ checkout, retry after a surfaced gate, ownership release, and missing-tool
 self-install through completion. This is strong install and recovery evidence;
 it does not replace the pending native permission and device handoff journey.
 
-## Headless checkpoint check requires repair, September 14
+## Headless checkpoint check repaired, September 14
 
-The harness-feature-host `--checks` run reached the real repair-checkpoint
-fixture but stopped at `the first successful repair write did not receive the
-early suite checkpoint`. The earlier inert checks passed. This is retained as
-an unresolved harness-check failure; the local Swift package suite remains
-green, but the headless checkpoint host cannot be called fully passing until
-its budget/repair scheduling expectation is reconciled.
+The early repair checkpoint is a local diagnostic and does not spend a model
+call. Its gate now runs after the first repair write even when the model reserve
+has been reached; the next model request still yields to the protected review
+capacity. The full harness-feature-host `--checks` run now passes, including the
+repair checkpoint, cancellation, retention, review reserve, freshness, and
+candidate-record checks.

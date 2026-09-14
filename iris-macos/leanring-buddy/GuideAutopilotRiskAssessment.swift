@@ -195,9 +195,12 @@ nonisolated enum GuideAutopilotRiskAssessment {
     /// and this must not re-assess it in a laxer way than the ask did.
     static func approveAfterAReaderTap(
         _ command: String,
-        inWorkingDirectory workingDirectory: String? = nil
+        inWorkingDirectory workingDirectory: String? = nil,
+        autonomyGranted: Bool = AutopilotAutonomyGrant.shared.isGranted
     ) -> GuideAutopilotApprovedCommand? {
-        switch assess(command, inWorkingDirectory: workingDirectory) {
+        switch assess(
+            command, inWorkingDirectory: workingDirectory, autonomyGranted: autonomyGranted
+        ) {
         case .runsWithoutAsking, .needsAConfirmTap:
             return GuideAutopilotApprovedCommand(text: command)
         case .refusedOutright:

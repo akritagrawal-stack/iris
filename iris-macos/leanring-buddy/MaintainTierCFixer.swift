@@ -1213,7 +1213,7 @@ final class MaintainTierCFixer {
             let reply: String
             do {
                 modelRequestsAttemptedThisRound += 1
-                (provider as? HarnessPhaseAwareModelProviding)?.setHarnessPhase(
+                (provider as? MaintainRunPhaseProviding)?.setRunPhase(
                     verificationRepairRoundsRemaining < Self.maximumVerificationRepairRoundsPerRun ? .repair : .edit
                 )
                 reply = try await provider.respond(
@@ -2160,7 +2160,7 @@ final class MaintainTierCFixer {
                     repositoryContext: repositoryContext
                 )
                 let verdict: AdversarialVerdict
-                (provider as? HarnessPhaseAwareModelProviding)?.setHarnessPhase(.review)
+                (provider as? MaintainRunPhaseProviding)?.setRunPhase(.review)
                 if let reply = try? await provider.respond(
                     systemPrompt: review.system
                         + (finalReviewInstructions.map { "\n" + $0 }

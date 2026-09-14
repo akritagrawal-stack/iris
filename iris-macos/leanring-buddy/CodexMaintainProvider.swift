@@ -487,6 +487,8 @@ nonisolated struct CodexProcessAttemptContext: Equatable, Sendable {
     let attemptID: UUID
     let model: String?
     let reasoningEffort: CodexReasoningEffort?
+    let task: HarnessRunTaskKind
+    let submittedInputBytes: UInt64
 }
 
 /// The bounded lifecycle result reported after one Codex process attempt.
@@ -726,7 +728,7 @@ private nonisolated final class CodexProcessTerminationWaiter: @unchecked Sendab
 // MARK: - The provider
 
 @MainActor
-final class CodexMaintainProvider: MaintainModelProviding {
+final class CodexMaintainProvider: MaintainModelProviding, MaintainRunPhaseProviding {
     let displayName = "Codex (your ChatGPT login)"
     let identifier = "codex"
     var requestedModelDescription: String { CodexEditModelSelection.requestedModelLabel(model) }
@@ -737,6 +739,7 @@ final class CodexMaintainProvider: MaintainModelProviding {
     private let reasoningEffort: CodexReasoningEffort?
     private let attemptObserver: CodexProcessAttemptObserver?
     private let maximumEmptyReplyRetriesOverride: Int?
+    private var runPhase: HarnessRunTaskKind
 
     /// How long one step may take before Iris gives up on it. Generous: a Tier C
     /// step can carry a large context, and a reasoning model can take a while.
@@ -773,13 +776,15 @@ final class CodexMaintainProvider: MaintainModelProviding {
         reasoningEffort: CodexReasoningEffort? = nil,
         webSearchEnabled: Bool = true,
         attemptObserver: CodexProcessAttemptObserver? = nil,
-        maximumEmptyReplyRetriesOverride: Int? = nil
+        maximumEmptyReplyRetriesOverride: Int? = nil,
+        runPhase: HarnessRunTaskKind = .edit
     ) {
         self.model = model
         self.reasoningEffort = reasoningEffort
         self.webSearchEnabled = webSearchEnabled
         self.attemptObserver = attemptObserver
         self.maximumEmptyReplyRetriesOverride = maximumEmptyReplyRetriesOverride
+        self.runPhase = runPhase
     }
 
     var isAvailable: Bool { CodexCLILogin.currentState().isUsable }
@@ -815,6 +820,9 @@ final class CodexMaintainProvider: MaintainModelProviding {
             systemPrompt: systemPrompt, conversation: conversation, webSearchEnabled: webSearchEnabled
         )
         let attachedImages = conversation.compactMap { $0.attachedImagePNGData }
+        let submittedInputBytes = Self.submittedInputByteCount(
+            promptText: promptText, attachedImages: attachedImages
+        )
 
         return try await Self.runCodexExec(
             codexBinaryPath: codexBinaryPath,
@@ -825,8 +833,26 @@ final class CodexMaintainProvider: MaintainModelProviding {
             timeoutSeconds: Self.stepTimeoutSeconds,
             reasoningEffort: reasoningEffort,
             maximumEmptyReplyRetriesOverride: maximumEmptyReplyRetriesOverride,
-            attemptObserver: attemptObserver
+            attemptObserver: attemptObserver,
+            runPhase: runPhase,
+            submittedInputBytes: submittedInputBytes
         )
+    }
+
+    func setRunPhase(_ phase: HarnessRunTaskKind) {
+        runPhase = phase
+    }
+
+    private nonisolated static func submittedInputByteCount(
+        promptText: String, attachedImages: [Data]
+    ) -> UInt64 {
+        var total = UInt64(promptText.utf8.count)
+        for image in attachedImages {
+            let (next, overflow) = total.addingReportingOverflow(UInt64(image.count))
+            if overflow { return .max }
+            total = next
+        }
+        return total
     }
 
     // MARK: - Running the process
@@ -871,7 +897,9 @@ final class CodexMaintainProvider: MaintainModelProviding {
         // Harness callers can set this to 0 when their outer ledger owns the
         // retry budget. Nil preserves the production retry ladder.
         maximumEmptyReplyRetriesOverride: Int? = nil,
-        attemptObserver: CodexProcessAttemptObserver? = nil
+        attemptObserver: CodexProcessAttemptObserver? = nil,
+        runPhase: HarnessRunTaskKind = .edit,
+        submittedInputBytes: UInt64 = 0
     ) async throws -> String {
         let maximumEmptyReplyRetries = maximumEmptyReplyRetriesOverride
             ?? Self.maximumEmptyReplyRetriesPerStep
@@ -886,7 +914,8 @@ final class CodexMaintainProvider: MaintainModelProviding {
         while true {
             try Task.checkCancellation()
             let attemptContext = CodexProcessAttemptContext(
-                attemptID: UUID(), model: model, reasoningEffort: reasoningEffort
+                attemptID: UUID(), model: model, reasoningEffort: reasoningEffort,
+                task: runPhase, submittedInputBytes: submittedInputBytes
             )
             if let beforeAttempt = attemptObserver?.beforeAttempt {
                 try await beforeAttempt(attemptContext)

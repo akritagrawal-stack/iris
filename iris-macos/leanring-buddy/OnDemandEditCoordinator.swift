@@ -659,6 +659,11 @@ final class OnDemandEditCoordinator: ObservableObject {
     private let makeHarnessWorkflow: (() throws -> HarnessFeatureWorkflow)?
     private let editReadiness: @MainActor () -> OnDemandEditReadiness
     private var harnessWorkflow: HarnessFeatureWorkflow?
+    /// The ordinary app's in-memory Codex accounting for the current request.
+    /// It is deliberately separate from the Iris Test comparison ledger and is
+    /// never persisted as a second store.
+    private var normalCodexUsage: CodexRunUsageAccounting?
+    @Published private(set) var normalCodexRunSnapshot: HarnessRunLedgerSnapshot?
     @Published private var editTask: Task<Void, Never>?
     private var activeEditRunID: UUID?
     /// Set only for the current Test feature run's native-review retention
@@ -759,6 +764,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         _ scrubbedRequest: String,
         _ clonePath: String?
     ) async -> FeatureEditRequestProbeVerdict
+    private let hasInjectedProbeRequestTriggers: Bool
 
     /// Runs the actual on-demand edit — the jailed loop + verify + commit — and
     /// returns the engine's result. Injected so the whole machine is testable
@@ -780,6 +786,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         _ additionalPromptSections: [String],
         _ manifestChangeApproval: @escaping MaintainTierCManifestChangeApproval
     ) async -> MaintainOnDemandEditResult
+    private let hasInjectedOnDemandEditPerformer: Bool
 
     /// Gathers the runtime evidence for a picked app right as the run starts —
     /// a screenshot of the app's window and a scrubbed tail of its recent
@@ -1066,7 +1073,9 @@ final class OnDemandEditCoordinator: ObservableObject {
             return .ready
         }
         self.topRequestsForApp = topRequestsForApp
+        self.hasInjectedProbeRequestTriggers = probeRequestTriggers != nil
         self.probeRequestTriggers = probeRequestTriggers ?? Self.defaultProbeRequestTriggers
+        self.hasInjectedOnDemandEditPerformer = performOnDemandEdit != nil
         self.performOnDemandEdit = performOnDemandEdit ?? Self.defaultPerformOnDemandEdit
         self.deliveredUndoRecoveryStore = deliveredUndoRecoveryStore ?? DeliveredEditUndoRecoveryStore()
         self.appDeliveryReceiptStore = appDeliveryReceiptStore ?? AppDeliveryReceiptStore()
@@ -1234,7 +1243,20 @@ final class OnDemandEditCoordinator: ObservableObject {
     static let defaultProbeRequestTriggers: (
         String, String?
     ) async -> FeatureEditRequestProbeVerdict = { scrubbedRequest, clonePath in
-        guard let provider = MaintainModelProviderResolver.firstAvailable() else {
+        await productionProbeRequestTriggers(
+            scrubbedRequest, clonePath, codexAttemptObserver: nil
+        )
+    }
+
+    private static func productionProbeRequestTriggers(
+        _ scrubbedRequest: String,
+        _ clonePath: String?,
+        codexAttemptObserver: CodexProcessAttemptObserver?
+    ) async -> FeatureEditRequestProbeVerdict {
+        guard let provider = MaintainModelProviderResolver.firstAvailable(
+            codexAttemptObserver: codexAttemptObserver,
+            codexRunPhase: .intake
+        ) else {
             return .allQuiet
         }
         let repoMapSummary = clonePath.map {
@@ -1299,8 +1321,18 @@ final class OnDemandEditCoordinator: ObservableObject {
         }
     }
 
-    static let defaultPerformOnDemandEdit: OnDemandEditPerformer = { resolvedClonePath, appSlug, appStack, changeId, scrubbedRequest, kind, progressHandler, cancellationCheck, runtimeEvidence, additionalPromptSections, manifestChangeApproval in
-        guard let provider = MaintainModelProviderResolver.firstAvailable() else {
+    static let defaultPerformOnDemandEdit: OnDemandEditPerformer = productionPerformer(
+        codexAttemptObserver: nil
+    )
+
+    private static func productionPerformer(
+        codexAttemptObserver: CodexProcessAttemptObserver?
+    ) -> OnDemandEditPerformer {
+        { resolvedClonePath, appSlug, appStack, changeId, scrubbedRequest, kind, progressHandler, cancellationCheck, runtimeEvidence, additionalPromptSections, manifestChangeApproval in
+        guard let provider = MaintainModelProviderResolver.firstAvailable(
+            codexAttemptObserver: codexAttemptObserver,
+            codexRunPhase: .edit
+        ) else {
             return .notEligible(reason: "no model key is available for the edit engine")
         }
         let fixer = MaintainTierCFixer(provider: provider)
@@ -1325,6 +1357,98 @@ final class OnDemandEditCoordinator: ObservableObject {
                 OnDemandEditRunLog.priorAttemptsDidNotCureTheComplaint(
                     forAppSlug: appSlug, request: scrubbedRequest, kind: kind)
         )
+        }
+    }
+
+    private static func normalCodexUsageSettings() -> HarnessRunLedgerSettings {
+        // The ordinary engine has three 500-step rounds (initial plus two
+        // verification repairs), up to three intake calls, and a small review
+        // tail. Each `codex exec` may make its existing three empty-reply
+        // retries. This is an accounting ceiling derived from existing limits,
+        // not a new model-call budget.
+        let logicalCalls = UInt64(MaintainTierCFixer.runawayStepCeiling)
+            * UInt64(MaintainTierCFixer.maximumVerificationRepairRoundsPerRun + 1)
+            + 6
+        let physicalCalls = logicalCalls
+            * UInt64(CodexMaintainProvider.maximumEmptyReplyRetriesPerStep + 1)
+        return try! HarnessRunLedgerSettings(maxCalls: physicalCalls, maxInputBytes: UInt64.max)
+    }
+
+    private func beginNormalCodexUsage() -> CodexRunUsageAccounting? {
+        guard makeHarnessWorkflow == nil else { return nil }
+        let usage = CodexRunUsageAccounting(settings: Self.normalCodexUsageSettings())
+        normalCodexUsage = usage
+        normalCodexRunSnapshot = usage.snapshot
+        return usage
+    }
+
+    private func normalCodexAttemptObserver(
+        for usage: CodexRunUsageAccounting
+    ) -> CodexProcessAttemptObserver {
+        CodexProcessAttemptObserver(
+            beforeAttempt: { [weak self, usage] context in
+                try await MainActor.run {
+                    try usage.admit(
+                        attemptID: context.attemptID,
+                        requestedModel: context.model,
+                        requestedEffort: context.reasoningEffort?.rawValue,
+                        task: context.task,
+                        submittedInputBytes: context.submittedInputBytes
+                    )
+                    if self?.normalCodexUsage === usage {
+                        self?.normalCodexRunSnapshot = usage.snapshot
+                    }
+                }
+            },
+            afterAttempt: { [weak self, usage] result in
+                await MainActor.run {
+                    let outcome: HarnessCallOutcome
+                    switch result.outcome {
+                    case .succeeded: outcome = .succeeded
+                    case .emptyReply, .failed: outcome = .failed
+                    case .cancelled: outcome = .cancelled
+                    }
+                    func count(_ value: Int?) -> UInt64? {
+                        guard let value, value >= 0 else { return nil }
+                        return UInt64(value)
+                    }
+                    let measuredUsage = result.usage.map { usage in
+                        HarnessMeasuredUsage(
+                            inputTokens: count(usage.inputTokens),
+                            cachedInputTokens: count(usage.cachedInputTokens),
+                            outputTokens: count(usage.outputTokens),
+                            reasoningOutputTokens: count(usage.reasoningOutputTokens)
+                        )
+                    }
+                    usage.settle(
+                        attemptID: result.context.attemptID,
+                        outcome: outcome,
+                        usage: measuredUsage
+                    )
+                    if self?.normalCodexUsage === usage {
+                        self?.normalCodexRunSnapshot = usage.snapshot
+                    }
+                }
+            }
+        )
+    }
+
+    private func finishNormalCodexUsageIfCurrent(
+        _ usage: CodexRunUsageAccounting?, reason: HarnessRunStopReason
+    ) {
+        guard let usage else { return }
+        let didFinish = usage.finish(reason: reason)
+        guard normalCodexUsage === usage else { return }
+        normalCodexRunSnapshot = usage.snapshot
+        if didFinish, usage.snapshot.admittedCallCount > 0 {
+            runLog?.record(usage.summary)
+        }
+    }
+
+    private func recordNormalCodexUsageCheckpointIfCurrent() {
+        guard let usage = normalCodexUsage,
+              usage.snapshot.admittedCallCount > 0 else { return }
+        runLog?.record("usage checkpoint: " + usage.summary)
     }
 
     /// The production automated symptom re-check: resolve the reader's OWN
@@ -1501,6 +1625,8 @@ final class OnDemandEditCoordinator: ObservableObject {
         isAssessingRequest = true
         statusLine = nil
         let clonePathForProbe = provenanceClonePath(forAppSlug: activeAppSlug ?? "")
+        let normalUsage = beginNormalCodexUsage()
+        let normalObserver = normalUsage.map { normalCodexAttemptObserver(for: $0) }
 
         if let makeHarnessWorkflow {
             do {
@@ -1574,7 +1700,14 @@ final class OnDemandEditCoordinator: ObservableObject {
 
         requestProbeTask = Task { [weak self] in
             guard let self else { return }
-            let probeVerdict = await self.probeRequestTriggers(scrubbed, clonePathForProbe)
+            let probeVerdict: FeatureEditRequestProbeVerdict
+            if self.hasInjectedProbeRequestTriggers {
+                probeVerdict = await self.probeRequestTriggers(scrubbed, clonePathForProbe)
+            } else {
+                probeVerdict = await Self.productionProbeRequestTriggers(
+                    scrubbed, clonePathForProbe, codexAttemptObserver: normalObserver
+                )
+            }
             guard !Task.isCancelled else { return }
             self.advanceFromDescribe(
                 afterProbeGeneration: probeGeneration, verdict: probeVerdict, kind: kind
@@ -2046,6 +2179,7 @@ final class OnDemandEditCoordinator: ObservableObject {
             kindLabel: kind == .feature ? "feature" : "bug fix",
             scrubbedRequest: scrubbed
         )
+        recordNormalCodexUsageCheckpointIfCurrent()
 
         let runID = UUID()
         activeEditRunID = runID
@@ -2081,7 +2215,11 @@ final class OnDemandEditCoordinator: ObservableObject {
         workflow: HarnessFeatureWorkflow?
     ) async {
         guard activeEditRunID == runID else { return }
+        let normalUsage = workflow == nil ? normalCodexUsage : nil
         defer {
+            if workflow == nil {
+                self.finishNormalCodexUsageIfCurrent(normalUsage, reason: .failed)
+            }
             if self.activeEditRunID == runID, self.harnessWorkflow === workflow {
                 self.finishHarnessWorkflowIfCurrent(workflow, reason: .failed)
             }
@@ -2330,7 +2468,13 @@ final class OnDemandEditCoordinator: ObservableObject {
                 self.harnessBehaviorAssessment = assessment
             }
         } else {
-            performer = performOnDemandEdit
+            if let normalUsage, !hasInjectedOnDemandEditPerformer {
+                performer = Self.productionPerformer(
+                    codexAttemptObserver: normalCodexAttemptObserver(for: normalUsage)
+                )
+            } else {
+                performer = performOnDemandEdit
+            }
         }
         guard continuePreparingEdit(runID: runID, resolvedClonePath: resolvedClonePath) else { return }
         let result = await performer(
@@ -2359,6 +2503,11 @@ final class OnDemandEditCoordinator: ObservableObject {
         if let workflow {
             finishHarnessWorkflowIfCurrent(
                 workflow,
+                reason: Self.harnessStopReason(for: result, readerStopped: readerAskedToStopTheRun)
+            )
+        } else {
+            finishNormalCodexUsageIfCurrent(
+                normalUsage,
                 reason: Self.harnessStopReason(for: result, readerStopped: readerAskedToStopTheRun)
             )
         }
@@ -5387,6 +5536,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         guard activeEditRunID == runID, phase == .running else { return false }
         guard readerAskedToStopTheRun || Task.isCancelled else { return true }
         finishHarnessWorkflowIfCurrent(harnessWorkflow, reason: .userStopped)
+        finishNormalCodexUsageIfCurrent(normalCodexUsage, reason: .userStopped)
         let reason = "Stopped before editing. Your app and source files were not changed."
         runLog?.finish(outcome: "stopped during preparation; no editor call")
         runLog = nil
@@ -5657,6 +5807,9 @@ final class OnDemandEditCoordinator: ObservableObject {
 
     private func resetInFlightState() {
         finishHarnessWorkflowIfCurrent(harnessWorkflow, reason: .cancelled)
+        finishNormalCodexUsageIfCurrent(normalCodexUsage, reason: .cancelled)
+        normalCodexUsage = nil
+        normalCodexRunSnapshot = nil
         pendingUnverifiedTestDeliveryProject = nil
         failedReviewRetentionAttempted = false
         failedReviewRetentionSucceeded = false

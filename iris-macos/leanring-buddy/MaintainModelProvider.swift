@@ -154,6 +154,13 @@ protocol MaintainModelProviding: Sendable {
     ) async throws -> String
 }
 
+/// Labels a request with the engine stage that caused it. This cannot alter a
+/// provider choice or route; it is solely for per-attempt accounting.
+@MainActor
+protocol MaintainRunPhaseProviding {
+    func setRunPhase(_ phase: HarnessRunTaskKind)
+}
+
 extension MaintainModelProviding {
     var requestedModelDescription: String { "Provider default (model not reported)" }
     var routeDescription: String { "\(displayName) · \(requestedModelDescription)" }
@@ -387,8 +394,14 @@ enum MaintainModelProviderResolver {
     /// reader can disconnect the provider they picked, and a preference for
     /// something no longer connected must fall through instead of failing.
     @MainActor
-    static func firstAvailable() -> MaintainModelProviding? {
-        let available = allAvailable()
+    static func firstAvailable(
+        codexAttemptObserver: CodexProcessAttemptObserver? = nil,
+        codexRunPhase: HarnessRunTaskKind = .edit
+    ) -> MaintainModelProviding? {
+        let available = allAvailable(
+            codexAttemptObserver: codexAttemptObserver,
+            codexRunPhase: codexRunPhase
+        )
         if let preferredProviderIdentifier,
            let chosen = available.first(where: { $0.identifier == preferredProviderIdentifier }) {
             return chosen
@@ -400,7 +413,10 @@ enum MaintainModelProviderResolver {
     /// The panel uses this to say what Tier C would run on without committing
     /// to a run, and the parity harness uses it to enumerate what to compare.
     @MainActor
-    static func allAvailable() -> [MaintainModelProviding] {
+    static func allAvailable(
+        codexAttemptObserver: CodexProcessAttemptObserver? = nil,
+        codexRunPhase: HarnessRunTaskKind = .edit
+    ) -> [MaintainModelProviding] {
         // CODEX LEADS, changed 2026-08-27, and the reason is measurement rather
         // than taste. On the six-task edit battery — real repositories, real
         // defects, each graded by a suite held outside the repo that the agent
@@ -423,7 +439,11 @@ enum MaintainModelProviderResolver {
         // picker in the composer writes `preferredProviderIdentifier`, and a
         // stored choice beats this order.
         let candidates: [MaintainModelProviding] = [
-            CodexMaintainProvider(model: CodexEditModelSelection.selectedModel()),
+            CodexMaintainProvider(
+                model: CodexEditModelSelection.selectedModel(),
+                attemptObserver: codexAttemptObserver,
+                runPhase: codexRunPhase
+            ),
             AnthropicMaintainProvider(),
             OpenAIMaintainProvider(),
         ]

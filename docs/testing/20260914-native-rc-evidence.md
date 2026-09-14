@@ -27,14 +27,20 @@ are tied to the signed client, not merely the display name.
   must be exercised through regular Iris. This is an explicit environment
   boundary, not evidence that spatial guidance works.
 
-## Remaining native evidence
+## Retention fix and live verification
 
-The cleanup preview returned: `No cleanup preview is available. No data was
-changed. saved backup inventory is incomplete or corrupt`. This is a safe
-refusal, not a successful cleanup result. The current receipt-owned cleanup
-scope contains the newer `edit-delivery-backups` directories but no receipt
-entries, while older `installation-backup-*` bundles are outside that scope.
-No files were removed.
+The first RC run returned `No cleanup preview is available` because Finder's
+`.DS_Store` inside the backup namespace was classified as corrupt inventory.
+The retention validator now ignores only that harmless metadata file and still
+fails closed on all other unexpected files. The focused harness suite passed
+159/159 after the change. A fresh signed RC then produced live read-only
+previews for both NitroAI and PlantGPT while their apps were stopped:
+`No eligible obsolete restored backups ... Logical bytes: 0. Allocated bytes:
+0`. No files were removed.
+
+The current receipt-owned cleanup scope contains newer `edit-delivery-backups`
+records; older `installation-backup-*` bundles are outside that receipt-owned
+scope and remain untouched.
 
 Spatial pointing, a delivered complex transfer through the live composer, and
 physical iPhone install/open/restart still require their respective live

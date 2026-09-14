@@ -185,3 +185,13 @@ saved chat history` action. The current fixture contains many repeated legacy
 storage/retention concern observable in the UI. I did not invoke the destructive
 clear action. This verifies discoverability and separation of new chat/history;
 it does not prove the full versioned app-bundle lifecycle or cleanup deletion.
+
+## Integrated macOS release-candidate build, September 14
+
+`xcodebuild -project iris-macos/leanring-buddy.xcodeproj -scheme 'Iris Test'
+-destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build` completed with
+`BUILD SUCCEEDED`. The artifact was copied to
+`/Users/Shared/Iris-RC-20260914/Iris Test.app`; executable SHA-256 is recorded
+in `ARTIFACT_SHA256.txt`. This is the named integrated macOS release candidate
+for further native UI checks. It is unsigned and therefore does not establish
+phone installation or production distribution readiness.

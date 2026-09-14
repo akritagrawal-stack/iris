@@ -47,6 +47,16 @@ of copied project dependencies, 713 MB of delivery backups, and 258 MB of
 command scratch. The cleanup control only owns receipt-backed app bundles; it
 does not silently delete project dependencies or scratch data.
 
+## Kneecap catalog boundary
+
+After `Refresh catalog`, the signed RC's deliberate search showed `kneecap`
+with both `Guide available` and `Install with Iris`. Selecting that action was
+then refused with the explicit Test-only message that marketplace guides must
+use regular Iris. The public guide endpoint is live and identifies commit
+`fc48ba487a1e0d0cd10b30d6600acd2895ffdbed`; the local `/Users/akrit/kneecap`
+checkout is detached at that commit but has a modified `bun.lock` and two
+untracked `.DS_Store` files. No reset, stash, deletion, or install was done.
+
 Spatial pointing, a delivered complex transfer through the live composer, and
 physical iPhone install/open/restart still require their respective live
 acceptance runs. Offline suites remain separate evidence.

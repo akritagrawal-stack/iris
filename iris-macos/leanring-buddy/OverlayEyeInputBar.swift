@@ -830,6 +830,28 @@ struct OverlayEyeInputBarView: View {
                             .font(DS.Typography.caption)
                             .foregroundColor(DS.Colors.amber)
                             .fixedSize(horizontal: false, vertical: true)
+                        switch guideSessionController.sourceWorkspaceSetupState {
+                        case .inspecting:
+                            Text("Inspecting the selected source folder…")
+                                .font(DS.Typography.caption)
+                                .foregroundColor(DS.Colors.textSecondary)
+                        case .preparing:
+                            Text("Preparing an isolated copy…")
+                                .font(DS.Typography.caption)
+                                .foregroundColor(DS.Colors.textSecondary)
+                        case .ready(let binding):
+                            Text("Prepared copy ready: \(binding.stagedPath)")
+                                .font(DS.Typography.caption)
+                                .foregroundColor(DS.Colors.green)
+                                .lineLimit(2)
+                        case .failed(let message):
+                            Text("Source setup failed: \(message)")
+                                .font(DS.Typography.caption)
+                                .foregroundColor(DS.Colors.amber)
+                                .fixedSize(horizontal: false, vertical: true)
+                        case .idle, .offer:
+                            EmptyView()
+                        }
                     }
                 }
 

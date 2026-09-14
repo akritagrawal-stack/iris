@@ -322,3 +322,14 @@ Computer-use observation of the named RC confirmed the app launches and exposes
 its menu-bar/eye surface. The same launch reported Accessibility and Screen
 Recording as unavailable, and no live guide panel or target interaction could be
 verified. This is a native launch observation only, not spatial acceptance.
+
+## Fresh local and oracle rerun, September 14
+
+After the routing policy update, a fresh verification pass completed without
+provider execution: harness tests **159/159**, usability tests **136/136**, and
+mobile hub tests **18/18**. The frozen NitroAI transfer oracle also completed
+**2/2**. `git diff --check` is clean. The named RC remains
+`/Users/Shared/Iris-RC-20260914/Iris Test.app` with the recorded debug dylib
+hash unchanged. Native acceptance is still pending the existing permission
+state and a connected trusted iPhone; no new native claim is inferred from
+these local reruns.

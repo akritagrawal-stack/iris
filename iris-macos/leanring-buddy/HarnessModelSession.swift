@@ -2,6 +2,7 @@ import Foundation
 
 nonisolated struct HarnessModelRequest: Sendable {
     let route: HarnessModelRoute
+    let routeClass: HarnessRouteClass
     let phase: HarnessRunTaskKind
     let systemPrompt: String
     let conversation: [HarnessModelMessage]
@@ -45,6 +46,7 @@ final class HarnessModelSession {
         case deadlineReached
         case responseTooLarge
         case invalidLimits
+        case deterministicRouteRequiresLocalExecutor
         case yieldToVerification(
             inputBytes: UInt64,
             preservedInputBytes: UInt64,
@@ -56,6 +58,8 @@ final class HarnessModelSession {
             case .deadlineReached: return "This edit reached its time allowance and stopped without confirming completion."
             case .responseTooLarge: return "The model returned more data than this edit can safely process."
             case .invalidLimits: return "The edit's resource limits are invalid."
+            case .deterministicRouteRequiresLocalExecutor:
+                return "This operation is deterministic and must use the local executor; no model request was sent."
             case .yieldToVerification:
                 return "This edit stopped before its next request could consume the input space preserved for independent review. The current source still needs verification."
             }
@@ -78,6 +82,15 @@ final class HarnessModelSession {
     /// Optional observer for admitted requests. It receives counts only after
     /// the ledger accepts a reservation, never for rejected preflight.
     var admissionDidSucceed: AdmissionObserver?
+    /// Counts-only route evidence. Deterministic operations are recorded by
+    /// their local executor; model turns are recorded when they settle.
+    private(set) var routeTelemetry = HarnessRouteTelemetry()
+    /// Optional host checkpoint for route telemetry.
+    var routeTelemetryDidChange: ((HarnessRouteTelemetry) -> Void)?
+    /// Bounded lifecycle state for mission-control/status consumers. The first
+    /// model request acknowledges dispatch; `finish` records a terminal state.
+    private(set) var taskLifecycle: HarnessTaskLifecycle
+    var lifecycleDidChange: ((HarnessTaskLifecycleSnapshot) -> Void)?
     let implementationArm: HarnessImplementationArm
     private let transport: Transport
     private let now: @Sendable () -> UInt64
@@ -106,17 +119,48 @@ final class HarnessModelSession {
             ?? Self.defaultSerializedInputByteCount
         self.transport = transport
         self.ledger = HarnessRunLedger(settings: settings, startedAt: .init(nanoseconds: started))
+        self.taskLifecycle = try HarnessTaskLifecycle(
+            taskID: UUID().uuidString,
+            dispatchedAt: .init(nanoseconds: started)
+        )
     }
 
     func respond(phase: HarnessRunTaskKind, systemPrompt: String,
                  conversation: [HarnessModelMessage], maximumOutputTokens: Int,
                  preservingInputBytes: UInt64 = 0) async throws -> String {
-        try Task.checkCancellation()
-        guard maximumOutputTokens > 0 else { throw SessionError.invalidLimits }
+        do {
+            try Task.checkCancellation()
+        } catch {
+            markLifecycleCancelled(at: now())
+            throw error
+        }
+        guard maximumOutputTokens > 0 else {
+            markLifecycleBlocked(
+                reason: "The model output limit was invalid.",
+                at: .init(nanoseconds: now())
+            )
+            throw SessionError.invalidLimits
+        }
         let timestamp = now()
-        guard timestamp < deadline else { throw SessionError.deadlineReached }
-        let route: HarnessModelRoute = phase == .intake ? .planner : implementationArm.route
-        let request = HarnessModelRequest(route: route, phase: phase,
+        guard timestamp < deadline else {
+            markLifecycleBlocked(
+                reason: "The task reached its time allowance before a request started.",
+                at: .init(nanoseconds: timestamp)
+            )
+            throw SessionError.deadlineReached
+        }
+        let decision = HarnessRoutingPolicy.decision(
+            for: phase, implementationArm: implementationArm
+        )
+        guard let route = decision.modelRoute else {
+            markLifecycleBlocked(
+                reason: "This operation must be handled by the local executor.",
+                at: .init(nanoseconds: timestamp)
+            )
+            throw SessionError.deterministicRouteRequiresLocalExecutor
+        }
+        markLifecycleStarted(at: .init(nanoseconds: timestamp))
+        let request = HarnessModelRequest(route: route, routeClass: decision.routeClass, phase: phase,
             systemPrompt: systemPrompt, conversation: conversation, maximumOutputTokens: maximumOutputTokens)
         let inputBytes = try serializedInputByteCounter(request)
         let inputCounts = try Self.inputCounts(for: request)
@@ -132,8 +176,19 @@ final class HarnessModelSession {
         }
         let attempt = ledger.snapshot.admittedCallCount.addingReportingOverflow(1)
         guard !attempt.overflow else { throw SessionError.invalidLimits }
-        let reservation = try ledger.reserve(task: phase, attempt: attempt.partialValue,
-            inputBytes: inputBytes, at: .init(nanoseconds: timestamp))
+        let reservation: HarnessRunReservation
+        do {
+            reservation = try ledger.reserve(task: phase, attempt: attempt.partialValue,
+                inputBytes: inputBytes, routeClass: decision.routeClass,
+                at: .init(nanoseconds: timestamp))
+        } catch {
+            if case HarnessRunLedgerError.budgetExceeded = error {
+                markLifecycleBlocked(reason: "The task reached its measured resource allowance.", at: .init(nanoseconds: timestamp))
+            } else {
+                markLifecycleFailed(reason: "The task could not be admitted safely.", at: .init(nanoseconds: timestamp))
+            }
+            throw error
+        }
         lastAdmittedReservation = reservation
         lastAdmittedInputCounts = inputCounts
         admissionDidSucceed?(reservation, inputCounts)
@@ -156,11 +211,15 @@ final class HarnessModelSession {
             try ledger.settle(reservation, outcome: Task.isCancelled ? .cancelled : .failed,
                               usage: (error as? HarnessModelTransportFailure)?.usage,
                               at: .init(nanoseconds: now()))
+            recordSettledRoute(reservation, usage: (error as? HarnessModelTransportFailure)?.usage)
+            markLifecycleProgress(at: .init(nanoseconds: now()))
             ledgerDidChange?(ledger.snapshot)
             throw (error as? HarnessModelTransportFailure)?.cause ?? error
         }
         try ledger.settle(reservation, outcome: Task.isCancelled ? .cancelled : .succeeded,
                           usage: reply.usage, at: .init(nanoseconds: now()))
+        recordSettledRoute(reservation, usage: reply.usage)
+        markLifecycleProgress(at: .init(nanoseconds: now()))
         ledgerDidChange?(ledger.snapshot)
         try Task.checkCancellation()
         guard now() < deadline else { throw SessionError.deadlineReached }
@@ -178,11 +237,67 @@ final class HarnessModelSession {
         guard ledger.isRunning else { return false }
         do {
             try ledger.stop(reason: reason, at: .init(nanoseconds: now()))
+            let timestamp = HarnessMonotonicTime(nanoseconds: now())
+            switch reason {
+            case .completed:
+                try taskLifecycle.complete(at: timestamp)
+            case .cancelled, .userStopped:
+                try taskLifecycle.cancel(at: timestamp)
+            case .budgetLimited:
+                try taskLifecycle.block(reason: "The task reached its measured resource allowance.", at: timestamp)
+            case .failed, .uncertainFailure:
+                try taskLifecycle.fail(reason: "The task ended before completion was confirmed.", at: timestamp)
+            }
+            lifecycleDidChange?(taskLifecycle.snapshot)
             ledgerDidChange?(ledger.snapshot)
             return true
         } catch {
             return false
         }
+    }
+
+    private func markLifecycleStarted(at timestamp: HarnessMonotonicTime) {
+        guard taskLifecycle.snapshot.state == .dispatched else { return }
+        guard (try? taskLifecycle.markStarted(at: timestamp)) != nil else { return }
+        lifecycleDidChange?(taskLifecycle.snapshot)
+    }
+
+    private func markLifecycleProgress(at timestamp: HarnessMonotonicTime) {
+        guard taskLifecycle.snapshot.state == .running else { return }
+        guard (try? taskLifecycle.heartbeat(at: timestamp)) != nil else { return }
+        lifecycleDidChange?(taskLifecycle.snapshot)
+    }
+
+    private func markLifecycleBlocked(reason: String, at timestamp: HarnessMonotonicTime) {
+        guard !taskLifecycle.isTerminal else { return }
+        guard (try? taskLifecycle.block(reason: reason, at: timestamp)) != nil else { return }
+        lifecycleDidChange?(taskLifecycle.snapshot)
+    }
+
+    private func markLifecycleFailed(reason: String, at timestamp: HarnessMonotonicTime) {
+        guard !taskLifecycle.isTerminal else { return }
+        guard (try? taskLifecycle.fail(reason: reason, at: timestamp)) != nil else { return }
+        lifecycleDidChange?(taskLifecycle.snapshot)
+    }
+
+    private func markLifecycleCancelled(at timestamp: UInt64) {
+        guard !taskLifecycle.isTerminal else { return }
+        guard (try? taskLifecycle.cancel(at: .init(nanoseconds: timestamp))) != nil else { return }
+        lifecycleDidChange?(taskLifecycle.snapshot)
+    }
+
+    private func recordSettledRoute(
+        _ reservation: HarnessRunReservation,
+        usage: HarnessMeasuredUsage?
+    ) {
+        guard let routeClass = reservation.routeClass else { return }
+        routeTelemetry.recordModelCall(
+            routeClass: routeClass,
+            inputBytes: reservation.inputBytesReserved,
+            outputTokens: usage?.outputTokens,
+            reasoningTokens: usage?.reasoningOutputTokens
+        )
+        routeTelemetryDidChange?(routeTelemetry)
     }
 
     nonisolated private static func inputCounts(

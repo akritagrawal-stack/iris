@@ -9,6 +9,8 @@ final class IrisTestRunUsage {
     private var inputCountsByReservationID: [HarnessRunReservationID: HarnessModelInputCounts] = [:]
     private var latestSnapshot: HarnessRunLedgerSnapshot?
     private var outcomeAttribution: HarnessRunOutcomeAttribution?
+    private var routeTelemetry = HarnessRouteTelemetry()
+    private var lifecycleSnapshot: HarnessTaskLifecycleSnapshot?
 
     init(implementationArm: HarnessImplementationArm? = nil) {
         self.implementationArm = implementationArm
@@ -33,6 +35,7 @@ final class IrisTestRunUsage {
             "reservationID": call.reservation.id.rawValue,
             "attempt": call.reservation.attempt,
             "phase": call.reservation.task.rawValue,
+            "routeClass": call.reservation.routeClass?.rawValue ?? NSNull(),
             "outcome": call.outcome.rawValue,
             "inputBytes": call.reservation.inputBytesReserved,
             "inputTokens": count(call.inputTokens),
@@ -73,7 +76,9 @@ final class IrisTestRunUsage {
         snapshot: HarnessRunLedgerSnapshot,
         calls: [[String: Any]],
         implementationArm: HarnessImplementationArm? = nil,
-        outcomeAttribution: HarnessRunOutcomeAttribution? = nil
+        outcomeAttribution: HarnessRunOutcomeAttribution? = nil,
+        routeTelemetry: HarnessRouteTelemetry = HarnessRouteTelemetry(),
+        lifecycleSnapshot: HarnessTaskLifecycleSnapshot? = nil
     ) -> [String: Any] {
         func count(_ value: UInt64?) -> Any { value.map { $0 as Any } ?? NSNull() }
         func value<T>(_ value: T?) -> Any { value.map { $0 as Any } ?? NSNull() }
@@ -107,6 +112,14 @@ final class IrisTestRunUsage {
             "productOutcome": value(outcomeAttribution?.outcome.rawValue),
             "acceptedLifecycle": value(outcomeAttribution?.isAcceptedLifecycle),
             "elapsedNanoseconds": value(outcomeAttribution?.elapsedNanoseconds),
+            "routingPolicyVersion": routeTelemetry.policyVersion,
+            "deterministicOperations": routeTelemetry.deterministicOperations,
+            "modelCallsAvoided": routeTelemetry.modelCallsAvoided,
+            "modelCallsByRouteClass": routeTelemetry.modelCallsByClass,
+            "inputBytesByRouteClass": routeTelemetry.inputBytesByClass,
+            "outputTokensByRouteClass": routeTelemetry.outputTokensByClass,
+            "reasoningTokensByRouteClass": routeTelemetry.reasoningTokensByClass,
+            "taskLifecycle": lifecycleSnapshot.map { lifecycleDocument($0) } ?? NSNull(),
             "maxCalls": count(snapshot.maxCalls),
             "maxInputBytes": count(snapshot.maxInputBytes),
             "remainingCalls": remaining(snapshot.maxCalls, used: snapshot.admittedCallCount),
@@ -137,6 +150,21 @@ final class IrisTestRunUsage {
             guard acceptOutcome(outcome) else { return }
         }
         write(snapshot)
+    }
+
+    /// Update the counts-only route record. This is intentionally separate from
+    /// ledger settlement because deterministic local operations never create a
+    /// model reservation.
+    func recordRouteTelemetry(_ telemetry: HarnessRouteTelemetry) {
+        routeTelemetry = telemetry
+        if let latestSnapshot { write(latestSnapshot) }
+    }
+
+    /// Persist a bounded lifecycle checkpoint so a dispatched run cannot look
+    /// idle merely because its async task stopped publishing UI text.
+    func recordLifecycle(_ snapshot: HarnessTaskLifecycleSnapshot) {
+        lifecycleSnapshot = snapshot
+        if let latestSnapshot { write(latestSnapshot) }
     }
 
     /// Attach lifecycle evidence after delivery or the reader's answer. The
@@ -184,7 +212,9 @@ final class IrisTestRunUsage {
             snapshot: snapshot,
             calls: snapshot.settledCalls.map { callDocument(for: $0) },
             implementationArm: implementationArm,
-            outcomeAttribution: outcomeAttribution
+            outcomeAttribution: outcomeAttribution,
+            routeTelemetry: routeTelemetry,
+            lifecycleSnapshot: lifecycleSnapshot
         )
         do {
             let directory = IrisTestEnvironment.logsDirectory.appendingPathComponent("harness-usage")
@@ -199,5 +229,18 @@ final class IrisTestRunUsage {
     private static func remaining(_ limit: UInt64?, used: UInt64) -> Any {
         guard let limit else { return NSNull() }
         return limit >= used ? limit - used : 0
+    }
+
+    private static func lifecycleDocument(_ snapshot: HarnessTaskLifecycleSnapshot) -> [String: Any] {
+        [
+            "taskID": snapshot.taskID,
+            "state": snapshot.state.rawValue,
+            "sequence": snapshot.sequence,
+            "dispatchedAt": snapshot.dispatchedAt.nanoseconds,
+            "lastProgressAt": snapshot.lastProgressAt.map { $0.nanoseconds as Any } ?? NSNull(),
+            "nextHeartbeatAt": snapshot.nextHeartbeatAt.map { $0.nanoseconds as Any } ?? NSNull(),
+            "missedHeartbeats": snapshot.missedHeartbeats,
+            "terminalReason": snapshot.terminalReason as Any? ?? NSNull()
+        ]
     }
 }

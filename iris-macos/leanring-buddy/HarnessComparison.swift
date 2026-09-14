@@ -22,6 +22,147 @@ nonisolated struct HarnessModelRoute: Codable, Equatable, Sendable {
     var description: String { "Requested: \(model), effort: \(effort)" }
 }
 
+/// The work class is selected by Iris before a provider is considered. Local
+/// checks and tool execution do not need a model at all; bounded extraction can
+/// use a fast, low-effort turn; only planning and complex implementation may
+/// use a stronger model route. Keeping this classification separate from the
+/// provider name prevents a default model from quietly becoming the executor
+/// for work that should have stayed deterministic.
+nonisolated public enum HarnessRouteClass: String, Codable, CaseIterable, Sendable {
+    case deterministic
+    case boundedExtraction
+    case planning
+    case complexImplementation
+}
+
+/// A code-authored routing decision. `modelRoute == nil` is intentional for a
+/// deterministic operation and is the signal that the caller must use its
+/// local executor instead of spending a model call.
+nonisolated struct HarnessRouteDecision: Codable, Equatable, Sendable {
+    let routeClass: HarnessRouteClass
+    let modelRoute: HarnessModelRoute?
+    let maximumOutputTokens: UInt64
+    let maximumInputBytes: UInt64
+
+    init(
+        routeClass: HarnessRouteClass,
+        modelRoute: HarnessModelRoute?,
+        maximumOutputTokens: UInt64,
+        maximumInputBytes: UInt64
+    ) {
+        self.routeClass = routeClass
+        self.modelRoute = modelRoute
+        self.maximumOutputTokens = maximumOutputTokens
+        self.maximumInputBytes = maximumInputBytes
+    }
+
+    var usesModel: Bool { modelRoute != nil }
+
+    /// A deterministic operation has no model reasoning or token allowance.
+    /// This is useful to telemetry consumers that want to prove a local check
+    /// stayed local without inventing a zero-token provider call.
+    var reasoningBudgetTokens: UInt64 { routeClass == .deterministic ? 0 : maximumOutputTokens }
+}
+
+/// Central policy for all harness request classes. The policy is intentionally
+/// small and pure so every host and comparison can make the same decision.
+nonisolated enum HarnessRoutingPolicy {
+    static let currentVersion = "iris.harness.routing.v1"
+    static let deterministic = HarnessRouteDecision(
+        routeClass: .deterministic,
+        modelRoute: nil,
+        maximumOutputTokens: 0,
+        maximumInputBytes: 0
+    )
+
+    static func decision(
+        for phase: HarnessRunTaskKind,
+        implementationArm: HarnessImplementationArm = .astraLow
+    ) -> HarnessRouteDecision {
+        switch phase {
+        case .intake:
+            return HarnessRouteDecision(
+                routeClass: .planning,
+                modelRoute: .planner,
+                maximumOutputTokens: 2_400,
+                maximumInputBytes: 256 * 1024
+            )
+        case .edit, .repair:
+            return HarnessRouteDecision(
+                routeClass: .complexImplementation,
+                modelRoute: implementationArm.route,
+                maximumOutputTokens: 4_000,
+                maximumInputBytes: 1_800_000
+            )
+        case .review, .recheck:
+            return HarnessRouteDecision(
+                routeClass: .boundedExtraction,
+                modelRoute: HarnessImplementationArm.astraLow.route,
+                maximumOutputTokens: 1_200,
+                maximumInputBytes: 512 * 1024
+            )
+        }
+    }
+
+    static func decision(forLocalOperation operation: String) -> HarnessRouteDecision {
+        // The operation label is telemetry only. It is deliberately not used
+        // to infer a model route, so a future tool name cannot escape the local
+        // first policy through string matching.
+        _ = operation
+        return deterministic
+    }
+}
+
+/// Counts-only routing evidence. Model-call counts are separated from local
+/// operations so cost reports can show calls avoided instead of treating a
+/// deterministic check as an unmeasured provider request.
+nonisolated public struct HarnessRouteTelemetry: Codable, Equatable, Sendable {
+    public let policyVersion: String
+    public private(set) var deterministicOperations: UInt64
+    public private(set) var modelCallsByClass: [String: UInt64]
+    public private(set) var inputBytesByClass: [String: UInt64]
+    public private(set) var outputTokensByClass: [String: UInt64]
+    public private(set) var reasoningTokensByClass: [String: UInt64]
+
+    public init(policyVersion: String = "iris.harness.routing.v1") {
+        self.policyVersion = policyVersion
+        self.deterministicOperations = 0
+        self.modelCallsByClass = [:]
+        self.inputBytesByClass = [:]
+        self.outputTokensByClass = [:]
+        self.reasoningTokensByClass = [:]
+    }
+
+    public var modelCalls: UInt64 {
+        modelCallsByClass.values.reduce(0, +)
+    }
+
+    public var modelCallsAvoided: UInt64 { deterministicOperations }
+
+    public mutating func recordDeterministicOperation() {
+        deterministicOperations = deterministicOperations == .max
+            ? .max : deterministicOperations + 1
+    }
+
+    public mutating func recordModelCall(
+        routeClass: HarnessRouteClass,
+        inputBytes: UInt64,
+        outputTokens: UInt64? = nil,
+        reasoningTokens: UInt64? = nil
+    ) {
+        let key = routeClass.rawValue
+        increment(&modelCallsByClass[key])
+        increment(&inputBytesByClass[key], by: inputBytes)
+        if let outputTokens { increment(&outputTokensByClass[key], by: outputTokens) }
+        if let reasoningTokens { increment(&reasoningTokensByClass[key], by: reasoningTokens) }
+    }
+
+    private func increment(_ value: inout UInt64?, by amount: UInt64 = 1) {
+        let current = value ?? 0
+        value = current.addingReportingOverflow(amount).partialValue
+    }
+}
+
 /// The evaluator owns these bytes. The builder cannot redefine success by
 /// replacing its own plan, starting source or expected results mid-comparison.
 nonisolated struct HarnessFrozenComparison: Codable, Equatable, Sendable {

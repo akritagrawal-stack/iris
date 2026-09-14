@@ -311,6 +311,8 @@ final class CompanionManager: ObservableObject {
                     usage.recordAdmission(reservation, inputCounts: inputCounts)
                 }
                 workflow.modelSession.ledgerDidChange = { usage.record($0) }
+                workflow.modelSession.routeTelemetryDidChange = { usage.recordRouteTelemetry($0) }
+                workflow.modelSession.lifecycleDidChange = { usage.recordLifecycle($0) }
                 coordinatorReference?.bindHarnessRunUsage(usage)
                 return workflow
             } : nil

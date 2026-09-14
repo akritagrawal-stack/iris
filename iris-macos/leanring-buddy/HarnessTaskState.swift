@@ -1,5 +1,343 @@
 import Foundation
 
+/// The externally visible state of one dispatched harness task. A task is
+/// never represented as an unqualified idle value after dispatch: it must
+/// report progress, wait on an explicit reader decision, or end in a terminal
+/// state.
+public nonisolated enum HarnessTaskLifecycleState: String, Codable, CaseIterable, Sendable {
+    case dispatched
+    case running
+    case awaitingReader
+    case completed
+    case failed
+    case blocked
+    case cancelled
+
+    public var isTerminal: Bool {
+        switch self {
+        case .completed, .failed, .blocked, .cancelled: return true
+        case .dispatched, .running, .awaitingReader: return false
+        }
+    }
+}
+
+public nonisolated enum HarnessTaskLifecycleAction: Equatable, Sendable {
+    case none
+    case heartbeatDue
+    case awaitingReader
+    case blocked(reason: String)
+}
+
+public nonisolated enum HarnessTaskLifecycleError: Error, Equatable, Sendable {
+    case invalidTaskID
+    case invalidPolicy
+    case timestampWentBackwards
+    case taskAlreadyTerminal(HarnessTaskLifecycleState)
+    case invalidTransition(from: HarnessTaskLifecycleState, to: HarnessTaskLifecycleState)
+    case emptyReason
+    case integerOverflow
+}
+
+public nonisolated struct HarnessTaskLifecyclePolicy: Codable, Equatable, Sendable {
+    /// The dispatch acknowledgement window. If no start or heartbeat arrives
+    /// before this deadline, reconciliation marks the task blocked.
+    public let dispatchStartGraceNanoseconds: UInt64
+    /// How often Mission Control should be refreshed while work is running.
+    public let heartbeatIntervalNanoseconds: UInt64
+    /// A bounded silence window. Repeated missed heartbeats eventually become
+    /// an explicit blocker instead of leaving the task apparently idle.
+    public let maximumSilenceNanoseconds: UInt64
+
+    public static let `default` = Self(
+        dispatchStartGraceNanoseconds: 30_000_000_000,
+        heartbeatIntervalNanoseconds: 10_000_000_000,
+        maximumSilenceNanoseconds: 60_000_000_000
+    )
+
+    public init(
+        dispatchStartGraceNanoseconds: UInt64,
+        heartbeatIntervalNanoseconds: UInt64,
+        maximumSilenceNanoseconds: UInt64
+    ) {
+        self.dispatchStartGraceNanoseconds = dispatchStartGraceNanoseconds
+        self.heartbeatIntervalNanoseconds = heartbeatIntervalNanoseconds
+        self.maximumSilenceNanoseconds = maximumSilenceNanoseconds
+    }
+
+    fileprivate func validate() throws {
+        guard dispatchStartGraceNanoseconds > 0,
+              heartbeatIntervalNanoseconds > 0,
+              maximumSilenceNanoseconds >= heartbeatIntervalNanoseconds else {
+            throw HarnessTaskLifecycleError.invalidPolicy
+        }
+    }
+}
+
+public nonisolated struct HarnessTaskLifecycleSnapshot: Codable, Equatable, Sendable {
+    public let taskID: String
+    public let state: HarnessTaskLifecycleState
+    public let sequence: UInt64
+    public let dispatchedAt: HarnessMonotonicTime
+    public let lastTransitionAt: HarnessMonotonicTime
+    public let lastProgressAt: HarnessMonotonicTime?
+    public let nextHeartbeatAt: HarnessMonotonicTime?
+    public let missedHeartbeats: UInt64
+    /// A reader blocker or terminal explanation. It is always bounded and is
+    /// safe to expose to status consumers because callers provide only a
+    /// scrubbed, user-facing sentence.
+    public let statusMessage: String?
+
+    public var terminalReason: String? { state.isTerminal ? statusMessage : nil }
+}
+
+/// Small value state machine for task dispatch and Mission Control updates.
+/// Hosts can call `reconcile(at:)` from a bounded timer or heartbeat loop. A
+/// missed update becomes either `.heartbeatDue` or an explicit `.blocked`
+/// action; it never silently becomes idle.
+public nonisolated struct HarnessTaskLifecycle: Sendable {
+    public let policy: HarnessTaskLifecyclePolicy
+    public private(set) var snapshot: HarnessTaskLifecycleSnapshot
+
+    public init(
+        taskID: String,
+        dispatchedAt: HarnessMonotonicTime,
+        policy: HarnessTaskLifecyclePolicy = .default
+    ) throws {
+        let trimmed = taskID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 256,
+              !taskID.unicodeScalars.contains(where: {
+                  $0.value < 0x20 || $0.value == 0x7F
+              }) else {
+            throw HarnessTaskLifecycleError.invalidTaskID
+        }
+        try policy.validate()
+        let nextHeartbeat = try Self.add(
+            dispatchedAt,
+            policy.dispatchStartGraceNanoseconds
+        )
+        self.policy = policy
+        self.snapshot = HarnessTaskLifecycleSnapshot(
+            taskID: taskID,
+            state: .dispatched,
+            sequence: 0,
+            dispatchedAt: dispatchedAt,
+            lastTransitionAt: dispatchedAt,
+            lastProgressAt: nil,
+            nextHeartbeatAt: nextHeartbeat,
+            missedHeartbeats: 0,
+            statusMessage: "Task dispatched; waiting for a start checkpoint."
+        )
+    }
+
+    public var isTerminal: Bool { snapshot.state.isTerminal }
+
+    public mutating func markStarted(at timestamp: HarnessMonotonicTime) throws {
+        try markProgress(at: timestamp, transitionFromDispatch: true)
+    }
+
+    /// Records a live progress checkpoint. A first heartbeat also acknowledges
+    /// dispatch, so a worker does not need a separate start RPC.
+    public mutating func heartbeat(at timestamp: HarnessMonotonicTime) throws {
+        try markProgress(at: timestamp, transitionFromDispatch: true)
+    }
+
+    public mutating func markProgress(at timestamp: HarnessMonotonicTime) throws {
+        try markProgress(at: timestamp, transitionFromDispatch: false)
+    }
+
+    public mutating func awaitReader(
+        reason: String,
+        at timestamp: HarnessMonotonicTime
+    ) throws {
+        try transition(to: .awaitingReader, reason: reason, at: timestamp)
+        snapshot = Self.updated(snapshot, sequence: try nextSequence(),
+            state: .awaitingReader,
+            lastTransitionAt: timestamp, lastProgressAt: timestamp,
+            nextHeartbeatAt: nil, missedHeartbeats: 0, statusMessage: reason)
+    }
+
+    public mutating func complete(
+        reason: String? = nil,
+        at timestamp: HarnessMonotonicTime
+    ) throws {
+        try transition(to: .completed, reason: reason, at: timestamp)
+        snapshot = Self.updated(snapshot, sequence: try nextSequence(),
+            state: .completed,
+            lastTransitionAt: timestamp, lastProgressAt: timestamp,
+            nextHeartbeatAt: nil, statusMessage: reason ?? "Task completed.")
+    }
+
+    public mutating func fail(
+        reason: String,
+        at timestamp: HarnessMonotonicTime
+    ) throws {
+        try transition(to: .failed, reason: reason, at: timestamp)
+        snapshot = Self.updated(snapshot, sequence: try nextSequence(),
+            state: .failed,
+            lastTransitionAt: timestamp, lastProgressAt: snapshot.lastProgressAt,
+            nextHeartbeatAt: nil, missedHeartbeats: snapshot.missedHeartbeats,
+            statusMessage: reason)
+    }
+
+    public mutating func block(
+        reason: String,
+        at timestamp: HarnessMonotonicTime
+    ) throws {
+        try transition(to: .blocked, reason: reason, at: timestamp)
+        snapshot = Self.updated(snapshot, sequence: try nextSequence(),
+            state: .blocked,
+            lastTransitionAt: timestamp, lastProgressAt: snapshot.lastProgressAt,
+            nextHeartbeatAt: nil, missedHeartbeats: snapshot.missedHeartbeats,
+            statusMessage: reason)
+    }
+
+    public mutating func cancel(
+        reason: String? = nil,
+        at timestamp: HarnessMonotonicTime
+    ) throws {
+        try transition(to: .cancelled, reason: reason, at: timestamp)
+        snapshot = Self.updated(snapshot, sequence: try nextSequence(),
+            state: .cancelled,
+            lastTransitionAt: timestamp, lastProgressAt: snapshot.lastProgressAt,
+            nextHeartbeatAt: nil, missedHeartbeats: snapshot.missedHeartbeats,
+            statusMessage: reason ?? "Task cancelled.")
+    }
+
+    /// Reconcile a timer tick with the last acknowledged progress. Hosts can
+    /// call this at most once per heartbeat interval. Startup silence blocks at
+    /// the dispatch deadline; running silence blocks only after the larger
+    /// maximum window has elapsed, with intermediate ticks requesting a
+    /// heartbeat refresh.
+    @discardableResult
+    public mutating func reconcile(
+        at timestamp: HarnessMonotonicTime
+    ) throws -> HarnessTaskLifecycleAction {
+        try validateTimestamp(timestamp)
+        switch snapshot.state {
+        case .completed, .failed, .blocked, .cancelled:
+            return .none
+        case .awaitingReader:
+            return .awaitingReader
+        case .dispatched:
+            guard let deadline = snapshot.nextHeartbeatAt, timestamp >= deadline else {
+                return .none
+            }
+            let reason = "Task was dispatched but did not report a start checkpoint."
+            try block(reason: reason, at: timestamp)
+            return .blocked(reason: reason)
+        case .running:
+            guard let next = snapshot.nextHeartbeatAt, timestamp >= next else {
+                return .none
+            }
+            if let lastProgress = snapshot.lastProgressAt,
+               timestamp.nanoseconds >= lastProgress.nanoseconds,
+               timestamp.nanoseconds - lastProgress.nanoseconds >= policy.maximumSilenceNanoseconds {
+                let reason = "Task stopped reporting progress within its allowed heartbeat window."
+                try block(reason: reason, at: timestamp)
+                return .blocked(reason: reason)
+            }
+            let sequence = try nextSequence()
+            let missed = snapshot.missedHeartbeats == .max
+                ? .max : snapshot.missedHeartbeats + 1
+            let following = try Self.add(timestamp, policy.heartbeatIntervalNanoseconds)
+            snapshot = Self.updated(snapshot, sequence: sequence,
+                lastTransitionAt: timestamp, nextHeartbeatAt: following,
+                missedHeartbeats: missed)
+            return .heartbeatDue
+        }
+    }
+
+    private mutating func markProgress(
+        at timestamp: HarnessMonotonicTime,
+        transitionFromDispatch: Bool
+    ) throws {
+        try validateTimestamp(timestamp)
+        switch snapshot.state {
+        case .dispatched where transitionFromDispatch:
+            let sequence = try nextSequence()
+            snapshot = Self.updated(snapshot, sequence: sequence, state: .running,
+                lastTransitionAt: timestamp, lastProgressAt: timestamp,
+                nextHeartbeatAt: try Self.add(
+                    snapshot.dispatchedAt, policy.heartbeatIntervalNanoseconds
+                ),
+                missedHeartbeats: 0, statusMessage: "Task is running.")
+        case .running:
+            let sequence = try nextSequence()
+            snapshot = Self.updated(snapshot, sequence: sequence,
+                lastTransitionAt: timestamp, lastProgressAt: timestamp,
+                nextHeartbeatAt: try Self.add(timestamp, policy.heartbeatIntervalNanoseconds),
+                missedHeartbeats: 0, statusMessage: "Task is running.")
+        case .dispatched:
+            throw HarnessTaskLifecycleError.invalidTransition(from: .dispatched, to: .running)
+        case .completed, .failed, .blocked, .cancelled:
+            throw HarnessTaskLifecycleError.taskAlreadyTerminal(snapshot.state)
+        default:
+            throw HarnessTaskLifecycleError.invalidTransition(
+                from: snapshot.state, to: .running
+            )
+        }
+    }
+
+    private mutating func transition(
+        to nextState: HarnessTaskLifecycleState,
+        reason: String?,
+        at timestamp: HarnessMonotonicTime
+    ) throws {
+        try validateTimestamp(timestamp)
+        guard !snapshot.state.isTerminal else {
+            throw HarnessTaskLifecycleError.taskAlreadyTerminal(snapshot.state)
+        }
+        if [.failed, .blocked].contains(nextState) {
+            guard let reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw HarnessTaskLifecycleError.emptyReason
+            }
+        }
+    }
+
+    private func validateTimestamp(_ timestamp: HarnessMonotonicTime) throws {
+        guard timestamp >= snapshot.lastTransitionAt else {
+            throw HarnessTaskLifecycleError.timestampWentBackwards
+        }
+    }
+
+    private func nextSequence() throws -> UInt64 {
+        guard snapshot.sequence < .max else { throw HarnessTaskLifecycleError.integerOverflow }
+        return snapshot.sequence + 1
+    }
+
+    private static func add(
+        _ timestamp: HarnessMonotonicTime,
+        _ nanoseconds: UInt64
+    ) throws -> HarnessMonotonicTime {
+        let result = timestamp.nanoseconds.addingReportingOverflow(nanoseconds)
+        guard !result.overflow else { throw HarnessTaskLifecycleError.integerOverflow }
+        return HarnessMonotonicTime(nanoseconds: result.partialValue)
+    }
+
+    private static func updated(
+        _ snapshot: HarnessTaskLifecycleSnapshot,
+        sequence: UInt64,
+        state: HarnessTaskLifecycleState? = nil,
+        lastTransitionAt: HarnessMonotonicTime,
+        lastProgressAt: HarnessMonotonicTime? = nil,
+        nextHeartbeatAt: HarnessMonotonicTime? = nil,
+        missedHeartbeats: UInt64? = nil,
+        statusMessage: String? = nil
+    ) -> HarnessTaskLifecycleSnapshot {
+        HarnessTaskLifecycleSnapshot(
+            taskID: snapshot.taskID,
+            state: state ?? snapshot.state,
+            sequence: sequence,
+            dispatchedAt: snapshot.dispatchedAt,
+            lastTransitionAt: lastTransitionAt,
+            lastProgressAt: lastProgressAt ?? snapshot.lastProgressAt,
+            nextHeartbeatAt: nextHeartbeatAt,
+            missedHeartbeats: missedHeartbeats ?? snapshot.missedHeartbeats,
+            statusMessage: statusMessage ?? snapshot.statusMessage
+        )
+    }
+}
+
 public nonisolated struct HarnessTaskStateLimits: Codable, Equatable, Sendable {
     public var maxJSONBytes: Int
     public var maxStringUTF8Bytes: Int

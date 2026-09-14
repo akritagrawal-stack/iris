@@ -7,7 +7,7 @@
 
 import Foundation
 
-nonisolated public struct HarnessMonotonicTime: Comparable, Equatable, Hashable, Sendable,
+nonisolated public struct HarnessMonotonicTime: Comparable, Equatable, Hashable, Codable, Sendable,
     ExpressibleByIntegerLiteral {
     public let nanoseconds: UInt64
 
@@ -160,17 +160,23 @@ nonisolated public struct HarnessRunReservation: Equatable, Sendable {
     public let task: HarnessRunTaskKind
     public let attempt: UInt64
     public let inputBytesReserved: UInt64
+    /// The code-authored work class that admitted this request. Older callers
+    /// may omit it; live model sessions always attach one so usage can prove
+    /// which calls were planning, extraction or complex implementation.
+    public let routeClass: HarnessRouteClass?
 
     public init(
         id: HarnessRunReservationID,
         task: HarnessRunTaskKind,
         attempt: UInt64,
-        inputBytesReserved: UInt64
+        inputBytesReserved: UInt64,
+        routeClass: HarnessRouteClass? = nil
     ) {
         self.id = id
         self.task = task
         self.attempt = attempt
         self.inputBytesReserved = inputBytesReserved
+        self.routeClass = routeClass
     }
 }
 
@@ -730,6 +736,7 @@ nonisolated public struct HarnessRunLedger: Sendable {
         task: HarnessRunTaskKind,
         attempt: T = 1,
         inputBytes: T,
+        routeClass: HarnessRouteClass? = nil,
         at timestamp: HarnessMonotonicTime
     ) throws -> HarnessRunReservation {
         try ensureRunning()
@@ -785,7 +792,8 @@ nonisolated public struct HarnessRunLedger: Sendable {
             id: reservationID,
             task: task,
             attempt: attemptValue,
-            inputBytesReserved: inputValue
+            inputBytesReserved: inputValue,
+            routeClass: routeClass
         )
 
         admittedCallCount = nextCallCount
@@ -805,9 +813,16 @@ nonisolated public struct HarnessRunLedger: Sendable {
         task: HarnessRunTaskKind,
         attempt: T = 1,
         inputBytes: T,
+        routeClass: HarnessRouteClass? = nil,
         at timestamp: HarnessMonotonicTime
     ) throws -> HarnessRunReservation {
-        try reserve(task: task, attempt: attempt, inputBytes: inputBytes, at: timestamp)
+        try reserve(
+            task: task,
+            attempt: attempt,
+            inputBytes: inputBytes,
+            routeClass: routeClass,
+            at: timestamp
+        )
     }
 
     public mutating func settle(

@@ -26,6 +26,16 @@ call with `ledgerState: failed`, `settledCalls: 1`, `inFlightCalls: 0`, and
 unchanged. This confirms the cancellation/late-usage accounting path, while
 also leaving the provider convergence issue open.
 
+### 2026-09-14 provider timeout and RC refresh
+
+The provider step ceiling was reduced from 300 seconds to 120 seconds so a
+wedged CLI cannot leave the UI and a reserved call open for five minutes. The
+existing bounded retry and settlement ledger remains authoritative. The named
+RC was rebuilt from commit `599907a` using the **Test** configuration (the
+isolated bundle identity), strict code-signature verification passed, and the
+native Settings panel relaunched successfully. The executable SHA-256 is
+`5b6a6ca93aaa6bbaf1bd915c9e90238a5d551504e46d113b2699628e9438c8f3`.
+
 ### 2026-09-14 bounded complex transfer attempt
 
 The signed RC was exercised through the native UI with an explicit **Feature** route. The request was intentionally scoped to the existing NitroAI transfer design: add Settings export/import controls, preserve folder and note identity, keep both copies on same-ID collisions, reject malformed or dangling references atomically, and run the focused tests/build.

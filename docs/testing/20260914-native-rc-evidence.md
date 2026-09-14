@@ -284,3 +284,8 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   environment failed fast; rerunning it with an explicit fresh scratch root
   passed all reported checks, including usage attribution, review reserve,
   cancellation, command freshness, and accepted-candidate identity checks.
+
+### 2026-09-14 routing budget follow-up
+
+- Commit `016053f` enforces per-route model budgets in `HarnessModelSession`: input-byte ceilings are checked before admission or transport, caller output requests are capped to route policy, and oversized input produces an explicit blocked lifecycle result without sending a model request.
+- Focused harness suite passed `161/161` tests across `7` suites after the change. This is source-level routing evidence only; live provider, packaged UI, installed-app, and physical-device acceptance remain separate gates.

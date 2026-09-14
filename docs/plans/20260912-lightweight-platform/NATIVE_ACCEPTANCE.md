@@ -278,3 +278,13 @@ references, atomic abort, onward reimport, and changed-content conflict retentio
 NitroAI typecheck, 134 tests across 13 files, and the production build also pass.
 This is isolated transfer evidence; native Iris model-mediated feature and device
 acceptance remain separate gates.
+
+## Cancellation and retry pass, September 14
+
+The integrated RC build succeeds after adding cancellation-aware pointing and
+same-run source-workspace recovery. In the Xcode test run, the new
+`retryResumesARecordedOwnedWorktreeWithoutCreatingADuplicate` test passed, and
+`GuideSetupRecoveryTests` completed successfully. The full Xcode suite remains
+red in unrelated pre-existing risk, overlay, watch, and recipe fixtures; those
+failures are retained for separate triage rather than counted as native product
+acceptance.

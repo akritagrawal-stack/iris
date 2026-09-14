@@ -353,3 +353,11 @@ has been reached; the next model request still yields to the protected review
 capacity. The full harness-feature-host `--checks` run now passes, including the
 repair checkpoint, cancellation, retention, review reserve, freshness, and
 candidate-record checks.
+
+## Focused spatial concurrency acceptance, September 14
+
+The focused Xcode run completed **13/13 tests across 2 suites** for stale guide
+responses, late prerequisite results, cancelled retries, duplicate retry taps,
+navigation cancellation, and replacement-session isolation. These checks cover
+the state machine's stale-target and cancellation boundaries; live screen
+positioning still requires the native permission gate.

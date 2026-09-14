@@ -504,6 +504,7 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         case backupDestinationExists
         case protectedReference
         case corruptInventory
+        case inventoryEntryLimitExceeded(limit: Int)
         case unreadableInventory
         case unreadableMeasurement
         case budgetExceeded(current: UInt64, candidate: UInt64, limit: UInt64)
@@ -516,6 +517,8 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
             case .backupDestinationExists: return "the backup destination already exists"
             case .protectedReference: return "the backup destination is protected by saved recovery information"
             case .corruptInventory: return "saved backup inventory is incomplete or corrupt"
+            case .inventoryEntryLimitExceeded(let limit):
+                return "saved backup inventory has more than \(limit) records; cleanup stopped before scanning the rest"
             case .unreadableInventory: return "saved backup inventory could not be read"
             case .unreadableMeasurement: return "a bundle's logical size could not be measured"
             case .budgetExceeded(let current, let candidate, let limit):
@@ -528,6 +531,7 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         case invalidPolicy
         case unsafePath
         case corruptInventory
+        case inventoryEntryLimitExceeded(limit: Int)
         case unreadableInventory
         case ambiguousRecovery
         case changedIdentity(path: String)
@@ -538,6 +542,8 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
             case .invalidPolicy: return "the backup cleanup policy is invalid"
             case .unsafePath: return "the backup cleanup target contains an unsafe filesystem path"
             case .corruptInventory: return "saved backup inventory is incomplete or corrupt"
+            case .inventoryEntryLimitExceeded(let limit):
+                return "saved backup inventory has more than \(limit) records; no files were removed"
             case .unreadableInventory: return "saved backup inventory could not be read"
             case .ambiguousRecovery: return "saved Undo recovery information is ambiguous"
             case .changedIdentity(let path): return "the saved backup changed before cleanup: \(path)"
@@ -568,6 +574,10 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
 
     static let maximumRecordBytes = 32_768
     static let maximumEntries = 256
+    /// Explicit cleanup may recover a valid history beyond the admission cap,
+    /// but it never scans an unbounded directory.
+    static let maximumCleanupReceiptEntries = 1_024
+    static let maximumCleanupEvidenceRecords = 1_024
     static let defaultBaseDirectory = IrisTestEnvironment.applicationSupportDirectory
         .appendingPathComponent("edit-delivery-receipts", isDirectory: true)
     let baseDirectory: URL
@@ -724,7 +734,8 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         backupRoot: URL,
         recoveryStore: DeliveredEditUndoRecoveryStore,
         protectedPaths: [String],
-        policy: BackupCleanupPolicy = .init()
+        policy: BackupCleanupPolicy = .init(),
+        removeReceiptEnvelope: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
     ) throws -> BackupCleanupResult {
         guard !bundleIdentifier.isEmpty,
               AppDeliveryReceipt.isSafeMetadataText(bundleIdentifier),
@@ -768,7 +779,15 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
             )
             var protected = Set(protectedPaths.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
             protected.formUnion(recovery.protectedBackupPaths)
-            var restoredCandidates: [AppDeliveryReceipt] = []
+            let acceptedEvidenceReceiptIDs = try acceptedEvidenceReceiptIDs()
+            let currentInstalledReceiptIDs = currentInstalledReceiptIDs(
+                in: receipts, bundleIdentifier: bundleIdentifier
+            ) ?? Set(receipts.compactMap { receipt in
+                receipt.bundleIdentifier == bundleIdentifier && receipt.phase == .installed
+                    ? receipt.identifier : nil
+            })
+            var obsoleteCandidates: [AppDeliveryReceipt] = []
+            var danglingObsoleteReceipts: [AppDeliveryReceipt] = []
             var restoredPaths = Set<String>()
             var receiptPayloadPaths: [String] = []
             for receipt in receipts {
@@ -776,51 +795,76 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                       pathHasNoSymlinkComponents(receipt.backupPath, allowMissing: true) else {
                     throw CleanupError.unsafePath
                 }
+                let backupPath = URL(fileURLWithPath: receipt.backupPath).standardizedFileURL.path
+                guard !receiptPayloadPaths.contains(where: { pathsOverlap(backupPath, $0) }) else {
+                    // A receipt whose payload has already disappeared still
+                    // owns its recorded path until reconciliation removes its
+                    // exact envelope. Do not let another record reuse it.
+                    throw CleanupError.corruptInventory
+                }
+                receiptPayloadPaths.append(backupPath)
                 var metadata = stat()
                 guard lstat(receipt.backupPath, &metadata) == 0 else {
-                    // A prior successful cleanup intentionally leaves the
-                    // restored receipt JSON behind. Missing restored payloads
-                    // are therefore idempotently absent; an unfinished
-                    // prepared/installed delivery remains fail-closed.
+                    // Legacy restored records may have no payload. An older
+                    // cleanup can also have removed a superseded payload just
+                    // before its receipt unlink failed; reconcile only that
+                    // already-proven-obsolete envelope on the next explicit run.
                     if errno == ENOENT, receipt.phase == .restored { continue }
+                    if errno == ENOENT,
+                       receipt.phase == .installed,
+                       receipt.bundleIdentifier == bundleIdentifier,
+                       !currentInstalledReceiptIDs.contains(receipt.identifier),
+                       !acceptedEvidenceReceiptIDs.contains(receipt.identifier),
+                       !protected.contains(where: { pathsOverlap(backupPath, $0) }),
+                       isReceiptPayloadEligibleForCleanup(receipt) {
+                        danglingObsoleteReceipts.append(receipt)
+                        continue
+                    }
                     throw CleanupError.corruptInventory
                 }
                 guard (metadata.st_mode & S_IFMT) == S_IFDIR else {
                     throw CleanupError.corruptInventory
                 }
-                let backupPath = URL(fileURLWithPath: receipt.backupPath).standardizedFileURL.path
-                guard !receiptPayloadPaths.contains(where: { pathsOverlap(backupPath, $0) }) else {
-                    // Two receipt records must never alias the same payload or
-                    // one another's ancestor. Otherwise a retained record can
-                    // be deleted through an older alias in the same pass.
-                    throw CleanupError.corruptInventory
-                }
-                receiptPayloadPaths.append(backupPath)
-                if receipt.phase != .restored {
+                if receipt.phase == .prepared
+                    || acceptedEvidenceReceiptIDs.contains(receipt.identifier) {
                     protected.insert(backupPath)
                     continue
                 }
-                guard isPreviewEligible(receipt) else {
-                    // A restored record without complete identity is visible
-                    // history, not permission to discard its files.
+                guard receipt.bundleIdentifier == bundleIdentifier else {
                     protected.insert(backupPath)
                     continue
                 }
-                guard receipt.bundleIdentifier == bundleIdentifier else { continue }
-                restoredPaths.insert(backupPath)
-                restoredCandidates.append(receipt)
+                switch receipt.phase {
+                case .restored:
+                    guard isReceiptPayloadEligibleForCleanup(receipt) else {
+                        protected.insert(backupPath)
+                        continue
+                    }
+                    restoredPaths.insert(backupPath)
+                    obsoleteCandidates.append(receipt)
+                case .installed:
+                    guard !currentInstalledReceiptIDs.contains(receipt.identifier),
+                          isReceiptPayloadEligibleForCleanup(receipt) else {
+                        protected.insert(backupPath)
+                        continue
+                    }
+                    obsoleteCandidates.append(receipt)
+                case .prepared:
+                    protected.insert(backupPath)
+                }
             }
 
-            let newest = restoredCandidates.max {
+            let newestRestored = obsoleteCandidates.filter { $0.phase == .restored }.max {
                 if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
                 return $0.identifier.uuidString < $1.identifier.uuidString
             }?.identifier
             let cutoff = policy.now.addingTimeInterval(-policy.recentRollbackWindow)
             var candidates: [AppDeliveryReceipt] = []
             var retainedPaths = Set<String>()
-            for receipt in restoredCandidates {
+            for receipt in obsoleteCandidates {
                 let path = URL(fileURLWithPath: receipt.backupPath).standardizedFileURL.path
-                let retainedForRollback = receipt.identifier == newest || receipt.startedAt >= cutoff
+                let retainedForRollback = receipt.phase == .restored
+                    && (receipt.identifier == newestRestored || receipt.startedAt >= cutoff)
                 let overlapsProtection = protected.contains { pathsOverlap(path, $0) }
                 if retainedForRollback || overlapsProtection {
                     retainedPaths.insert(path)
@@ -860,6 +904,23 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                 recoveryStore: recoveryStore, backupRoot: backupRoot
             ) == recovery else {
                 throw CleanupError.ambiguousRecovery
+            }
+
+            for receipt in danglingObsoleteReceipts {
+                guard (try? cleanupRecoverySnapshot(
+                    recoveryStore: recoveryStore, backupRoot: backupRoot
+                )) == recovery,
+                case .valid(let storedReceipt) = loadUnlocked(receipt.identifier),
+                storedReceipt == receipt else {
+                    throw CleanupError.ambiguousRecovery
+                }
+                do { try removeReceiptEnvelope(url(for: receipt.identifier)) }
+                catch {
+                    throw CleanupError.deletionFailed(
+                        path: receipt.backupPath, deletedPaths: [],
+                        logicalBytesRemoved: 0, allocatedBytesMeasured: 0
+                    )
+                }
             }
 
             var deleted: [String] = []
@@ -906,6 +967,26 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                         allocatedBytesMeasured: allocatedBytesMeasured
                     )
                 }
+                logicalBytesRemoved += logicalBytes
+                allocatedBytesMeasured += allocatedBytes
+                deleted.append(path)
+                guard case .valid(let storedReceipt) = loadUnlocked(receipt.identifier),
+                      storedReceipt == receipt else {
+                    throw CleanupError.deletionFailed(
+                        path: path, deletedPaths: deleted,
+                        logicalBytesRemoved: logicalBytesRemoved,
+                        allocatedBytesMeasured: allocatedBytesMeasured
+                    )
+                }
+                do {
+                    try removeReceiptEnvelope(url(for: receipt.identifier))
+                } catch {
+                    throw CleanupError.deletionFailed(
+                        path: path, deletedPaths: deleted,
+                        logicalBytesRemoved: logicalBytesRemoved,
+                        allocatedBytesMeasured: allocatedBytesMeasured
+                    )
+                }
                 var after = stat()
                 guard lstat(path, &after) != 0, errno == ENOENT else {
                     throw CleanupError.deletionFailed(
@@ -914,9 +995,6 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                         allocatedBytesMeasured: allocatedBytesMeasured
                     )
                 }
-                logicalBytesRemoved += logicalBytes
-                allocatedBytesMeasured += allocatedBytes
-                deleted.append(path)
             }
             retainedPaths.formUnion(restoredPaths.subtracting(deleted))
             _ = recovery // Keeps the preflight snapshot alive through deletion.
@@ -1036,6 +1114,7 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         switch error {
         case .unsafePath, .outsideBackupRoot: return .unsafePath
         case .corruptInventory, .budgetExceeded, .backupDestinationExists: return .corruptInventory
+        case .inventoryEntryLimitExceeded(let limit): return .inventoryEntryLimitExceeded(limit: limit)
         case .unreadableInventory, .unreadableMeasurement: return .unreadableInventory
         case .invalidPolicy: return .invalidPolicy
         case .protectedReference: return .ambiguousRecovery
@@ -1064,9 +1143,34 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         allowingPreparedReceiptIdentifier: UUID? = nil,
         allowingPreparedDestination: String? = nil,
         bundleIdentifier: String? = nil,
-        additionalProtectedPaths: [String] = []
+        additionalProtectedPaths: [String] = [],
+        allowingMoreThanMaximumEntries: Bool = false
     ) throws -> BackupRetentionInventory {
-        let receipts = try retentionReceipts()
+        let receipts = try retentionReceipts(
+            allowingMoreThanMaximumEntries: allowingMoreThanMaximumEntries
+        )
+        let acceptedReceiptIDs: Set<UUID>
+        do {
+            acceptedReceiptIDs = try acceptedEvidenceReceiptIDs()
+        } catch let error as CleanupError {
+            if case .inventoryEntryLimitExceeded(let limit) = error {
+                throw RetentionError.inventoryEntryLimitExceeded(limit: limit)
+            }
+            throw RetentionError.corruptInventory
+        } catch {
+            throw RetentionError.corruptInventory
+        }
+        let currentReceiptIDs: Set<UUID>
+        if let bundleIdentifier {
+            currentReceiptIDs = currentInstalledReceiptIDs(
+                in: receipts, bundleIdentifier: bundleIdentifier
+            ) ?? Set(receipts.compactMap { receipt in
+                receipt.bundleIdentifier == bundleIdentifier && receipt.phase == .installed
+                    ? receipt.identifier : nil
+            })
+        } else {
+            currentReceiptIDs = []
+        }
         var protected = Set(additionalProtectedPaths.map {
             URL(fileURLWithPath: $0).standardizedFileURL.path
         })
@@ -1110,7 +1214,13 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                 if isAllowedPreparedReceipt {
                     continue
                 }
-                if isPreviewEligible(receipt) {
+                if acceptedReceiptIDs.contains(receipt.identifier) {
+                    protected.insert(receipt.backupPath)
+                } else if isPreviewEligible(receipt) {
+                    previewEligible.insert(receipt.backupPath)
+                } else if receipt.phase == .installed,
+                          !currentReceiptIDs.contains(receipt.identifier),
+                          isReceiptPayloadEligibleForCleanup(receipt) {
                     previewEligible.insert(receipt.backupPath)
                 } else {
                     protected.insert(receipt.backupPath)
@@ -1243,8 +1353,8 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         }
     }
 
-    private func isPreviewEligible(_ receipt: AppDeliveryReceipt) -> Bool {
-        guard receipt.phase == .restored,
+    private func isReceiptPayloadEligibleForCleanup(_ receipt: AppDeliveryReceipt) -> Bool {
+        guard receipt.phase == .restored || receipt.phase == .installed,
               let source = receipt.sourceIdentity, source.isValid,
               let installed = receipt.installedBundleIdentity, installed.isValid,
               let replacement = receipt.replacementBundleIdentity, replacement.isValid,
@@ -1256,7 +1366,90 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
             && replacement.bundleIdentifier == receipt.bundleIdentifier
     }
 
-    private func retentionReceipts() throws -> [AppDeliveryReceipt] {
+    private func isPreviewEligible(_ receipt: AppDeliveryReceipt) -> Bool {
+        receipt.phase == .restored && isReceiptPayloadEligibleForCleanup(receipt)
+    }
+
+    /// The newest receipt whose replacement is the app currently at the
+    /// recorded installed path owns the one rollback bundle that must remain.
+    /// An unknown or moved installed app returns nil so the caller protects all
+    /// installed receipts instead of guessing which historical copy is stale.
+    private func currentInstalledReceiptIDs(
+        in receipts: [AppDeliveryReceipt], bundleIdentifier: String
+    ) -> Set<UUID>? {
+        let installedReceipts = receipts.filter {
+            $0.bundleIdentifier == bundleIdentifier && $0.phase == .installed
+        }
+        guard !installedReceipts.isEmpty else { return [] }
+        let grouped = Dictionary(grouping: installedReceipts, by: \.installedPath)
+        var currentIDs = Set<UUID>()
+        for (_, group) in grouped {
+            guard let currentIdentity = AppDeliveryReceipt.bundleIdentity(atPath: group[0].installedPath) else {
+                return nil
+            }
+            let matching = group.filter { $0.replacementBundleIdentity == currentIdentity }
+            guard let newest = matching.max(by: receiptIsOlder) else { return nil }
+            currentIDs.insert(newest.identifier)
+        }
+        return currentIDs
+    }
+
+    private func receiptIsOlder(_ lhs: AppDeliveryReceipt, _ rhs: AppDeliveryReceipt) -> Bool {
+        if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
+        return lhs.identifier.uuidString < rhs.identifier.uuidString
+    }
+
+    /// Accepted candidates and their evidence are durable reuse gates. Any
+    /// syntactically valid reference protects its receipt; a malformed entry
+    /// fails the cleanup before deletion rather than weakening that gate.
+    private func acceptedEvidenceReceiptIDs() throws -> Set<UUID> {
+        var protectedIDs = Set<UUID>()
+        var recordCount = 0
+        for directory in [acceptedCandidatesDirectory, acceptedCandidateEvidenceDirectory] {
+            var metadata = stat()
+            guard lstat(directory.path, &metadata) == 0 else {
+                if errno == ENOENT { continue }
+                throw CleanupError.unreadableInventory
+            }
+            guard (metadata.st_mode & S_IFMT) == S_IFDIR,
+                  pathHasNoSymlinkComponents(directory.path, allowMissing: false),
+                  let files = FileManager.default.enumerator(
+                    at: directory, includingPropertiesForKeys: nil,
+                    options: [.skipsSubdirectoryDescendants]
+                  ) else { throw CleanupError.corruptInventory }
+            while let file = files.nextObject() as? URL {
+                let name = file.lastPathComponent
+                if directory == acceptedCandidatesDirectory && file == acceptedCandidateEvidenceDirectory {
+                    continue
+                }
+                guard name.hasSuffix(".json"),
+                      let identifier = UUID(uuidString: String(name.dropLast(5))),
+                      let data = try? boundedData(at: file) else {
+                    throw CleanupError.corruptInventory
+                }
+                recordCount += 1
+                guard recordCount <= Self.maximumCleanupEvidenceRecords else {
+                    throw CleanupError.inventoryEntryLimitExceeded(
+                        limit: Self.maximumCleanupEvidenceRecords
+                    )
+                }
+                if directory == acceptedCandidatesDirectory {
+                    guard let record = try? JSONDecoder().decode(AcceptedCandidateRecord.self, from: data),
+                          record.candidateID == identifier else { throw CleanupError.corruptInventory }
+                    if let receiptID = record.uiAcceptedReceiptID { protectedIDs.insert(receiptID) }
+                } else {
+                    guard let evidence = try? JSONDecoder().decode(AcceptedCandidateEvidenceRecord.self, from: data),
+                          evidence.evidenceID == identifier else { throw CleanupError.corruptInventory }
+                    if let receiptID = evidence.receiptIdentifier { protectedIDs.insert(receiptID) }
+                }
+            }
+        }
+        return protectedIDs
+    }
+
+    private func retentionReceipts(
+        allowingMoreThanMaximumEntries: Bool = false
+    ) throws -> [AppDeliveryReceipt] {
         var directoryMetadata = stat()
         guard lstat(baseDirectory.path, &directoryMetadata) == 0 else {
             if errno == ENOENT { return [] }
@@ -1266,11 +1459,12 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
               pathHasNoSymlinkComponents(baseDirectory.path, allowMissing: false) else {
             throw RetentionError.unsafePath
         }
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: baseDirectory, includingPropertiesForKeys: nil
+        guard let files = FileManager.default.enumerator(
+            at: baseDirectory, includingPropertiesForKeys: nil,
+            options: [.skipsSubdirectoryDescendants]
         ) else { throw RetentionError.unreadableInventory }
         var receipts: [AppDeliveryReceipt] = []
-        for file in files {
+        while let file = files.nextObject() as? URL {
             let name = file.lastPathComponent
             var metadata = stat()
             guard lstat(file.path, &metadata) == 0 else { throw RetentionError.unreadableInventory }
@@ -1287,7 +1481,15 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                 throw RetentionError.corruptInventory
             }
             receipts.append(receipt)
-            guard receipts.count <= Self.maximumEntries else { throw RetentionError.corruptInventory }
+            if allowingMoreThanMaximumEntries,
+               receipts.count > Self.maximumCleanupReceiptEntries {
+                throw RetentionError.inventoryEntryLimitExceeded(
+                    limit: Self.maximumCleanupReceiptEntries
+                )
+            }
+            guard allowingMoreThanMaximumEntries || receipts.count <= Self.maximumEntries else {
+                throw RetentionError.corruptInventory
+            }
         }
         return receipts
     }

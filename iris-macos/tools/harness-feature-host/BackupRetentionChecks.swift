@@ -65,7 +65,11 @@ struct BackupRetentionChecks {
         try checkCorruptSymlinkAndRecordBounds(root: root); groups += 1
         try checkCheapAvailability(root: root); groups += 1
         try checkTestCleanupPreflightAndProtection(root: root); groups += 1
-        try checkSuccessiveInstalledDeliveriesRemain(root: root); groups += 1
+        try checkSuccessiveInstalledDeliveriesAreCompacted(root: root); groups += 1
+        try checkOverCapValidHistoryCanBeCompacted(root: root); groups += 1
+        try checkReceiptEnvelopeFailureReconciles(root: root); groups += 1
+        try checkCleanupScanCeilingFailsBeforeDeletion(root: root); groups += 1
+        try checkAcceptedEvidenceScanCeilingFailsBeforeDecodeAll(root: root); groups += 1
         try checkCleanupAliasAndPolicyGuards(root: root); groups += 1
         print("BACKUP RETENTION CHECKS PASS: \(groups) groups")
     }
@@ -321,6 +325,214 @@ struct BackupRetentionChecks {
         }).filter({ $0 == AppDeliveryReceipt.Phase.installed }).count == 2,
                     "successful deliveries did not retain both installed receipts")
         print("PASS successive installed deliveries retain receipts/backups; growth remains outside cleanup")
+    }
+
+    private static func checkReceiptEnvelopeFailureReconciles(root: URL) throws {
+        let fixture = try Self.fixture(root: root, name: "cleanup-envelope-retry")
+        let identifier = "com.fixture.retention.envelope"
+        try makeBundle(at: fixture.installed, identifier: identifier, payload: "v0")
+        try makeBundle(at: fixture.replacement, identifier: identifier, payload: "v1")
+        let replacementTwo = fixture.root.appendingPathComponent("replacement-two/Retention.app")
+        try makeBundle(at: replacementTwo, identifier: identifier, payload: "v2")
+        let backupOne = fixture.backupRoot.appendingPathComponent(
+            "com.fixture.retention.envelope/one/Retention.app", isDirectory: true
+        )
+        let backupTwo = fixture.backupRoot.appendingPathComponent(
+            "com.fixture.retention.envelope/two/Retention.app", isDirectory: true
+        )
+        let sourceIdentity = deliverySourceIdentity(fixture: fixture)
+        let first = AppRelaunchService.replaceBundleWithRecoveryReceipt(
+            bundleIdentifier: identifier, installedPath: fixture.installed.path,
+            artifactPath: fixture.replacement.path, backupPath: backupOne.path,
+            grantsMayReset: true, store: fixture.store, undoRecoveryStore: fixture.recoveryStore,
+            sourceIdentity: sourceIdentity, retentionPolicy: fixture.policy
+        )
+        let second = AppRelaunchService.replaceBundleWithRecoveryReceipt(
+            bundleIdentifier: identifier, installedPath: fixture.installed.path,
+            artifactPath: replacementTwo.path, backupPath: backupTwo.path,
+            grantsMayReset: true, store: fixture.store, undoRecoveryStore: fixture.recoveryStore,
+            sourceIdentity: sourceIdentity, retentionPolicy: fixture.policy
+        )
+        guard case .replacedInstalledApp = first, case .replacedInstalledApp = second else {
+            throw BackupRetentionCheckError.failed("fixture deliveries did not create superseded receipt")
+        }
+        let superseded = try requireReceipt(store: fixture.store, backupPath: backupOne.path)
+        do {
+            _ = try fixture.store.cleanupRestoredBackups(
+                bundleIdentifier: identifier, backupRoot: fixture.backupRoot,
+                recoveryStore: fixture.recoveryStore,
+                protectedPaths: [
+                    fixture.installed.path, fixture.replacement.path, replacementTwo.path,
+                    fixture.root.appendingPathComponent("clone").path
+                ],
+                policy: .init(now: Date().addingTimeInterval(8 * 24 * 60 * 60)),
+                removeReceiptEnvelope: { _ in
+                    throw BackupRetentionCheckError.failed("injected receipt-envelope unlink failure")
+                }
+            )
+            throw BackupRetentionCheckError.failed("cleanup unexpectedly completed after injected envelope failure")
+        } catch let error as AppDeliveryReceiptStore.CleanupError {
+            guard case .deletionFailed(let path, let deletedPaths, let logicalBytes, _) = error else {
+                throw BackupRetentionCheckError.failed("unexpected injected cleanup error: \(error)")
+            }
+            try require(path == backupOne.path && deletedPaths == [backupOne.path] && logicalBytes > 0,
+                        "payload removal was not truthfully reported before receipt unlink failure")
+        }
+        try require(!FileManager.default.fileExists(atPath: backupOne.path)
+                    && FileManager.default.fileExists(atPath: fixture.store.url(for: superseded.identifier).path),
+                    "fixture did not retain only the dangling exact receipt envelope")
+        let project = cleanupProject(fixture: fixture, identifier: identifier)
+        let pendingRecovery = DeliveredEditUndoRecoveryRecord(
+            identifier: UUID(), startedAt: Date(), appSlug: "envelope", appName: "Envelope",
+            installedPath: fixture.installed.path, backupPath: backupOne.path,
+            clonePath: fixture.root.appendingPathComponent("clone").path,
+            branchName: "iris/edit-envelope", originalCommit: String(repeating: "a", count: 40),
+            originalRef: "main", deliveryReceiptIdentifier: superseded.identifier
+        )
+        try fixture.recoveryStore.saveBeforeStarting(pendingRecovery)
+        do {
+            let protectedRetry = try IrisTestAppDelivery.cleanupObsoleteBackups(
+                project: project, backupDirectory: fixture.backupRoot,
+                receiptStore: fixture.store, recoveryStore: fixture.recoveryStore,
+                policy: .init(now: Date().addingTimeInterval(8 * 24 * 60 * 60))
+            )
+            try require(protectedRetry.deletedPaths.isEmpty,
+                        "recovery-protected cleanup reported a payload deletion")
+        } catch is AppDeliveryReceiptStore.CleanupError {
+            // A changed or otherwise ambiguous recovery marker is also a
+            // fail-closed result. The envelope must remain either way.
+        }
+        try require(FileManager.default.fileExists(atPath: fixture.store.url(for: superseded.identifier).path),
+                    "recovery-protected dangling receipt was reconciled unsafely")
+        try fixture.recoveryStore.clearAfterCompletion(identifier: pendingRecovery.identifier)
+        let retry = try IrisTestAppDelivery.cleanupObsoleteBackups(
+            project: project, backupDirectory: fixture.backupRoot,
+            receiptStore: fixture.store, recoveryStore: fixture.recoveryStore,
+            policy: .init(now: Date().addingTimeInterval(8 * 24 * 60 * 60))
+        )
+        try require(retry.deletedPaths.isEmpty
+                    && !FileManager.default.fileExists(atPath: fixture.store.url(for: superseded.identifier).path),
+                    "retry did not reconcile the exact obsolete receipt envelope")
+        let nextBackup = fixture.backupRoot.appendingPathComponent(
+            "com.fixture.retention.envelope/next/Retention.app", isDirectory: true
+        )
+        guard try fixture.store.admitBackup(
+            sourcePath: fixture.installed.path, destinationPath: nextBackup.path,
+            policy: fixture.policy, recoveryStore: fixture.recoveryStore
+        ) != nil else {
+            throw BackupRetentionCheckError.failed("reconciled receipt still blocked the next backup admission")
+        }
+        print("PASS payload-first receipt-unlink failure reconciles safely and admits the next backup")
+    }
+
+    private static func checkCleanupScanCeilingFailsBeforeDeletion(root: URL) throws {
+        let fixture = try Self.fixture(root: root, name: "cleanup-scan-ceiling")
+        let identifier = "com.fixture.retention.ceiling"
+        try makeBundle(at: fixture.installed, identifier: identifier, payload: "current")
+        try makeBundle(at: fixture.replacement, identifier: identifier, payload: "replacement")
+        for index in 0...AppDeliveryReceiptStore.maximumCleanupReceiptEntries {
+            let receipt = AppDeliveryReceipt(
+                bundleIdentifier: identifier, installedPath: fixture.installed.path,
+                sourceArtifactPath: fixture.replacement.path,
+                backupPath: fixture.backupRoot.appendingPathComponent(
+                    "com.fixture.retention.ceiling/\(index)/Retention.app", isDirectory: true
+                ).path,
+                startedAt: Date(timeIntervalSince1970: Double(index))
+            )
+            try fixture.store.savePrepared(receipt)
+        }
+        let project = cleanupProject(fixture: fixture, identifier: identifier)
+        do {
+            _ = try IrisTestAppDelivery.previewObsoleteBackups(
+                project: project, backupDirectory: fixture.backupRoot,
+                receiptStore: fixture.store, recoveryStore: fixture.recoveryStore
+            )
+            throw BackupRetentionCheckError.failed("over-ceiling preview unexpectedly scanned the full history")
+        } catch let error as AppDeliveryReceiptStore.RetentionError {
+            try require(error == .inventoryEntryLimitExceeded(
+                limit: AppDeliveryReceiptStore.maximumCleanupReceiptEntries
+            ), "over-ceiling preview did not expose its bounded inventory limit")
+        }
+        do {
+            _ = try IrisTestAppDelivery.cleanupObsoleteBackups(
+                project: project, backupDirectory: fixture.backupRoot,
+                receiptStore: fixture.store, recoveryStore: fixture.recoveryStore
+            )
+            throw BackupRetentionCheckError.failed("over-ceiling cleanup unexpectedly scanned the full history")
+        } catch let error as AppDeliveryReceiptStore.CleanupError {
+            try require(error == .inventoryEntryLimitExceeded(
+                limit: AppDeliveryReceiptStore.maximumCleanupReceiptEntries
+            ), "over-ceiling cleanup did not fail visibly before deletion")
+        }
+        let remainingEnvelopes = try FileManager.default.contentsOfDirectory(
+            at: fixture.receiptRoot, includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasSuffix(".json") }
+        try require(remainingEnvelopes.count == AppDeliveryReceiptStore.maximumCleanupReceiptEntries + 1,
+                    "over-ceiling cleanup mutated records before its fail-closed limit")
+        print("PASS explicit cleanup has a visible bounded scan ceiling before deletion")
+    }
+
+    private static func checkAcceptedEvidenceScanCeilingFailsBeforeDecodeAll(root: URL) throws {
+        let fixture = try Self.fixture(root: root, name: "cleanup-evidence-ceiling")
+        let identifier = "com.fixture.retention.evidence-ceiling"
+        try makeBundle(at: fixture.installed, identifier: identifier, payload: "current")
+        try makeBundle(at: fixture.replacement, identifier: identifier, payload: "replacement")
+        try FileManager.default.createDirectory(at: fixture.backupRoot, withIntermediateDirectories: true)
+        let sourceIdentity = AppDeliveryReceipt.SourceIdentity(
+            appSlug: "evidence-ceiling", appName: "Evidence Ceiling",
+            clonePath: fixture.root.appendingPathComponent("clone").path,
+            branchName: "iris/edit-evidence-ceiling", commit: String(repeating: "a", count: 40),
+            baseCommit: String(repeating: "b", count: 40), baseRef: "main", changeId: "evidence-ceiling"
+        )
+        guard let digest = AcceptedCandidateRecord.digest(atArtifactPath: fixture.replacement.path) else {
+            throw BackupRetentionCheckError.failed("could not create evidence-ceiling artifact digest")
+        }
+        for _ in 0...AppDeliveryReceiptStore.maximumCleanupEvidenceRecords {
+            let candidate = try AcceptedCandidateRecord(
+                projectSlug: "evidence-ceiling", bundleIdentifier: identifier,
+                registeredProjectPath: fixture.root.appendingPathComponent("clone").path,
+                registeredApplicationPath: fixture.installed.path,
+                artifactPath: fixture.replacement.path, sourceIdentity: sourceIdentity,
+                artifactDigest: digest, verificationEvidenceID: UUID(), reviewEvidenceID: UUID()
+            )
+            try fixture.store.saveAcceptedCandidate(candidate)
+        }
+        let candidateDirectory = fixture.store.acceptedCandidatesDirectory
+        let generatedRecords = try FileManager.default.contentsOfDirectory(
+            at: candidateDirectory, includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasSuffix(".json") }
+        try require(fixture.store.acceptedCandidatesDirectory == candidateDirectory
+                    && generatedRecords.count == AppDeliveryReceiptStore.maximumCleanupEvidenceRecords + 1,
+                    "evidence-ceiling fixture did not create the owned candidate records")
+        let project = cleanupProject(fixture: fixture, identifier: identifier)
+        do {
+            _ = try IrisTestAppDelivery.previewObsoleteBackups(
+                project: project, backupDirectory: fixture.backupRoot,
+                receiptStore: fixture.store, recoveryStore: fixture.recoveryStore
+            )
+            throw BackupRetentionCheckError.failed("over-ceiling accepted evidence was decoded without a bound")
+        } catch let error as AppDeliveryReceiptStore.RetentionError {
+            try require(error == .inventoryEntryLimitExceeded(
+                limit: AppDeliveryReceiptStore.maximumCleanupEvidenceRecords
+            ), "over-ceiling accepted evidence did not expose its bounded scan limit")
+        }
+        do {
+            _ = try IrisTestAppDelivery.cleanupObsoleteBackups(
+                project: project, backupDirectory: fixture.backupRoot,
+                receiptStore: fixture.store, recoveryStore: fixture.recoveryStore
+            )
+            throw BackupRetentionCheckError.failed("over-ceiling accepted evidence cleanup unexpectedly continued")
+        } catch let error as AppDeliveryReceiptStore.CleanupError {
+            try require(error == .inventoryEntryLimitExceeded(
+                limit: AppDeliveryReceiptStore.maximumCleanupEvidenceRecords
+            ), "over-ceiling accepted evidence did not fail visibly before deletion")
+        }
+        let records = try FileManager.default.contentsOfDirectory(
+            at: candidateDirectory, includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasSuffix(".json") }
+        try require(records.count == AppDeliveryReceiptStore.maximumCleanupEvidenceRecords + 1,
+                    "accepted evidence ceiling mutated records before failing closed")
+        print("PASS accepted evidence decode has a visible bounded scan ceiling before deletion")
     }
 
     private static func checkCleanupAliasAndPolicyGuards(root: URL) throws {

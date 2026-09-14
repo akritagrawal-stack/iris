@@ -2313,6 +2313,8 @@ final class CompanionManager: ObservableObject {
             switch error {
             case .deletionFailed(_, let deletedPaths, _, _):
                 return "\(project.name): cleanup stopped after \(deletedPaths.count) backup(s) were removed; no completion was claimed. Review saved versions before trying again."
+            case .inventoryEntryLimitExceeded:
+                return "\(project.name): no files were removed. \(error.localizedDescription)"
             default:
                 return "\(project.name): cleanup stopped safely; no completion was claimed. Review saved versions before trying again."
             }

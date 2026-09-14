@@ -240,6 +240,15 @@ final class AccountService: ObservableObject {
     private let projectConfiguration: @MainActor () -> (URL, String)?
     private let sessionLogger = Logger(subsystem: "com.publikhq.iris", category: "account-session")
 
+    /// Keychain prompts name the running app. Keep the recovery copy aligned
+    /// with that name so a locally signed Iris Test build does not tell someone
+    /// to approve a different-looking app than the one macOS presents.
+    private var runningAppName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? "Iris"
+    }
+
     var savedSessionRetryLabel: String {
         if sessionWasExplicitlyEnded { return "Retry removing saved login" }
         return needsSavedLoginAuthorization || sessionPersistenceMessage != nil
@@ -273,7 +282,7 @@ final class AccountService: ObservableObject {
         switch saved {
         case .failure:
             needsSavedLoginAuthorization = true
-            signInFailureMessage = "macOS still blocks background access to your saved login. Reconnect and choose Always Allow for Iris in the Keychain prompt. Nothing was deleted."
+            signInFailureMessage = "macOS still blocks background access to your saved login. Reconnect and choose Always Allow for \(runningAppName) in the Keychain prompt. Nothing was deleted."
             return false
         case .success(let token):
             guard token != nil || currentRefreshToken != nil else {
@@ -664,7 +673,7 @@ final class AccountService: ObservableObject {
                 } else {
                     sessionLogger.error("restore: saved_login_unreadable")
                 }
-                signInFailureMessage = "Iris cannot read your saved login because macOS has blocked Keychain access. Your login was kept. Choose Reconnect saved login; if macOS asks, choose Always Allow for Iris."
+                signInFailureMessage = "\(runningAppName) cannot read your saved login because macOS has blocked Keychain access. Your login was kept. Choose Reconnect saved login; if macOS asks, choose Always Allow for \(runningAppName)."
                 return nil
             }
         }
@@ -856,7 +865,7 @@ final class AccountService: ObservableObject {
             sessionLogger.info("session_save: succeeded")
         } catch {
             sessionLogger.error("session_save: failed_memory_session_retained")
-            sessionPersistenceMessage = "You're connected for this session, but macOS has not saved your login. Choose Reconnect saved login before quitting Iris."
+            sessionPersistenceMessage = "You're connected for this session, but macOS has not saved your login. Choose Reconnect saved login before quitting \(runningAppName)."
         }
     }
 

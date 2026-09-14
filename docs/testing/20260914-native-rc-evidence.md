@@ -202,3 +202,18 @@ message on this RC. The remaining acceptance action is selecting
 `/Users/Shared/Iris-RC-20260914/Kneecap-validated-fc48ba48`, preparing its
 isolated copy, and verifying the mapped commands and device handoff. That
 interaction has not been claimed complete.
+
+## Overlay recovery action and picker selection
+
+Commit `a9cd228` adds the source picker action to the actual overlay control,
+where the native guide exposes `Let Iris run it`. The RC was rebuilt
+successfully, strictly signed, and relaunched. Computer use reproduced the
+legacy refusal; the same visible control then changed to `Choose source
+folder`. The native `NSOpenPanel` opened, and the validated path
+`/Users/Shared/Iris-RC-20260914/Kneecap-validated-fc48ba48` was selected through
+the panel and submitted.
+
+The overlay does not render the subsequent source-inspection state, so the
+inspection result and isolated-copy choice still need to be observed through
+the guide panel before commands can be run. No command was started and the
+original `/Users/akrit/kneecap` tree remains unchanged.

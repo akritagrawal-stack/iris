@@ -805,7 +805,18 @@ struct OverlayEyeInputBarView: View {
                         copyConfirmationText: guideSessionController.transientCopyConfirmationText
                     )
                     if guideSessionController.canOfferAutopilot {
-                        Button("Let Iris run it", action: { guideSessionController.startAutopilot() })
+                        Button(
+                            guideSessionController.shouldShowSourceWorkspaceRecovery
+                                ? "Choose source folder"
+                                : "Let Iris run it",
+                            action: {
+                                if guideSessionController.shouldShowSourceWorkspaceRecovery {
+                                    chooseSourceFolderForGuideRecovery()
+                                } else {
+                                    guideSessionController.startAutopilot()
+                                }
+                            }
+                        )
                             .irisPrimaryPill(isFullWidth: true, isCompact: true)
                     }
                     if let explanation = guideSessionController.autopilotAvailabilityExplanation {
@@ -2472,6 +2483,18 @@ struct OverlayEyeInputBarView: View {
         // field cannot take focus in a window that is not key yet.
         DispatchQueue.main.async {
             theTextFieldHasKeyboardFocus = true
+        }
+    }
+
+    private func chooseSourceFolderForGuideRecovery() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use source folder"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            _ = await guideSessionController.inspectReaderSelectedSourceWorkspace(sourcePath: url.path)
         }
     }
 }

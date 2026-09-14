@@ -32,7 +32,8 @@ final class IrisTestRunUsage {
             "inputTokens": count(call.inputTokens),
             "cachedInputTokens": count(call.cachedInputTokens),
             "outputTokens": count(call.outputTokens),
-            "reasoningOutputTokens": count(call.reasoningOutputTokens)
+            "reasoningOutputTokens": count(call.reasoningOutputTokens),
+            "elapsedNanoseconds": count(call.elapsedNanoseconds)
         ]
         if let inputCounts {
             document["systemPromptUTF8Bytes"] = inputCounts.systemPromptUTF8Bytes

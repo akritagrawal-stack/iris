@@ -26,6 +26,7 @@ struct IrisTestRunUsageTests {
         #expect(document["inputBytes"] as? UInt64 == 1_234)
         #expect(document["inputTokens"] as? UInt64 == 9)
         #expect(document["outputTokens"] as? UInt64 == 5)
+        #expect(document["elapsedNanoseconds"] as? UInt64 == 1)
     }
 
     @Test("admitted request counts attach to the settled reservation")

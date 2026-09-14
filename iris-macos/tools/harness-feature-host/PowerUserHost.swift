@@ -193,7 +193,12 @@ import AppKit
             "inputTokens": settled ? (snapshot.measuredInputTokens.map { $0 as Any } ?? NSNull()) : NSNull(),
             "cachedInputTokens": settled ? (snapshot.measuredCachedInputTokens.map { $0 as Any } ?? NSNull()) : NSNull(),
             "outputTokens": settled ? (snapshot.measuredOutputTokens.map { $0 as Any } ?? NSNull()) : NSNull(),
-            "calls": snapshot.settledCalls.map { ["phase": $0.reservation.task.rawValue, "inputBytes": $0.accountedInputBytes] as [String: Any] }
+            "calls": snapshot.settledCalls.map {
+                ["phase": $0.reservation.task.rawValue,
+                 "inputBytes": $0.accountedInputBytes,
+                 "elapsedNanoseconds": $0.elapsedNanoseconds.map { $0 as Any } ?? NSNull()]
+                    as [String: Any]
+            }
         ]
         do { try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
             .write(to: root.appendingPathComponent("artifacts/usage.json"), options: .atomic) }

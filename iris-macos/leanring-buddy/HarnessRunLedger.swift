@@ -234,6 +234,11 @@ nonisolated public struct HarnessRunCallRecord: Equatable, Sendable {
     public let cachedInputTokens: UInt64?
     public let outputTokens: UInt64?
     public let reasoningOutputTokens: UInt64?
+    /// Monotonic time from admission to settlement. This is available for
+    /// every reservation created by the ledger, including failed and
+    /// cancelled attempts, so route comparisons do not have to infer latency
+    /// from wall-clock log timestamps.
+    public let elapsedNanoseconds: UInt64?
     public let at: HarnessMonotonicTime
 
     public init(
@@ -245,7 +250,8 @@ nonisolated public struct HarnessRunCallRecord: Equatable, Sendable {
         outputTokens: UInt64?,
         at: HarnessMonotonicTime,
         cachedInputTokens: UInt64? = nil,
-        reasoningOutputTokens: UInt64? = nil
+        reasoningOutputTokens: UInt64? = nil,
+        elapsedNanoseconds: UInt64? = nil
     ) {
         self.reservation = reservation
         self.outcome = outcome
@@ -255,6 +261,7 @@ nonisolated public struct HarnessRunCallRecord: Equatable, Sendable {
         self.cachedInputTokens = cachedInputTokens
         self.outputTokens = outputTokens
         self.reasoningOutputTokens = reasoningOutputTokens
+        self.elapsedNanoseconds = elapsedNanoseconds
         self.at = at
     }
 }
@@ -372,6 +379,7 @@ nonisolated public struct HarnessRunLedger: Sendable {
     private var lastTimestamp: HarnessMonotonicTime
     private var nextReservationRawValue: UInt64 = 1
     private var inFlight: [HarnessRunReservationID: MutableReservation] = [:]
+    private var admissionTimes: [HarnessRunReservationID: HarnessMonotonicTime] = [:]
     private var settledIDs: Set<HarnessRunReservationID> = []
     private var settledRecords: [HarnessRunCallRecord] = []
     private var allSettledInputTokensKnown = true
@@ -534,6 +542,7 @@ nonisolated public struct HarnessRunLedger: Sendable {
             reservation: reservation,
             state: .reserved
         )
+        admissionTimes[reservationID] = timestamp
         events.append(.admitted(reservation: reservation, at: timestamp))
         lastTimestamp = timestamp
         return reservation
@@ -660,6 +669,9 @@ nonisolated public struct HarnessRunLedger: Sendable {
             measuredInputBytes: measuredInputBytes
         )
         let tokenTotals = try tokenTotalsAfterSettlement(usage: usage)
+        let elapsedNanoseconds = admissionTimes[reservationID].map {
+            timestamp.nanoseconds - $0.nanoseconds
+        }
         let record = HarnessRunCallRecord(
             reservation: mutableReservation.reservation,
             outcome: outcome,
@@ -669,10 +681,12 @@ nonisolated public struct HarnessRunLedger: Sendable {
             outputTokens: usage?.outputTokens,
             at: timestamp,
             cachedInputTokens: usage?.cachedInputTokens,
-            reasoningOutputTokens: usage?.reasoningOutputTokens
+            reasoningOutputTokens: usage?.reasoningOutputTokens,
+            elapsedNanoseconds: elapsedNanoseconds
         )
 
         inFlight.removeValue(forKey: reservationID)
+        admissionTimes.removeValue(forKey: reservationID)
         settledIDs.insert(reservationID)
         settledRecords.append(record)
         settledCallCount = try checkedAdd(

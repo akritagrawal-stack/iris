@@ -92,6 +92,8 @@ func runUsageAttributionChecks() async throws {
                 "settled ledger lost reasoning output tokens")
     try require((usageDocument["reasoningOutputTokens"] as? UInt64) == 7,
                 "serialized reasoning output token count was missing")
+    try require((usageDocument["elapsedNanoseconds"] as? UInt64) == 0,
+                "serialized monotonic latency was missing")
 
     var aggregateLedger = HarnessRunLedger(
         settings: try HarnessRunLedgerSettings(maxCalls: 2, maxInputBytes: 100),

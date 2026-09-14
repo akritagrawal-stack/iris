@@ -358,7 +358,8 @@ struct HarnessFeatureHost {
                  "inputTokens": record.inputTokens.map { $0 as Any } ?? NSNull(),
                  "cachedInputTokens": record.cachedInputTokens.map { $0 as Any } ?? NSNull(),
                  "outputTokens": record.outputTokens.map { $0 as Any } ?? NSNull(),
-                 "reasoningOutputTokens": record.reasoningOutputTokens.map { $0 as Any } ?? NSNull()]
+                 "reasoningOutputTokens": record.reasoningOutputTokens.map { $0 as Any } ?? NSNull(),
+                 "elapsedNanoseconds": record.elapsedNanoseconds.map { $0 as Any } ?? NSNull()]
             }
         ]
         if let data = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys]) {

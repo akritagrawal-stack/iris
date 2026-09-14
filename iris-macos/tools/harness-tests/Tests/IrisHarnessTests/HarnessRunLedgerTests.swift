@@ -129,6 +129,23 @@ struct HarnessRunLedgerTests {
         #expect(snapshot.settledCalls[1].outcome == .cancelled)
     }
 
+    @Test("settled calls retain monotonic latency for success failure and cancellation")
+    func settledCallsRetainMonotonicLatencyForEveryOutcome() throws {
+        var ledger = HarnessRunLedger(
+            settings: try settings(maxCalls: 3, maxInputBytes: 100),
+            startedAt: 10
+        )
+        let succeeded = try ledger.reserve(task: .edit, inputBytes: 1, at: 20)
+        try ledger.settle(succeeded, outcome: .succeeded, at: 45)
+        let failed = try ledger.reserve(task: .repair, inputBytes: 1, at: 50)
+        try ledger.settle(failed, outcome: .failed, at: 63)
+        let cancelled = try ledger.reserve(task: .recheck, inputBytes: 1, at: 70)
+        try ledger.settle(cancelled, outcome: .cancelled, at: 70)
+
+        #expect(ledger.snapshot.settledCalls.map(\.elapsedNanoseconds) == [25, 13, 0])
+        #expect(ledger.snapshot.settledCalls.map(\.outcome) == [.succeeded, .failed, .cancelled])
+    }
+
     @Test("reported token families stay separate and sum only when all are known")
     func reportedTokenFamiliesStaySeparateAndSumOnlyWhenAllAreKnown() throws {
         var ledger = HarnessRunLedger(

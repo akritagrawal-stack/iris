@@ -2192,7 +2192,17 @@ final class OnDemandEditCoordinator: ObservableObject {
     /// `confirmStartAndRun()`, reached only when the reader approves the plan.
     private func buildAndPresentPlan(kind: OnDemandEditKind) {
         if let workflow = harnessWorkflow, let brief = workflow.state?.brief {
-            do { _ = try workflow.implementationContext() }
+            do {
+                // Freeze the reader's accepted request and the currently bound
+                // app before rendering Start. The later Start action validates
+                // this exact identity again, so an old card cannot run against
+                // a newly selected app.
+                _ = try workflow.freezeExecutionBrief(
+                    forAppSlug: activeAppSlug,
+                    appName: activeAppName
+                )
+                _ = try workflow.implementationContext()
+            }
             catch {
                 statusLine = "The plan still needs a decision or a smaller scope. Nothing was changed."
                 return
@@ -2326,6 +2336,25 @@ final class OnDemandEditCoordinator: ObservableObject {
               let scrubbed = scrubbedRequest,
               let editChangeId = changeId,
               let kind = classifiedKind else { return }
+
+        if let workflow = harnessWorkflow {
+            do {
+                _ = try workflow.validateExecutionBrief(
+                    workflow.executionBrief ?? try workflow.freezeExecutionBrief(
+                        forAppSlug: slug,
+                        appName: activeAppName
+                    ),
+                    forAppSlug: slug,
+                    appName: activeAppName
+                )
+            } catch {
+                // No execution has begun. Return to a newly frozen plan rather
+                // than letting a stale card reach the edit runner.
+                buildAndPresentPlan(kind: kind)
+                statusLine = "The selected app or plan changed. Review the updated plan before Iris starts."
+                return
+            }
+        }
 
         // Iris Test is deliberately wired through the measured harness. A
         // missing or incomplete workflow means intake did not establish the

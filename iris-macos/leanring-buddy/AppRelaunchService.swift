@@ -1044,6 +1044,11 @@ final class AppRelaunchService {
         let installedDirectory = installedURL.deletingLastPathComponent()
         let bundleName = installedURL.lastPathComponent
 
+        guard Self.pathHasNoSymlinkComponents(installedDirectory.path),
+              Self.isDirectoryWithoutFollowingSymlinks(at: installedDirectory.path) else {
+            return .failure(reason: "the installed app directory is not a safe local directory")
+        }
+
         // 1. Snapshot the current installed bundle for undo.
         if let snapshotPath {
             let snapshotURL = URL(fileURLWithPath: snapshotPath)
@@ -1059,12 +1064,23 @@ final class AppRelaunchService {
             }
         }
 
-        // 2. Stage the replacement beside the installed app (same volume, so the
-        //    swap is atomic), then move it into place. A leftover stage from a
-        //    prior interrupted run is cleared first.
-        let stagingURL = installedDirectory.appendingPathComponent(".iris-delivery-\(bundleName)")
-        try? fileManager.removeItem(at: stagingURL)
-        guard dittoBundle(from: source, to: stagingURL.path) else {
+        // 2. Reserve a fresh staging directory beside the installed app (same
+        //    volume, so the swap is atomic), copy into that directory, then move
+        //    it into place. Never clear a predictable leftover: it could be a
+        //    symlink or another run's in-progress payload.
+        guard let staging = Self.createUniqueStagingDirectory(
+            beside: installedDirectory, bundleName: bundleName, fileManager: fileManager
+        ) else {
+            return .failure(reason: "couldn't reserve a safe staging directory beside the installed app")
+        }
+        let stagingURL = staging.url
+        defer { Self.removeOwnedStagingDirectory(staging) }
+        guard dittoBundle(from: source, to: stagingURL.path),
+              Self.stagingDirectoryStillOwned(staging),
+              Self.isLaunchableMacAppBundle(
+                  atPath: stagingURL.path,
+                  expectedBundleIdentifier: artifactBundleIdentifier(atPath: source)
+              ) else {
             return .failure(reason: "couldn't stage the build next to the installed app")
         }
         do {
@@ -1074,6 +1090,81 @@ final class AppRelaunchService {
             try? fileManager.removeItem(at: stagingURL)
             return .failure(reason: "couldn't move the build into place: \(error.localizedDescription)")
         }
+    }
+
+    private struct StagingDirectory: Sendable {
+        let url: URL
+        let device: dev_t
+        let inode: ino_t
+    }
+
+    /// Create a private, one-shot staging directory without following any
+    /// existing path component. The UUID makes a stale directory from an
+    /// interrupted delivery irrelevant, while the exclusive mkdir prevents a
+    /// concurrent delivery from claiming the same path.
+    nonisolated private static func createUniqueStagingDirectory(
+        beside directory: URL, bundleName: String, fileManager: FileManager
+    ) -> StagingDirectory? {
+        guard pathHasNoSymlinkComponents(directory.path),
+              isDirectoryWithoutFollowingSymlinks(at: directory.path) else { return nil }
+        let stagingURL = directory.appendingPathComponent(
+            ".iris-delivery-\(UUID().uuidString)-\(bundleName)", isDirectory: true
+        )
+        do {
+            try fileManager.createDirectory(
+                at: stagingURL, withIntermediateDirectories: false, attributes: nil
+            )
+        } catch {
+            // A UUID collision or an unexpected filesystem race fails closed;
+            // no pre-existing path is removed or reused.
+            return nil
+        }
+        var metadata = stat()
+        guard lstat(stagingURL.path, &metadata) == 0,
+              (metadata.st_mode & S_IFMT) == S_IFDIR else { return nil }
+        return StagingDirectory(
+            url: stagingURL, device: metadata.st_dev, inode: metadata.st_ino
+        )
+    }
+
+    /// Remove only the exact directory reserved by this operation. If another
+    /// process replaced the path, leaving it in place is safer than recursively
+    /// deleting an unknown directory.
+    nonisolated private static func removeOwnedStagingDirectory(
+        _ staging: StagingDirectory, fileManager: FileManager = .default
+    ) {
+        guard stagingDirectoryStillOwned(staging) else { return }
+        try? fileManager.removeItem(at: staging.url)
+    }
+
+    nonisolated private static func stagingDirectoryStillOwned(
+        _ staging: StagingDirectory
+    ) -> Bool {
+        var metadata = stat()
+        return lstat(staging.url.path, &metadata) == 0
+            && (metadata.st_mode & S_IFMT) == S_IFDIR
+            && metadata.st_dev == staging.device
+            && metadata.st_ino == staging.inode
+    }
+
+    nonisolated private static func isDirectoryWithoutFollowingSymlinks(at path: String) -> Bool {
+        var metadata = stat()
+        return lstat(path, &metadata) == 0
+            && (metadata.st_mode & S_IFMT) == S_IFDIR
+    }
+
+    /// Check every existing component with lstat so staging never traverses a
+    /// symlink supplied by an installed-app path.
+    nonisolated private static func pathHasNoSymlinkComponents(_ path: String) -> Bool {
+        guard path.hasPrefix("/") else { return false }
+        var current = "/"
+        for component in path.split(separator: "/") {
+            current = (current as NSString).appendingPathComponent(String(component))
+            var metadata = stat()
+            guard lstat(current, &metadata) == 0,
+                  (metadata.st_mode & S_IFMT) != S_IFLNK else { return false }
+        }
+        return true
     }
 
     /// Copy an app bundle with `ditto`, which preserves the code signature and

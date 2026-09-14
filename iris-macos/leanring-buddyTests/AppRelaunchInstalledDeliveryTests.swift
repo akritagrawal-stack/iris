@@ -8,9 +8,9 @@
 //  pinning here are which copy counts as "the installed app to replace"
 //  (never the clone's own build output; /Applications wins) and where the
 //  pre-delivery snapshot for undo is kept. The ditto/replace filesystem work
-//  itself has no unit coverage for the same reason the rest of this service
-//  does not — the harness cannot copy real app bundles — so it stays a
-//  supervised dogfood, like the relaunch mechanics above it.
+//  itself is covered below with disposable app-shaped bundles; replacement of
+//  a real installed app remains supervised dogfood, like the relaunch mechanics
+//  above it.
 //
 
 import Foundation
@@ -349,6 +349,40 @@ import Testing
         #expect(Self.markerOfBundle(at: installedPath) == "installed-v1")
         #expect(Self.markerOfBundle(at: freshBuildPath) == "fresh-v2")
         #expect(!FileManager.default.fileExists(atPath: snapshotPath))
+    }
+
+    /// A stale deterministic staging path must not be deleted or followed. The
+    /// replacement gets a fresh UUID directory, while the old symlink and its
+    /// target remain untouched.
+    @Test func stalePredictableStagingPathIsPreserved() throws {
+        let root = Self.isolatedFixtureRoot("iris-delivery-staging-safety")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let installedPath = root.appendingPathComponent("Applications/Demo.app").path
+        let freshBuildPath = root.appendingPathComponent("clone/build/Demo.app").path
+        let targetDirectory = root.appendingPathComponent("sentinel", isDirectory: true)
+        try FileManager.default.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
+        let sentinel = targetDirectory.appendingPathComponent("keep.txt")
+        try Data("do-not-delete".utf8).write(to: sentinel)
+        Self.makeFakeBundle(at: installedPath, marker: "installed-v1")
+        Self.makeFakeBundle(at: freshBuildPath, marker: "fresh-v2")
+
+        let predictableStage = root
+            .appendingPathComponent("Applications/.iris-delivery-Demo.app")
+        try FileManager.default.createSymbolicLink(
+            atPath: predictableStage.path, withDestinationPath: targetDirectory.path
+        )
+
+        let result = AppRelaunchService.atomicallyReplaceBundle(
+            installedPath: installedPath, withBundleAt: freshBuildPath, snapshotTo: nil
+        )
+        #expect(result.isSuccess)
+        #expect(Self.markerOfBundle(at: installedPath) == "fresh-v2")
+        #expect(FileManager.default.fileExists(atPath: sentinel.path))
+        #expect(
+            (try? FileManager.default.destinationOfSymbolicLink(atPath: predictableStage.path))
+                == targetDirectory.path
+        )
     }
 
     /// The delivery entry point, run for real against a bundle id that no app on

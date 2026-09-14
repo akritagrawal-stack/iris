@@ -838,7 +838,8 @@ struct GuidePanelView: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(DS.Colors.warningText)
                         .fixedSize(horizontal: false, vertical: true)
-                    if guideSessionController.guideNeedsPublisherWorkspaceMigration {
+                    if blocked.localizedCaseInsensitiveContains("source workspace")
+                        || blocked.localizedCaseInsensitiveContains("source folder") {
                         Button("Choose source folder") { chooseSourceFolder() }
                             .irisPrimaryPill(isFullWidth: false, isCompact: true)
                     }

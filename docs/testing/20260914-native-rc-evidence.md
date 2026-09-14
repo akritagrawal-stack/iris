@@ -262,3 +262,10 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   discovery when storage is unavailable. Its focused Node suite passed `19/19`.
   This is code and browser-hub evidence only; signed physical iPhone install,
   launch, restart, and data continuity remain unverified.
+- Spatial integration commit `c33ed52` adds a bounded 900 ms revalidation loop
+  while a guide remains visible. The loop reuses the existing target identity,
+  ambiguity, minimization, cancellation, and model-budget gates and stops when
+  the guide is hidden or closed. Native build succeeded; spatial checks passed
+  `11/11` and guide regressions passed `72` tests in `5` suites. The integrated
+  RC still needs a fresh native movement/tab-switch run after rebuilding with
+  this commit.

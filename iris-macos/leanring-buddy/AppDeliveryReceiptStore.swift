@@ -721,7 +721,9 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
             let allSelectedEligible = inventory.previewEligibleBackupPaths.filter {
                 $0.hasPrefix(selectedPrefix)
             }
-            let selectedReceipts = try retentionReceipts().filter {
+            let selectedReceipts = try retentionReceipts(
+                allowingMoreThanMaximumEntries: true
+            ).filter {
                 $0.bundleIdentifier == bundleIdentifier
                     && $0.phase == .restored
                     && allSelectedEligible.contains(URL(fileURLWithPath: $0.backupPath).standardizedFileURL.path)

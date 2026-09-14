@@ -426,12 +426,23 @@ struct BackupRetentionChecks {
             )
         }
         let project = cleanupProject(fixture: fixture, identifier: identifier)
+        let preview = try IrisTestAppDelivery.previewObsoleteBackups(
+            project: project, backupDirectory: fixture.backupRoot,
+            receiptStore: fixture.store, recoveryStore: fixture.recoveryStore,
+            policy: .init(now: now)
+        )
+        let expectedRecentRollbackCount = 7
+        try require(preview.receiptCount == AppDeliveryReceiptStore.maximumEntries + 1,
+                    "over-cap preview did not inspect the full bounded history")
+        try require(preview.previewEligibleBackupPaths.count
+                    == AppDeliveryReceiptStore.maximumEntries + 1 - expectedRecentRollbackCount,
+                    "over-cap preview did not expose only obsolete history: \(preview.previewEligibleBackupPaths.count)")
         let result = try IrisTestAppDelivery.cleanupObsoleteBackups(
             project: project, backupDirectory: fixture.backupRoot,
             receiptStore: fixture.store, recoveryStore: fixture.recoveryStore,
             policy: .init(now: now)
         )
-        let retainedRecentRollbackCount = 7
+        let retainedRecentRollbackCount = expectedRecentRollbackCount
         try require(result.deletedPaths.count == AppDeliveryReceiptStore.maximumEntries + 1 - retainedRecentRollbackCount,
                     "over-cap valid history did not compact enough records: \(result.deletedPaths.count)")
         try require(fixture.store.entries().count == retainedRecentRollbackCount,

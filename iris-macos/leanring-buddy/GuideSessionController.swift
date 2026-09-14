@@ -608,6 +608,11 @@ final class GuideSessionController: ObservableObject {
     /// nothing forever after. A tap has to be answered.
     @Published private(set) var autopilotBlockedExplanation: String?
 
+    /// Keeps the recovery affordance visible after a legacy guide refuses to
+    /// run. This is state, rather than a derived guide predicate, because the
+    /// refusal can invalidate a saved binding while the guide remains open.
+    @Published private(set) var shouldShowSourceWorkspaceRecovery = false
+
     /// The persisted "Let Iris take control" grant `startAutopilot` reads and
     /// sets. Settable (not just `.shared`) so a test can inject one over an
     /// isolated `UserDefaults` suite and never touch the reader's real
@@ -2030,6 +2035,7 @@ final class GuideSessionController: ObservableObject {
                 || IrisTestEnvironment.isUnitTestProcess
                 || offlineNativeFixture != nil else {
                 autopilotBlockedExplanation = "Choose and prepare the reviewed source workspace before Iris runs this older guide."
+                shouldShowSourceWorkspaceRecovery = true
                 irisTrace("autopilot: start refused — legacy guide needs a validated workspace binding")
                 return
             }
@@ -2043,6 +2049,7 @@ final class GuideSessionController: ObservableObject {
                   binding.expectedCommit == sourceCommit,
                   Self.sourceOrigin(for: guide) == binding.expectedOrigin else {
                 autopilotBlockedExplanation = "Choose and prepare the guide's source folder before Iris runs project commands."
+                shouldShowSourceWorkspaceRecovery = true
                 irisTrace("autopilot: start refused — no matching prepared source workspace")
                 return
             }
@@ -2089,6 +2096,7 @@ final class GuideSessionController: ObservableObject {
             autonomyGrant.grant()
         }
         autopilotBlockedExplanation = nil
+        shouldShowSourceWorkspaceRecovery = false
         readerDeliberatelyReturnedToThisStep = false
         let context = GuideAutopilotGuideContext(
             slug: guide.appSlug,

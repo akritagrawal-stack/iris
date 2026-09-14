@@ -150,7 +150,7 @@ struct GuidePanelView: View {
                         if guideSessionController.guideOffersSourceWorkspaceSetup
                             || guideSessionController.guideNeedsPublisherWorkspaceMigration
                             || guideSessionController.guideHasPinnedSourceIdentity
-                            || guideSessionController.autopilotBlockedExplanation?.localizedCaseInsensitiveContains("source") == true {
+                            || guideSessionController.shouldShowSourceWorkspaceRecovery {
                             sourceWorkspaceSetupCard
                         }
                         if let setupRecoveryState = guideSessionController.setupRecoveryState {
@@ -839,9 +839,7 @@ struct GuidePanelView: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(DS.Colors.warningText)
                         .fixedSize(horizontal: false, vertical: true)
-                    if blocked.localizedCaseInsensitiveContains("source workspace")
-                        || blocked.localizedCaseInsensitiveContains("source folder")
-                        || guideSessionController.guideHasPinnedSourceIdentity {
+                    if guideSessionController.shouldShowSourceWorkspaceRecovery {
                         Button("Choose source folder") { chooseSourceFolder() }
                             .buttonStyle(.borderedProminent)
                     }

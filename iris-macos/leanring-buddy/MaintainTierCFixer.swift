@@ -1436,7 +1436,8 @@ final class MaintainTierCFixer {
                             repoRootPath: clonePath,
                             gitBackupPath: gitBackup,
                             buildCommand: buildCommand,
-                            commandSubdirectory: verificationCommandsThisRunWillBeJudgedBy.commandSubdirectory
+                            commandSubdirectory: verificationCommandsThisRunWillBeJudgedBy.commandSubdirectory,
+                            processPolicy: processPolicy
                         )
                         appendEarlyBuildCheckpointObservation(observation, to: &conversation)
                     }
@@ -1463,7 +1464,8 @@ final class MaintainTierCFixer {
                         observation = await Self.runRepairTestCheckpoint(
                             runner: runner, repoRootPath: clonePath,
                             testCommand: testCommand,
-                            commandSubdirectory: verificationCommandsThisRunWillBeJudgedBy.commandSubdirectory
+                            commandSubdirectory: verificationCommandsThisRunWillBeJudgedBy.commandSubdirectory,
+                            processPolicy: processPolicy
                         )
                     }
                     if cancellationCheck?() == true { return await revertEverythingForAReaderStop() }
@@ -1650,7 +1652,7 @@ final class MaintainTierCFixer {
             }
 
             guard let jailed = MaintainSandbox.jailedInvocation(
-                forCommand: command, repoRootPath: clonePath
+                forCommand: command, repoRootPath: clonePath, policy: processPolicy
             ) else {
                 await restoreGit()
                 return .couldNotFix(reason: "could not build the sandbox for a command")
@@ -1805,7 +1807,8 @@ final class MaintainTierCFixer {
                         repoRootPath: clonePath,
                         gitBackupPath: gitBackup,
                         buildCommand: buildCommand,
-                        commandSubdirectory: verificationCommandsThisRunWillBeJudgedBy.commandSubdirectory
+                        commandSubdirectory: verificationCommandsThisRunWillBeJudgedBy.commandSubdirectory,
+                        processPolicy: processPolicy
                     )
                     appendEarlyBuildCheckpointObservation(observation, to: &conversation)
                 }
@@ -2604,11 +2607,12 @@ final class MaintainTierCFixer {
         repoRootPath: String,
         gitBackupPath: String,
         buildCommand: String,
-        commandSubdirectory: String?
+        commandSubdirectory: String?,
+        processPolicy: MaintainSandbox.ProcessPolicy?
     ) async -> String {
         let buildOutput: String
         if let jailed = MaintainSandbox.jailedInvocation(
-            forCommand: buildCommand, repoRootPath: repoRootPath
+            forCommand: buildCommand, repoRootPath: repoRootPath, policy: processPolicy
         ) {
             defer { try? FileManager.default.removeItem(atPath: jailed.profilePath) }
             let result = try? await runner.run(
@@ -2659,10 +2663,11 @@ final class MaintainTierCFixer {
         runner: MaintainShellRunner,
         repoRootPath: String,
         testCommand: String,
-        commandSubdirectory: String?
+        commandSubdirectory: String?,
+        processPolicy: MaintainSandbox.ProcessPolicy?
     ) async -> String {
         guard let jailed = MaintainSandbox.jailedInvocation(
-            forCommand: testCommand, repoRootPath: repoRootPath
+            forCommand: testCommand, repoRootPath: repoRootPath, policy: processPolicy
         ) else {
             return "EARLY TEST CHECKPOINT: unavailable because its sandbox could not be created. No result is inferred."
         }

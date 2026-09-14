@@ -154,3 +154,13 @@ Undo recovery failure paths, keychain permission boundaries, catalog cache
 bounds, and chat reset/reopen behavior. These are source/package regressions;
 they do not replace the missing live model, full delivery lifecycle, or
 physical-iPhone acceptance evidence.
+
+## Current guide and spatial regression run, September 14
+
+The existing headless module `/tmp/iris-harness-host-A1WBRI` was reused without
+building a second model or fixture. `run-guide-regressions.mjs` passed **71
+ tests in 5 suites** and the dedicated spatial executable exited **0**. This
+covers retry/cancellation/session freshness and the spatial invalidation,
+movement, ambiguity, bounds, and app/window-change checks. It remains headless
+source evidence; native AX target reacquisition still needs a connected
+screen-help provider and live UI interaction.

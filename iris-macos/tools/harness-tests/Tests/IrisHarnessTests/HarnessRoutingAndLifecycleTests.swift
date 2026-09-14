@@ -117,6 +117,7 @@ func everyModelPhaseHasAnExplicitRouteClass(_ phase: HarnessRunTaskKind) {
 
     #expect(requests.count == 1)
     #expect(requests[0].routeClass == .boundedExtraction)
+    #expect(requests[0].route == HarnessImplementationArm.lunaMax.route)
     #expect(session.ledger.snapshot.settledCalls[0].reservation.routeClass == .boundedExtraction)
     #expect(routeSnapshots.last?.modelCalls == 1)
     #expect(routeSnapshots.last?.modelCallsByClass[HarnessRouteClass.boundedExtraction.rawValue] == 1)

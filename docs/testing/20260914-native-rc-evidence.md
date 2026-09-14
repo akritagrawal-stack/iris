@@ -15,6 +15,17 @@ read. Reconnect was triggered, but the secure macOS approval dialog is outside
 the computer-use accessibility surface; the account-dependent native run is
 therefore pending the owner selecting **Always Allow** for Iris Test.
 
+### 2026-09-14 bounded in-flight-call cancellation
+
+A second tightly scoped NitroAI Feature request reached the live composer and
+admitted one Luna call. The UI remained on `Reviewing your request…` without a
+provider-confirmed model, progress, or token counts. The run was then ended
+without allowing another generation. Its usage record settled the admitted
+call with `ledgerState: failed`, `settledCalls: 1`, `inFlightCalls: 0`, and
+`productOutcome: unknown`; completion was not claimed and the clone remained
+unchanged. This confirms the cancellation/late-usage accounting path, while
+also leaving the provider convergence issue open.
+
 ### 2026-09-14 bounded complex transfer attempt
 
 The signed RC was exercised through the native UI with an explicit **Feature** route. The request was intentionally scoped to the existing NitroAI transfer design: add Settings export/import controls, preserve folder and note identity, keep both copies on same-ID collisions, reject malformed or dangling references atomically, and run the focused tests/build.

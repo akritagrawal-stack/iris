@@ -59,21 +59,22 @@ nonisolated struct DeliveredEditUndoRecoveryStore: Sendable {
     /// Even an unreadable marker suppresses automatic recovery. Missing targets
     /// or old timestamps never establish that an interrupted Undo finished.
     func load() -> Loaded {
-        do {
-            let attributes = try FileManager.default.attributesOfItem(atPath: recordURL.path)
-            guard attributes[.type] as? FileAttributeType == .typeRegular,
-                  let size = attributes[.size] as? NSNumber, size.intValue <= 32_768 else { return .unreadable }
-            let data = try Data(contentsOf: recordURL)
-            guard data.count <= 32_768,
-                  let record = try? JSONDecoder().decode(DeliveredEditUndoRecoveryRecord.self, from: data),
-                  record.isValid else { return .unreadable }
-            return .pending(record)
-        } catch {
-            let failure = error as NSError
-            if failure.domain == NSCocoaErrorDomain,
-               [NSFileReadNoSuchFileError, NSFileNoSuchFileError].contains(failure.code) { return .absent }
-            return .unreadable
+        let descriptor = open(recordURL.path, O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            return errno == ENOENT ? .absent : .unreadable
         }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var attributes = stat()
+        guard fstat(descriptor, &attributes) == 0,
+              (attributes.st_mode & S_IFMT) == S_IFREG,
+              attributes.st_size >= 0,
+              attributes.st_size <= 32_768,
+              let data = try? handle.read(upToCount: 32_769),
+              data.count <= 32_768,
+              let record = try? JSONDecoder().decode(DeliveredEditUndoRecoveryRecord.self, from: data),
+              record.isValid else { return .unreadable }
+        return .pending(record)
     }
 
     func saveBeforeStarting(_ record: DeliveredEditUndoRecoveryRecord) throws {

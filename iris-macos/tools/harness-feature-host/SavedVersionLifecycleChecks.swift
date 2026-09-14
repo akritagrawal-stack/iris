@@ -35,6 +35,8 @@ struct SavedVersionLifecycleChecks {
         do {
             try checkReceiptRoundTripAndPayloadIdentity()
             print("PASS receipt source/base and installed bundle identity survive restart")
+            try checkRecoveryMarkerRefusesFinalSymlink()
+            print("PASS Undo recovery marker refuses final symlink and preserves review gate")
             try await checkChangedSourceAndPayloadRefusal()
             print("PASS duplicate receipts, dirty source, and same-ID payload changes refuse safely")
             try await checkCoordinatorCallbackOrdering()
@@ -101,6 +103,35 @@ struct SavedVersionLifecycleChecks {
             replacementBundleIdentity: metadataOnly, backupBundleIdentity: metadataOnly)
         try require(partial.isValid && !partial.hasCompleteUndoMetadata,
                     "metadata-only legacy bundle identities incorrectly enabled Undo")
+    }
+
+    private static func checkRecoveryMarkerRefusesFinalSymlink() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iris-undo-marker-symlink-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recordURL = root.appendingPathComponent("state/delivered-undo-recovery.json")
+        let targetURL = root.appendingPathComponent("other/marker.json")
+        try FileManager.default.createDirectory(at: recordURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: targetURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: targetURL)
+        try FileManager.default.createSymbolicLink(atPath: recordURL.path, withDestinationPath: targetURL.path)
+
+        let store = DeliveredEditUndoRecoveryStore(recordURL: recordURL)
+        try require(store.load() == .unreadable,
+                    "final symlink recovery marker was treated as absent or pending")
+        let record = DeliveredEditUndoRecoveryRecord(
+            identifier: UUID(), startedAt: Date(), appSlug: "fixture", appName: "Fixture",
+            installedPath: root.appendingPathComponent("Fixture.app").path,
+            backupPath: root.appendingPathComponent("backup/Fixture.app").path,
+            clonePath: root.appendingPathComponent("clone").path,
+            branchName: "iris-edit", originalCommit: nil, originalRef: nil
+        )
+        do {
+            try store.saveBeforeStarting(record)
+            throw CheckFailure(message: "symlink recovery marker was overwritten")
+        } catch DeliveredEditUndoRecoveryStore.StoreError.existingRecord {
+            // Expected: ambiguous recovery stays visible for review.
+        }
     }
 
     @MainActor

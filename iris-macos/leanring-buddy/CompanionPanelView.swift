@@ -316,6 +316,16 @@ struct CompanionPanelView: View {
                         }
                     )
                         .padding(.horizontal, 16)
+
+                    // A stopped Undo explicitly tells the reader to find its
+                    // recovery details in Settings. Keep that promise here;
+                    // the section renders nothing unless a stopped Undo left
+                    // recovery files behind.
+                    SavedUndoRecoverySection(
+                        coordinator: companionManager.onDemandEditCoordinator
+                    )
+                        .padding(.top, 10)
+                        .padding(.horizontal, 16)
                 }
 
                 Spacer()

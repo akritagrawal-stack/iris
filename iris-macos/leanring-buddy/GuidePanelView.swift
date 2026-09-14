@@ -839,10 +839,8 @@ struct GuidePanelView: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(DS.Colors.warningText)
                         .fixedSize(horizontal: false, vertical: true)
-                    if guideSessionController.shouldShowSourceWorkspaceRecovery {
-                        Button("Choose source folder") { chooseSourceFolder() }
-                            .buttonStyle(.borderedProminent)
-                    }
+                    Button("Choose source folder") { chooseSourceFolder() }
+                        .buttonStyle(.borderedProminent)
                 }
                 if let primaryAction = guideSessionController.primaryActionForTheCurrentStep {
                     primaryActionButton(

@@ -135,6 +135,17 @@ nonisolated struct FeatureEditPlan: Sendable {
 /// layer stays deterministic and unit-testable against the §10.3 table.
 nonisolated enum FeatureEditClarificationLogic {
 
+    /// The ambiguity card has one answer that deliberately declines to choose
+    /// a proposed implementation. It must send the reader back to their own
+    /// words, not let the original vague request flow into a plan.
+    static func answerRequiresRequestRevision(
+        question: ClarificationQuestion,
+        answer: String
+    ) -> Bool {
+        question.trigger == .ambiguousAmongImplementations
+            && answer == "Let me describe it more specifically"
+    }
+
     /// Decide which clarification questions (if any) must be asked before the
     /// plan is presented.
     ///

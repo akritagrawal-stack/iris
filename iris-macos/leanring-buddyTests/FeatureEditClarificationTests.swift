@@ -87,6 +87,24 @@ import Testing
         #expect(questions.first?.prompt.contains(readerRequest) == true)
     }
 
+    @Test func describeMoreChoiceReturnsToRequestInsteadOfChoosingAPlan() {
+        let question = FeatureEditClarificationLogic.questions(
+            forRequest: "make search better",
+            requestLooksAmbiguous: true,
+            recipeIsUnknown: false,
+            runtimeShape: .pureLocalApp,
+            impliesIrreversibleAction: false
+        )[0]
+        #expect(FeatureEditClarificationLogic.answerRequiresRequestRevision(
+            question: question,
+            answer: "Let me describe it more specifically"
+        ))
+        #expect(!FeatureEditClarificationLogic.answerRequiresRequestRevision(
+            question: question,
+            answer: "Pick the approach you think is best and show me the plan first"
+        ))
+    }
+
     // MARK: - Trigger 2: irreversible or costly action
 
     @Test func anImpliedIrreversibleActionAsksExactlyOneIrreversibilityQuestion() {

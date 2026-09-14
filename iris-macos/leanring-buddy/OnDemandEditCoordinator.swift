@@ -2095,6 +2095,26 @@ final class OnDemandEditCoordinator: ObservableObject {
             return
         }
 
+        // This answer means the reader declined both interpretations. Keep the
+        // original text visible for reference, but require revised wording
+        // before creating a plan; treating it as an ordinary answer would
+        // silently choose an implementation for them.
+        let readerWillReviseRequest = harnessWorkflow == nil && clarificationQuestions.contains { question in
+            guard let answer = answersByQuestionId[question.id] else { return false }
+            return FeatureEditClarificationLogic.answerRequiresRequestRevision(
+                question: question,
+                answer: answer
+            )
+        }
+        if readerWillReviseRequest {
+            clarificationQuestions = []
+            clarificationAnswersByQuestionId = [:]
+            clarificationAnswerPairsForPrompt = []
+            phase = .describe
+            statusLine = "Tell Iris a little more about what you want. Nothing was changed or planned yet."
+            return
+        }
+
         buildAndPresentPlan(kind: kind)
     }
 

@@ -168,3 +168,23 @@ also recorded in `/Users/Shared/Iris-RC-20260914/ARTIFACT_SHA256.txt`. Native
 computer use relaunched the refreshed RC, opened Settings, and showed the
 expected active state, catalog, saved versions, and cleanup preview controls.
 The previous RC was retained beside it as a rollback copy.
+
+## Signed RC refresh after legacy recovery-action fix
+
+Commits `fe778da`, `5204d01`, and `5debe73` keep the source-workspace recovery
+action available when a legacy guide refuses automation because its saved
+binding is stale or invalid. The RC was rebuilt with `xcodebuild` (`BUILD
+SUCCEEDED`), passed `codesign --verify --deep --strict`, and was relaunched from
+`/Users/Shared/Iris-RC-20260914/Iris Test.app`. The current executable SHA-256 is
+`9aad5671ed251d9f3f29eaac2bb450a2d28029bc2ecfe0f28aea1da33d7a7bf2`.
+
+Native computer use re-opened the Kneecap guide and reproduced the refusal
+message, confirming the guard still prevents an unvalidated legacy path from
+running. The picker affordance is present in the rebuilt source but the final
+picker interaction and isolated-copy preparation remain a live acceptance gate;
+the existing `/Users/akrit/kneecap` checkout was not modified.
+
+Focused verification after this change: harness `159/159` tests in 7 suites,
+source-workspace `5/5`, and mobile catalog `18/18` passed. These are unit and
+service checks; they do not substitute for the pending native picker,
+device-install, or physical iPhone acceptance evidence.

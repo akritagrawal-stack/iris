@@ -1,5 +1,20 @@
 # Native RC evidence, 2026-09-14
 
+### 2026-09-14 automated regression rerun
+
+The integrated worktree passed the current lightweight checks without changing
+the user checkout: the Iris harness completed **159 tests in 7 suites**,
+`iris-mobile/test/*.test.mjs` completed **18/18**, and the source-workspace
+package completed **5/5**. These checks cover routing/accounting, bounded
+history and cleanup guards, source-root selection, and the mobile install-hub
+logic. They do not replace native app, live-provider, or physical-device
+acceptance.
+
+The signed RC still reports that macOS has blocked its saved-login Keychain
+read. Reconnect was triggered, but the secure macOS approval dialog is outside
+the computer-use accessibility surface; the account-dependent native run is
+therefore pending the owner selecting **Always Allow** for Iris Test.
+
 ### 2026-09-14 bounded complex transfer attempt
 
 The signed RC was exercised through the native UI with an explicit **Feature** route. The request was intentionally scoped to the existing NitroAI transfer design: add Settings export/import controls, preserve folder and note identity, keep both copies on same-ID collisions, reject malformed or dangling references atomically, and run the focused tests/build.

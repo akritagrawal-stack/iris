@@ -2669,7 +2669,11 @@ final class CompanionManager: ObservableObject {
             }
         }
 
-        sendUserMessageToClaudeWithScreenshot(messageText: trimmedMessageText)
+        if accountService.canAnswerQuestions {
+            sendUserMessageToClaudeWithScreenshot(messageText: trimmedMessageText)
+        } else if accountService.canAnswerTypedQuestionsThroughCodex {
+            sendUserMessageToCodexWithoutScreenContext(messageText: trimmedMessageText)
+        }
     }
 
     // MARK: - Companion Prompt
@@ -2928,6 +2932,77 @@ final class CompanionManager: ObservableObject {
     /// the reader is still owed something to read.
     private static let chatAnswerWhenNothingCameBack =
         "i didn't get an answer together for that one. ask me again?"
+
+    /// Codex can safely answer an ordinary typed question through the same
+    /// read-only CLI route used for app edits. It is not a substitute for the
+    /// screen-help transport: this explicit contract keeps it from claiming to
+    /// see a window, inspect local folders, run commands, or click anything.
+    private static let codexTextOnlyQuestionPrompt = """
+    You are Iris answering a typed general question. You have no screenshot,
+    no access to the user's files, no terminal, and no ability to inspect the
+    current app or screen. Do not claim otherwise and do not ask the user to
+    run commands. If the request needs those facts, say that connecting screen
+    help is required for Iris to inspect them. Answer any general explanation
+    you can provide in plain language, briefly and directly.
+    """
+
+    /// The Codex-only fallback intentionally has no screenshot, client tools,
+    /// or local machine context. It lets an account that is already connected
+    /// for edits ask a normal question without silently broadening its access.
+    private func sendUserMessageToCodexWithoutScreenContext(messageText: String) {
+        currentResponseTask?.cancel()
+        let responseIdentifier = UUID()
+        currentChatResponseIdentifier = responseIdentifier
+        chatResponseIsPending = true
+
+        currentResponseTask = Task {
+            defer { self.clearChatResponsePending(for: responseIdentifier) }
+            guard self.isCurrentChatResponse(responseIdentifier) else { return }
+            self.assistantState = .thinking
+            do {
+                let history = self.conversationHistory.flatMap { entry in
+                    [
+                        MaintainChatTurn(role: "user", text: entry.userMessage),
+                        MaintainChatTurn(role: "assistant", text: entry.assistantResponse),
+                    ]
+                }
+                let provider = CodexMaintainProvider(
+                    model: CodexEditModelSelection.selectedModel(),
+                    reasoningEffort: .low,
+                    webSearchEnabled: true,
+                    runPhase: .intake
+                )
+                let response = try await provider.respond(
+                    systemPrompt: Self.codexTextOnlyQuestionPrompt,
+                    conversation: history + [MaintainChatTurn(role: "user", text: messageText)],
+                    maximumOutputTokens: 900
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard self.isCurrentChatResponse(responseIdentifier) else { return }
+                let responseText = response.isEmpty ? Self.chatAnswerWhenNothingCameBack : response
+                self.conversationHistory.append((userMessage: messageText, assistantResponse: responseText))
+                if self.conversationHistory.count > Self.maximumConversationHistoryExchanges {
+                    self.conversationHistory.removeFirst(
+                        self.conversationHistory.count - Self.maximumConversationHistoryExchanges
+                    )
+                }
+                self.chatTranscriptStore.recordExchange(question: messageText, answer: responseText)
+                if self.chatTranscriptStore.theTranscriptIsBeingSavedToDisk {
+                    self.chatHistoryClearFailureMessage = nil
+                }
+                self.clearDetectedElementLocation()
+                self.publishAssistantResponse(responseText, isAFailureMessage: false)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.isCurrentChatResponse(responseIdentifier) else { return }
+                self.publishAssistantResponse(error.localizedDescription, isAFailureMessage: true)
+            }
+            if self.isCurrentChatResponse(responseIdentifier) {
+                self.assistantState = .idle
+                self.scheduleTransientHideIfNeeded()
+            }
+        }
+    }
 
     /// The chat request, carrying the action tools, with exactly one fallback.
     ///

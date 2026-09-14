@@ -1032,10 +1032,22 @@ final class AccountService: ObservableObject {
         signedInAccount != nil || hasStoredAnthropicAPIKey || hasConnectedClaudeCodeLogin
     }
 
+    /// Codex can answer typed, text-only questions even though it cannot use
+    /// Iris's screenshot-and-tool screen-help transport. Keep this separate so
+    /// callers that need current machine context still require screen help.
+    var canAnswerTypedQuestionsThroughCodex: Bool {
+        !canAnswerQuestions && CodexCLILogin.currentState().isUsable
+    }
+
+    var canAnswerTypedQuestions: Bool {
+        canAnswerQuestions || canAnswerTypedQuestionsThroughCodex
+    }
+
     var chatProviderDescription: String {
         if signedInAccount != nil { return "Answers come from publik" }
         if hasStoredAnthropicAPIKey { return "Answers use your Anthropic key" }
         if hasConnectedClaudeCodeLogin { return "Answers use your Claude Code login" }
+        if canAnswerTypedQuestionsThroughCodex { return "Typed answers use your Codex login" }
         // Deliberately not Codex: both chat routes speak the Anthropic Messages
         // wire format with tool-use blocks, which `codex exec` cannot serve
         // without a translation layer and the loss of streaming.

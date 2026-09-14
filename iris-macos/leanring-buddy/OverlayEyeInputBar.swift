@@ -732,7 +732,8 @@ struct OverlayEyeInputBarView: View {
             hasText: thereIsSomethingToSend,
             requestIsBeingSizedUp: theRequestIsBeingSizedUp,
             context: composerConnectionContext,
-            helpIsAvailable: accountService.canAnswerQuestions
+            helpIsAvailable: accountService.canAnswerQuestions,
+            textOnlyHelpIsAvailable: accountService.canAnswerTypedQuestionsThroughCodex
         ) && (effectiveComposerMode == .ask || !onDemandEditCoordinator.isPreparingSavedChangeRecheck)
     }
 
@@ -1322,6 +1323,8 @@ struct OverlayEyeInputBarView: View {
             help = .anthropicKey
         } else if accountService.hasConnectedClaudeCodeLogin {
             help = .claudeCodeLogin
+        } else if accountService.canAnswerTypedQuestionsThroughCodex {
+            help = .codexTextOnly
         } else {
             help = .unavailable
         }
@@ -1643,6 +1646,7 @@ struct OverlayEyeInputBarView: View {
             }
             return provider.requestedModelDescription
         }
+        if accountService.canAnswerTypedQuestionsThroughCodex { return "Codex general help" }
         guard accountService.canAnswerQuestions else { return "Screen help" }
         if accountService.signedInAccount != nil { return "Included with publik" }
         return companionManager.selectedModel.contains("opus") ? "Claude Opus" : "Claude Sonnet"
@@ -2176,7 +2180,7 @@ struct OverlayEyeInputBarView: View {
                     .font(DS.Typography.caption)
                     .foregroundColor(DS.Colors.textSecondary)
             }
-            if !accountService.canAnswerQuestions {
+            if !accountService.canAnswerTypedQuestions {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) { connectionAndAppActions }
                     VStack(alignment: .leading, spacing: 8) { connectionAndAppActions }
@@ -2433,7 +2437,7 @@ struct OverlayEyeInputBarView: View {
             return
         }
 
-        guard accountService.canAnswerQuestions else { return }
+        guard accountService.canAnswerTypedQuestions else { return }
         companionManager.sendUserMessage(messageText, allowsEditRouting: false)
         exchange.registerTheReaderAsked(messageText)
         typedMessage = ""

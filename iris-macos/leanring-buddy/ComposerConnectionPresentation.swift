@@ -13,6 +13,7 @@ nonisolated struct ComposerConnectionPresentation: Equatable, Sendable {
         case publik
         case anthropicKey
         case claudeCodeLogin
+        case codexTextOnly
     }
 
     enum EditConnection: Sendable {
@@ -32,9 +33,11 @@ nonisolated struct ComposerConnectionPresentation: Equatable, Sendable {
         hasText: Bool,
         requestIsBeingSizedUp: Bool,
         context: Context,
-        helpIsAvailable: Bool
+        helpIsAvailable: Bool,
+        textOnlyHelpIsAvailable: Bool = false
     ) -> Bool {
-        hasText && !requestIsBeingSizedUp && (context == .projectEdit || helpIsAvailable)
+        hasText && !requestIsBeingSizedUp
+            && (context == .projectEdit || helpIsAvailable || textOnlyHelpIsAvailable)
     }
 
     static func resolve(
@@ -52,6 +55,13 @@ nonisolated struct ComposerConnectionPresentation: Equatable, Sendable {
                 return connected("Screen help through your Anthropic key")
             case .claudeCodeLogin:
                 return connected("Screen help through Claude Code")
+            case .codexTextOnly:
+                return Self(
+                    connectionLabel: "General questions through Codex",
+                    showsModelControl: true,
+                    inlineMessage: "Codex can answer typed questions. Connect screen help for questions about what is on your screen or this Mac.",
+                    settingsLinkLabel: "Connect screen help"
+                )
             case .unavailable:
                 return Self(
                     connectionLabel: "Screen help not connected",

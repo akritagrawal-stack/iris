@@ -414,3 +414,9 @@ This provides app-level evidence for the real download, file-input import,
 restart readback, duplicate/conflict, malformed-envelope, dangling-reference,
 and atomic-abort paths. It remains separate from Iris RC delivery acceptance;
 the native RC still must execute the complex feature through its UI.
+
+The NitroAI production build was also run after the transfer coverage change:
+`npm run build` completed successfully (TypeScript plus Vite production bundle),
+with only the existing chunk-size advisory. The checkout remained clean. This
+confirms the transfer implementation packages successfully, while the Iris
+delivery and native RC acceptance gates remain separate.

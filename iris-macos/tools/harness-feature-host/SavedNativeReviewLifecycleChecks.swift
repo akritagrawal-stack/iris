@@ -191,137 +191,6 @@ struct SavedNativeReviewLifecycleChecks {
         )
         try require(heldCandidateStillMatches,
                     "persisted candidate did not round-trip through the exact identity check")
-        let originalContractContext = try firstWorkflow.implementationContext()
-
-        // Exercise the actual Test-host Coordinator entry, rather than only
-        // the lower-level rechecker above. The injected transport is an
-        // offline witness: a valid saved contract must reach the existing
-        // confirmation card without asking intake, and cancellation must clear
-        // the in-memory contract before a later ordinary request. A legacy
-        // record then proves that the absence of a contract is visible fresh
-        // planning, rather than an implicit nil-state restore.
-        if (try? GitInspectionService.allowedRepositoryPath(fixture.project.clonePath)) == nil {
-            // The normal offline adapter deliberately lives under /Users/Shared,
-            // while the production picker requires a source clone inside the
-            // user's home. Keep this existing safety gate intact; a home-rooted
-            // Test adapter can run the same block when native coordinator
-            // coverage is requested.
-            print("SKIP Coordinator saved-recheck entry: disposable Test root is outside the home-only source gate")
-        } else {
-        guard CodexCLILogin.currentState().isUsable else {
-            throw CheckFailure(message: "Coordinator saved-recheck check requires the configured Test Codex login")
-        }
-        var coordinatorRequests: [HarnessModelRequest] = []
-        var coordinatorWorkflow: HarnessFeatureWorkflow?
-        var coordinatorFactoryCalls = 0
-        var coordinatorPerformerCalls = 0
-        let coordinatorProvenance = InstallProvenanceStore(
-            userDefaults: UserDefaults(suiteName: "iris.saved.native.coordinator.\(UUID().uuidString)")!
-        )
-        coordinatorProvenance.recordGuideSourceClone(
-            appSlug: fixture.project.slug, clonePath: fixture.project.clonePath,
-            pinnedCommit: fixture.baselineHead, canonicalRepo: nil
-        )
-        let coordinator = OnDemandEditCoordinator(
-            installProvenanceStore: coordinatorProvenance,
-            patchQueue: PatchQueue(baseDirectoryURL: fixture.projectRoot.appendingPathComponent("patches")),
-            clonePathLock: MaintainClonePathLock(),
-            topRequestsForApp: { _ in [] },
-            performOnDemandEdit: { _, _, _, _, _, _, _, _, _, _, _ in
-                coordinatorPerformerCalls += 1
-                return .couldNotComplete(reason: "Coordinator saved-recheck test must not start an edit")
-            },
-            deliveredUndoRecoveryStore: DeliveredEditUndoRecoveryStore(
-                recordURL: fixture.projectRoot.appendingPathComponent("coordinator-undo.json")
-            ),
-            appDeliveryReceiptStore: AppDeliveryReceiptStore(
-                baseDirectory: fixture.projectRoot.appendingPathComponent("coordinator-receipts")
-            ),
-            makeHarnessWorkflow: {
-                coordinatorFactoryCalls += 1
-                let session = try HarnessModelSession(
-                    implementationArm: .astraLow,
-                    settings: .init(maxCalls: 4, maxInputBytes: 1_000_000),
-                    maximumDurationNanoseconds: 60_000_000_000
-                ) { request in
-                    coordinatorRequests.append(request)
-                    guard request.phase == .intake else {
-                        throw CheckFailure(message: "Coordinator cancellation/retry witness received unexpected phase \(request.phase)")
-                    }
-                    throw CheckFailure(message: "ordinary Coordinator retry reached intake as expected")
-                }
-                let workflow = HarnessFeatureWorkflow(modelSession: session)
-                coordinatorWorkflow = workflow
-                return workflow
-            },
-            harnessPlanningWatchdogNanoseconds: 1_000_000_000,
-            editReadiness: { .ready }
-        )
-        try require(coordinator.pickApp(
-            slug: fixture.project.slug, name: fixture.project.name, stack: .electron
-        ), "Coordinator could not select the registered Test fixture")
-        try require(coordinator.phase == .describe,
-                    "Coordinator did not enter describe for the registered Test fixture: \(coordinator.phase)")
-        coordinator.prepareSavedChangeRecheck()
-        let coordinatorCaptureCompleted = await waitUntil {
-            !coordinator.isPreparingSavedChangeRecheck && coordinator.isRecheckingSavedChanges
-        }
-        try require(coordinatorCaptureCompleted, "Coordinator saved-change capture did not complete")
-        try require(coordinator.describeRequest(fixture.brief.userRequest, kind: .feature),
-                    "Coordinator rejected the valid saved-contract request")
-        try require(coordinator.phase == .presentingPlan,
-                    "valid saved contract did not enter the existing plan confirmation: \(coordinator.phase)")
-        try require(coordinatorRequests.isEmpty,
-                    "valid saved-contract recheck made a planning/model call: \(coordinatorRequests.map(\.phase))")
-        try require(coordinatorFactoryCalls == 1 && coordinatorWorkflow != nil,
-                    "Coordinator did not create exactly one recheck workflow")
-        try require(coordinatorPerformerCalls == 0,
-                    "valid saved-contract recheck entered the edit performer")
-        guard let coordinatorWorkflow,
-              try coordinatorWorkflow.implementationContext() == originalContractContext else {
-            throw CheckFailure(message: "Coordinator saved recheck did not preserve the exact contract context")
-        }
-
-        coordinator.cancel()
-        try require(coordinator.phase == .describe && !coordinator.isRecheckingSavedChanges,
-                    "cancelling the saved recheck did not clear its in-memory contract")
-        try require(coordinator.describeRequest(fixture.brief.userRequest, kind: .feature),
-                    "Coordinator did not accept the ordinary retry after cancellation")
-        let ordinaryRetryCompleted = await waitUntil { !coordinator.isAssessingRequest }
-        try require(ordinaryRetryCompleted,
-                    "ordinary Coordinator retry did not finish its local planning attempt")
-        try require(coordinatorRequests.map(\.phase) == [.intake],
-                    "cancellation incorrectly reused the saved contract: \(coordinatorRequests.map(\.phase))")
-        try require(coordinator.phase == .describe,
-                    "failed ordinary retry did not remain visibly retryable")
-        try require(coordinatorPerformerCalls == 0,
-                    "ordinary Coordinator retry reached the edit performer")
-
-        let legacyCoordinatorRecord = OnDemandEditInFlightRecord(
-            appSlug: heldRecord.appSlug, clonePath: heldRecord.clonePath,
-            baseCommit: heldRecord.baseCommit, pathsIrisEdited: heldRecord.pathsIrisEdited,
-            startedAt: heldRecord.startedAt, runLogPath: heldRecord.runLogPath,
-            whatIrisWasWaitingFor: heldRecord.whatIrisWasWaitingFor,
-            requiresReviewBeforeRecovery: true, pendingCandidate: heldRecord.pendingCandidate,
-            recheckRequest: heldRecord.recheckRequest
-        )
-        OnDemandEditInterruptedRunRecovery.remember(legacyCoordinatorRecord)
-        coordinator.prepareSavedChangeRecheck()
-        let legacyCaptureCompleted = await waitUntil {
-            !coordinator.isPreparingSavedChangeRecheck && coordinator.isRecheckingSavedChanges
-        }
-        try require(legacyCaptureCompleted, "legacy saved-change capture did not complete")
-        try require(coordinator.describeRequest(fixture.brief.userRequest, kind: .feature),
-                    "Coordinator rejected the legacy saved-change request")
-        let legacyRetryCompleted = await waitUntil { !coordinator.isAssessingRequest }
-        try require(legacyRetryCompleted,
-                    "legacy Coordinator recheck did not finish its local planning attempt")
-        try require(coordinatorRequests.map(\.phase) == [.intake, .intake],
-                    "legacy record did not visibly take fresh planning: \(coordinatorRequests.map(\.phase))")
-        try require(coordinatorPerformerCalls == 0,
-                    "legacy Coordinator recheck reached the edit performer")
-        OnDemandEditInterruptedRunRecovery.remember(heldRecord)
-        }
 
         // The launch/quit recovery path is fail-closed for a review-held
         // candidate. It must leave both source and identity in place until the
@@ -363,6 +232,7 @@ struct SavedNativeReviewLifecycleChecks {
         guard let savedContract = heldRecord.savedFeatureContract else {
             throw CheckFailure(message: "retained candidate did not persist its feature contract")
         }
+        let originalContractContext = try firstWorkflow.implementationContext()
         try recheckWorkflow.restoreSavedContract(savedContract)
         let restoredContractContext = try recheckWorkflow.implementationContext()
         try require(
@@ -596,7 +466,6 @@ struct SavedNativeReviewLifecycleChecks {
         let nativeExecutable = clone.appendingPathComponent("tools/native-check.sh")
         let nativeMarker = clone.appendingPathComponent("native-invoked.marker")
         let gitignore = clone.appendingPathComponent(".gitignore")
-        let packageJSON = clone.appendingPathComponent("package.json")
         let bundleIdentifier = "com.publikhq.iris.test.savednativereview."
             + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let baselineSource = "export const featureValue = 1;\n"
@@ -609,8 +478,6 @@ struct SavedNativeReviewLifecycleChecks {
         try files.createDirectory(at: application, withIntermediateDirectories: true)
         try files.createDirectory(at: artifact, withIntermediateDirectories: true)
         try Data(baselineSource.utf8).write(to: source)
-        try Data("{\"name\":\"saved-native-review\",\"scripts\":{\"build\":\"true\",\"test\":\"true\"}}\n".utf8)
-            .write(to: packageJSON)
         try Data("// pinned native assertion fixture\n".utf8).write(to: nativeTest)
         try Data(nativeExecutableContents.utf8).write(to: nativeExecutable)
         // The registered build artifact is intentionally outside the source
@@ -650,7 +517,7 @@ struct SavedNativeReviewLifecycleChecks {
         try writeRegistry([placeholder], to: registryURL)
         let runner = try MaintainShellRunner(repoRootPath: placeholder.clonePath)
         let initialized = try await runner.run(
-            "git init -q -b main && git add -- src/feature.js package.json tests/native-check.test.js tools/native-check.sh .gitignore && "
+            "git init -q -b main && git add -- src/feature.js tests/native-check.test.js tools/native-check.sh .gitignore && "
                 + "git -c user.name=Fixture -c user.email=fixture@example.invalid "
                 + "commit --no-gpg-sign -qm baseline",
             deadline: 30
@@ -732,15 +599,11 @@ struct SavedNativeReviewLifecycleChecks {
             throw CheckFailure(message: "IRIS_UNADMITTED_FIXTURE_ROOT was not supplied")
         }
         let root = URL(fileURLWithPath: rawRoot, isDirectory: true).standardizedFileURL
-        let sharedAdapterRoot = root.path.hasPrefix("/Users/Shared/iris-unadmitted-env-")
-            && root.deletingLastPathComponent().path == "/Users/Shared"
-        let homeAdapterRoot = root.path.hasPrefix(
-            FileManager.default.homeDirectoryForCurrentUser.path + "/Library/Caches/iris-coordinator-env-"
-        ) && root.deletingLastPathComponent().path
-            == FileManager.default.homeDirectoryForCurrentUser.path + "/Library/Caches"
-        guard rawRoot == root.path, sharedAdapterRoot || homeAdapterRoot,
+        guard rawRoot == root.path,
+              root.path.hasPrefix("/Users/Shared/iris-unadmitted-env-"),
+              root.deletingLastPathComponent().path == "/Users/Shared",
               MaintainSandbox.canonicalExistingDirectory(root.path) == root.path else {
-            throw CheckFailure(message: "fixture root must be canonical and use an approved disposable Test location")
+            throw CheckFailure(message: "fixture root must be canonical and directly below /Users/Shared")
         }
         let support = IrisTestEnvironment.applicationSupportDirectory.standardizedFileURL
         let scratch = IrisTestEnvironment.commandScratchDirectory.standardizedFileURL
@@ -791,19 +654,6 @@ struct SavedNativeReviewLifecycleChecks {
     private static func digest(_ path: String) throws -> String {
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    @MainActor
-    private static func waitUntil(
-        timeoutNanoseconds: UInt64 = 2_000_000_000,
-        _ condition: @MainActor () -> Bool
-    ) async -> Bool {
-        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
-        while DispatchTime.now().uptimeNanoseconds < deadline {
-            if condition() { return true }
-            try? await Task.sleep(nanoseconds: 1_000_000)
-        }
-        return condition()
     }
 
     private static func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {

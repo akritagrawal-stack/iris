@@ -907,6 +907,9 @@ final class MaintainTierCFixer {
 #endif
         let gitBackup = (backupDirectory as NSString)
             .appendingPathComponent("iris-git-backup-\(changeId.prefix(8))")
+        let gitBackupOwner = gitBackup + ".owner"
+        let cloneGitPath = (clonePath as NSString).appendingPathComponent(".git")
+        let normalizedClonePath = URL(fileURLWithPath: clonePath).standardizedFileURL.path
 #if IRIS_TEST_BUILD
         try? FileManager.default.createDirectory(
             at: URL(fileURLWithPath: backupDirectory), withIntermediateDirectories: true
@@ -917,6 +920,31 @@ final class MaintainTierCFixer {
         }
         var gitMetadataIsDetached = false
         var gitRestoreWasConfirmed = false
+
+        /// A process can be terminated after moving `.git` but before the
+        /// async cleanup runs. Recover only a backup carrying an exact owner
+        /// marker for this clone; never guess from an unowned directory.
+        func recoverInterruptedGitMetadata() async -> Bool {
+            guard !FileManager.default.fileExists(atPath: cloneGitPath) else { return true }
+            let ownerMarkers = (try? FileManager.default.contentsOfDirectory(atPath: backupDirectory))?
+                .filter { $0.hasSuffix(".owner") } ?? []
+            let matchingMarkers = ownerMarkers.filter { markerName in
+                let markerPath = (backupDirectory as NSString).appendingPathComponent(markerName)
+                guard let marker = try? String(contentsOfFile: markerPath, encoding: .utf8) else { return false }
+                return marker.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedClonePath
+            }
+            guard matchingMarkers.count == 1, let markerName = matchingMarkers.first else { return false }
+            let backupPath = String(markerName.dropLast(".owner".count))
+            let backup = shellSingleQuoted((backupDirectory as NSString).appendingPathComponent(backupPath))
+            let restored = try? await runner.run(
+                "test -d \(backup) && mv \(backup) .git && test -d .git",
+                deadline: 60
+            )
+            guard restored?.succeeded == true else { return false }
+            let markerPath = (backupDirectory as NSString).appendingPathComponent(markerName)
+            try? FileManager.default.removeItem(atPath: markerPath)
+            return true
+        }
 
         /// Restore the repository metadata and prove that the move completed.
         /// A best-effort `mv ... || true` made a failed restore look like a
@@ -936,7 +964,23 @@ final class MaintainTierCFixer {
             guard result?.succeeded == true else { return false }
             gitMetadataIsDetached = false
             gitRestoreWasConfirmed = true
+            try? FileManager.default.removeItem(atPath: gitBackupOwner)
             return true
+        }
+
+        if !FileManager.default.fileExists(atPath: cloneGitPath) {
+            guard await recoverInterruptedGitMetadata() else {
+                return .couldNotFix(
+                    reason: "Iris found that this clone is missing its Git metadata and could not prove a safe recovery. No model edit was started."
+                )
+            }
+        }
+        guard !FileManager.default.fileExists(atPath: gitBackup),
+              !FileManager.default.fileExists(atPath: gitBackupOwner),
+              (try? normalizedClonePath.write(toFile: gitBackupOwner, atomically: true, encoding: .utf8)) != nil else {
+            return .couldNotFix(
+                reason: "Iris could not reserve a safe recovery marker for the clone's Git metadata. No model edit was started."
+            )
         }
 
         let backup = shellSingleQuoted(gitBackup)
@@ -965,6 +1009,7 @@ final class MaintainTierCFixer {
             let detail = detachResult.map {
                 "exit \($0.exitCode), timed out=\($0.timedOut)"
             } ?? "the command could not be started"
+            try? FileManager.default.removeItem(atPath: gitBackupOwner)
             return .couldNotFix(
                 reason: "Iris could not detach the clone's Git metadata safely (\(detail)). No model edit was started."
             )
@@ -2403,9 +2448,45 @@ final class MaintainTierCFixer {
                 ))
                 // Re-strip `.git` for the re-entered edit loop (the no-history
                 // rule holds in repair rounds too) and reset the round's state.
-                _ = try? await runner.run(
-                    "rm -rf '\(gitBackup)'; mv .git '\(gitBackup)' 2>/dev/null || true", deadline: 60
+                // Verification restored `.git` before this repair round. A
+                // fresh edit loop must detach it again, and the state flags
+                // must describe that new detach rather than the previous
+                // round. Without resetting them, `restoreGit()` returned the
+                // old round's cached success and the final tree check saw an
+                // unavailable Git repository.
+                let repairDetach = try? await runner.run(
+                    "rm -rf \(shellSingleQuoted(gitBackup)); "
+                        + "test -e .git && mv .git \(shellSingleQuoted(gitBackup)) "
+                        + "&& test ! -e .git && test -e \(shellSingleQuoted(gitBackup))",
+                    deadline: 60
                 )
+                let repairDetachSucceeded = repairDetach?.succeeded == true
+                if repairDetachSucceeded {
+                    gitMetadataIsDetached = true
+                    gitRestoreWasConfirmed = false
+                } else {
+                    // If the proof command was interrupted after `mv`,
+                    // restore the metadata before surfacing the blocker.
+                    let moved = (try? await runner.run(
+                        "test ! -e .git && test -e \(shellSingleQuoted(gitBackup))",
+                        deadline: 15
+                    ))?.succeeded == true
+                    if moved {
+                        gitMetadataIsDetached = true
+                        gitRestoreWasConfirmed = false
+                        if await restoreGit() == false {
+                            return .couldNotFix(
+                                reason: "Iris could not restore the clone's Git metadata after a partial repair detach. Source changes remain for checked recovery; the installed app was not updated."
+                            )
+                        }
+                    }
+                    let detail = repairDetach.map {
+                        "exit \($0.exitCode), timed out=\($0.timedOut)"
+                    } ?? "the command could not be started"
+                    return .couldNotFix(
+                        reason: "Iris could not detach the clone's Git metadata before the repair round (\(detail))."
+                    )
+                }
                 declaredDone = false
                 consecutiveNoProgressStepCount = 0
                 // A repair round is a fresh reading of a tree that has changed

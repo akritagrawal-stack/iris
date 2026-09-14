@@ -73,6 +73,23 @@ func everyModelPhaseHasAnExplicitRouteClass(_ phase: HarnessRunTaskKind) {
     #expect(telemetry.reasoningTokensByClass[HarnessRouteClass.planning.rawValue] == 20)
 }
 
+@Test @MainActor func modelSessionRecordsLocalExecutorWorkWithoutAReservation() throws {
+    let session = try HarnessModelSession(
+        implementationArm: .lunaMax,
+        settings: try HarnessRunLedgerSettings(maxCalls: 1, maxInputBytes: 10_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { _ in HarnessModelReply(text: "unused") }
+    var snapshots: [HarnessRouteTelemetry] = []
+    session.routeTelemetryDidChange = { snapshots.append($0) }
+
+    #expect(session.recordDeterministicOperation("verification"))
+    #expect(session.routeTelemetry.deterministicOperations == 1)
+    #expect(session.routeTelemetry.modelCalls == 0)
+    #expect(session.ledger.snapshot.admittedCallCount == 0)
+    #expect(snapshots.last?.modelCallsAvoided == 1)
+}
+
 @Test @MainActor func modelSessionPersistsRouteAndLifecycleCheckpoints() async throws {
     var requests: [HarnessModelRequest] = []
     let session = try HarnessModelSession(

@@ -286,6 +286,20 @@ final class HarnessModelSession {
         lifecycleDidChange?(taskLifecycle.snapshot)
     }
 
+    /// Record work completed by Iris's local executor. The policy decision is
+    /// made at the call site so a tool event cannot be accidentally counted as
+    /// a model turn; deterministic work has no reservation or token spend.
+    @discardableResult
+    func recordDeterministicOperation(_ operation: String) -> Bool {
+        let decision = HarnessRoutingPolicy.decision(forLocalOperation: operation)
+        guard decision.routeClass == .deterministic, !decision.usesModel else {
+            return false
+        }
+        routeTelemetry.recordDeterministicOperation()
+        routeTelemetryDidChange?(routeTelemetry)
+        return true
+    }
+
     private func recordSettledRoute(
         _ reservation: HarnessRunReservation,
         usage: HarnessMeasuredUsage?

@@ -321,14 +321,17 @@ final class HarnessWorkflowMaintainProvider: MaintainModelProviding, HarnessPhas
             executionJournal.recordProblem("Iris restored protected build files: " + paths.joined(separator: ", "))
         case .jailedCommandFinished(let code, _, let lines):
             executionJournal.recordCommand(exitCode: code, outputTail: lines)
+            _ = workflow.modelSession.recordDeterministicOperation("jailed-command")
         case .verificationCompleted(let receipt):
             executionJournal.recordVerification(buildPassed: receipt.buildPassed, testsPassed: receipt.testsPassed)
+            _ = workflow.modelSession.recordDeterministicOperation("verification")
             if let stage = receipt.failureStage {
                 executionJournal.recordProblem("Verification failed (\(stage)): "
                     + (receipt.failureOutputTail ?? "No output was captured."))
             }
         case .startingTestsChecked(let summary):
             executionJournal.recordProblem("Starting-state observation, not final verification: " + summary)
+            _ = workflow.modelSession.recordDeterministicOperation("starting-tests")
         case .adversarialReviewRaisedIssues(let issues):
             for issue in issues { executionJournal.recordProblem(GuideAutopilotOutputBuffer.scrubbed(issue)) }
         default: break

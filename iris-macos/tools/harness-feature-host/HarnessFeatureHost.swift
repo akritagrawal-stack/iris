@@ -74,7 +74,7 @@ struct HarnessFeatureHost {
         guard jailCheck.succeeded, jailCheck.outputTail == "ready" else { throw HostError.unusableSandbox }
         guard CodexCLILogin.currentState().isUsable else { throw HostError.missingCLI }
         print("PREFLIGHT PASS: \(taskID), disposable clean Git fixture, no remote, fresh scratch, real sandbox, CLI login available")
-        print("Route: requested Astra Medium planning, Astra Low implementation; max 10 calls, 1000000 input bytes, 10 minutes")
+        print("Route: Luna Max by default; GPT-5.5 is explicit fallback and Terra is review-only; max 10 calls, 1000000 input bytes, 10 minutes")
         guard CommandLine.arguments[1] == "--run" else { return }
 
         let workflow = try HarnessCodexAdapter.makeWorkflow(

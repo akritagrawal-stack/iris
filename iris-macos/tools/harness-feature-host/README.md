@@ -27,7 +27,9 @@ behavior, broad complex-feature reliability or superiority over another model.
   read-only sandbox stays enabled, web search is disabled, and an additional
   read boundary denies the lab source/oracle tree. This is not a VM or proof
   against every malicious process on the same Mac.
-- Astra Medium plans, Astra Low implements and reviews. Ten calls maximum,
+- Luna Max handles new planning, implementation and routine review. GPT-5.5 is
+  an explicit bounded fallback, and Terra is review-only for genuinely complex
+  changes. Ten calls maximum,
   one million submitted input bytes maximum, ten-minute session deadline.
   Missing token usage is unknown, not zero. These are not a hard token cap.
   The experimental executor stops editing with one call remaining for review.

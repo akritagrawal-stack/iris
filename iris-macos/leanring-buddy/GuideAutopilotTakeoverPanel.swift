@@ -185,6 +185,11 @@ final class GuideAutopilotTakeoverController {
     }
 
     private static let morphDuration: TimeInterval = 0.5
+    private static let collapseFadeDuration: TimeInterval = 0.3
+    // AppKit can occasionally omit an animation completion for a non-key,
+    // layer-backed panel. Keep a little room for the normal morph to finish,
+    // but never leave an invisible takeover panel owning the screen forever.
+    private static let collapseCompletionSafetyMargin: TimeInterval = 0.2
     private static let morphTiming = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
 
     var isPresented: Bool { terminalPanel != nil }
@@ -642,6 +647,18 @@ final class GuideAutopilotTakeoverController {
             return
         }
 
+        // The usual nested animation completion below performs this cleanup.
+        // Keep a bounded fallback as well: on some AppKit paths the alpha
+        // animation completes visually but never invokes its callback, which
+        // would leave a 132x132 terminal panel visible and block the eye.
+        let collapseCompletionDelay = Self.morphDuration
+            + Self.collapseFadeDuration
+            + Self.collapseCompletionSafetyMargin
+        DispatchQueue.main.asyncAfter(deadline: .now() + collapseCompletionDelay) { [weak self, weak terminal] in
+            guard let self, let terminal else { return }
+            self.finishCollapse(for: terminal, thenRun: thenRun)
+        }
+
         // Reverse of the morph: terminal shrinks back into the eye face. It
         // shrinks in place if the reader moved the window — flying it back to
         // the screen centre to fold away would be one last yank.
@@ -663,16 +680,25 @@ final class GuideAutopilotTakeoverController {
             self.irisOwnFrameAnimationsInFlight = max(0, self.irisOwnFrameAnimationsInFlight - 1)
             // Fade the eye + backdrop out, then remove the windows.
             NSAnimationContext.runAnimationGroup({ context in
-                context.duration = 0.3
+                context.duration = Self.collapseFadeDuration
                 context.timingFunction = CAMediaTimingFunction(name: .easeIn)
                 self.terminalPanel?.animator().alphaValue = 0
                 self.backdropPanel?.animator().alphaValue = 0
             }, completionHandler: {
-                self.tearDownPanels()
-                self.isDismissing = false
-                self.runDismissFollowUps(thenRun)
+                self.finishCollapse(for: terminal, thenRun: thenRun)
             })
         })
+    }
+
+    private func finishCollapse(
+        for terminal: NSPanel,
+        thenRun: (() -> Void)?
+    ) {
+        // A stale animation completion must never tear down a newer takeover.
+        guard isDismissing, terminalPanel === terminal else { return }
+        tearDownPanels()
+        isDismissing = false
+        runDismissFollowUps(thenRun)
     }
 
     private func tearDownPanels() {

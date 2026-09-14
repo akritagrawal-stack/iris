@@ -824,21 +824,25 @@ struct OverlayEyeInputBarView: View {
 
                 textFieldRow
             }
-            // History and New chat stay available while a guide takeover is
-            // shown. They are compact secondary controls, not a second panel.
-            historyAndNewChatRow
-            chatHistoryList
-            whateverTheExchangeIsUpTo
-            if let clearFailureMessage = companionManager.chatHistoryClearFailureMessage {
-                Text(clearFailureMessage)
-                    .font(DS.Typography.caption)
-                    .foregroundColor(DS.Colors.amber)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if !companionManager.chatTranscriptStore.theTranscriptIsBeingSavedToDisk {
-                Text("This conversation could not be saved. A fresh chat may not stay fresh after restarting Iris.")
-                    .font(DS.Typography.caption)
-                    .foregroundColor(DS.Colors.amber)
-                    .fixedSize(horizontal: false, vertical: true)
+            // A centered takeover owns the surface. Keep its explicit edit
+            // card and composer above, but hide the bar's secondary chrome so
+            // history, new-chat, transcript, and save warnings cannot create a
+            // second cluttered panel underneath it.
+            if !theCenteredTakeoverIsCoveringTheScreen {
+                historyAndNewChatRow
+                chatHistoryList
+                whateverTheExchangeIsUpTo
+                if let clearFailureMessage = companionManager.chatHistoryClearFailureMessage {
+                    Text(clearFailureMessage)
+                        .font(DS.Typography.caption)
+                        .foregroundColor(DS.Colors.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !companionManager.chatTranscriptStore.theTranscriptIsBeingSavedToDisk {
+                    Text("This conversation could not be saved. A fresh chat may not stay fresh after restarting Iris.")
+                        .font(DS.Typography.caption)
+                        .foregroundColor(DS.Colors.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         // The bar is dismissed the way every transient input on macOS is. This

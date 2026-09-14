@@ -60,6 +60,51 @@ nonisolated struct FeatureEditRequestProbePassAnswer: Equatable, Sendable {
 
 nonisolated enum FeatureEditRequestProbe {
 
+    /// Whether the optional model safety probe is useful for this request.
+    ///
+    /// A concrete local bug report already has a bounded, user-observable
+    /// target. Spending two or three extra model calls to classify that same
+    /// request adds latency without adding a product decision. This fast path
+    /// is intentionally conservative: feature wishes, unknown build recipes,
+    /// scaled services, long or vague requests, and wording that suggests a
+    /// destructive or externally visible action still use the probe.
+    ///
+    /// The result only controls the optional ambiguity and irreversibility
+    /// probe. It does not skip eligibility, the plan, consent, the editor, or
+    /// any verification and delivery gate.
+    static func shouldSkipOptionalModelProbe(
+        request: String,
+        kind: OnDemandEditKind,
+        recipeIsKnown: Bool,
+        runtimeShape: RecipeRuntimeShape
+    ) -> Bool {
+        guard kind == .bugFix, recipeIsKnown else { return false }
+        guard runtimeShape == .pureLocalApp || runtimeShape == .localSingleInstanceService else {
+            return false
+        }
+
+        let normalized = request.lowercased()
+        guard normalized.utf8.count <= 320 else { return false }
+
+        let issueMarkers = [
+            "bug", "broken", "crash", "crashes", "crashing", "error", "fails",
+            "failed", "failure", "doesn't", "doesnt", "can't", "cant", "not work",
+            "wrong", "missing"
+        ]
+        let targetMarkers = [
+            "click", "button", "screen", "window", "launch", "login", "save", "tab",
+            "menu", "folder", "install", "open", "when ", " on ", " after ", " while "
+        ]
+        let riskyMarkers = [
+            "delete", "remove all", "drop ", "migrat", "schema", "save format",
+            "public api", "breaking", "credential", "permission", "publish", "send "
+        ]
+
+        return issueMarkers.contains { normalized.contains($0) }
+            && targetMarkers.contains { normalized.contains($0) }
+            && !riskyMarkers.contains { normalized.contains($0) }
+    }
+
     /// Output cap for each of the three calls. They each need one JSON line or
     /// one word, so this is generous — the point is that a probe call is a
     /// fraction of the cost of a single edit-loop step.

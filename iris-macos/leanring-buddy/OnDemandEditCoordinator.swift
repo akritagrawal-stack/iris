@@ -1714,6 +1714,29 @@ final class OnDemandEditCoordinator: ObservableObject {
         let clonePathForProbe = provenanceClonePath(forAppSlug: activeAppSlug ?? "")
         let normalUsage = beginNormalCodexUsage()
         let normalObserver = normalUsage.map { normalCodexAttemptObserver(for: $0) }
+        // A short, concrete bug report against a known local app has no useful
+        // ambiguity work for the optional model probe to perform. Skip only
+        // that probe and continue through the same plan, consent, edit,
+        // verification, delivery and usage gates. Requests outside this
+        // conservative shape retain the existing capability-aware provider
+        // route and measured intake calls.
+        if makeHarnessWorkflow == nil,
+           FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+               request: scrubbed,
+               kind: kind,
+               recipeIsKnown: derivedRepoRecipe?.hasABuildableRecipe ?? false,
+               runtimeShape: derivedRuntimeShape ?? .unknown
+           ) {
+            requestProbeTask = nil
+            requestProbeWatchdog = nil
+            runLog?.record("request probe: skipped for clear local bug fix")
+            advanceFromDescribe(
+                afterProbeGeneration: probeGeneration,
+                verdict: .allQuiet,
+                kind: kind
+            )
+            return true
+        }
 
         if let makeHarnessWorkflow {
             do {

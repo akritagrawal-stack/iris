@@ -194,7 +194,29 @@ func runNormalCodexRecheckChecks() async throws {
         resubmitDefaults.removePersistentDomain(forName: resubmitDefaultsName)
     }
     try require(
-        resubmitCoordinator.pickApp(slug: resubmitSlug, name: "Rapid Resubmit", stack: .nextjs),
+        resubmitCoordinator.pickApp(slug: resubmitSlug, name: "Rapid Resubmit", stack: .other),
+        "clear-request fixture was not eligible"
+    )
+    try require(
+        resubmitCoordinator.describeRequest(
+            "the save button crashes when I click it", kind: .bugFix
+        ),
+        "clear request was rejected"
+    )
+    try require(resubmitCoordinator.phase == .presentingPlan,
+                "clear local bug did not bypass the optional planner probe")
+    try require(resubmitCoordinator.normalCodexRunSnapshot?.admittedCallCount == 0,
+                "clear local bug admitted an unnecessary intake call")
+    let clearRequestRecords = resubmitRunPaths().compactMap {
+        try? String(contentsOfFile: $0, encoding: .utf8)
+    }
+    try require(clearRequestRecords.contains(where: {
+        $0.contains("request probe: skipped for clear local bug fix")
+    }), "clear-request routing decision was not recorded")
+    resubmitCoordinator.cancel()
+    for path in resubmitRunPaths() { try? FileManager.default.removeItem(atPath: path) }
+    try require(
+        resubmitCoordinator.pickApp(slug: resubmitSlug, name: "Rapid Resubmit", stack: .other),
         "rapid resubmit fixture was not eligible"
     )
     try require(

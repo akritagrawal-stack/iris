@@ -92,6 +92,43 @@ private final class ScriptedProbeProvider: MaintainModelProviding {
 @MainActor
 @Suite struct FeatureEditRequestProbeOrchestrationTests {
 
+    @Test func aClearLocalBugSkipsTheOptionalProbe() {
+        #expect(FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+            request: "the save button crashes when I click it",
+            kind: .bugFix,
+            recipeIsKnown: true,
+            runtimeShape: .pureLocalApp
+        ))
+    }
+
+    @Test func theFastPathKeepsFeaturesUnknownRecipesScaledAppsAndRiskyChangesOnTheProbe() {
+        let request = "the save button crashes when I click it"
+        #expect(!FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+            request: request,
+            kind: .feature,
+            recipeIsKnown: true,
+            runtimeShape: .pureLocalApp
+        ))
+        #expect(!FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+            request: request,
+            kind: .bugFix,
+            recipeIsKnown: false,
+            runtimeShape: .pureLocalApp
+        ))
+        #expect(!FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+            request: request,
+            kind: .bugFix,
+            recipeIsKnown: true,
+            runtimeShape: .builtForScale
+        ))
+        #expect(!FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+            request: "the save button crashes, then delete all old records",
+            kind: .bugFix,
+            recipeIsKnown: true,
+            runtimeShape: .pureLocalApp
+        ))
+    }
+
     private func passAnswer(_ implementation: String, irreversible: Bool = false) -> String {
         #"{"implementation": "\#(implementation)", "irreversible": \#(irreversible)}"#
     }

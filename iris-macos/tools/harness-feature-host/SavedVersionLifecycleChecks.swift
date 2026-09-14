@@ -283,6 +283,50 @@ struct SavedVersionLifecycleChecks {
         guard case .absent = fixture.recoveryStore.load() else {
             throw CheckFailure(message: "completed reopen left a recovery marker")
         }
+
+        // The installed-bundle swap can succeed while publishing the receipt's
+        // restored phase fails (for example, a transient storage/locking
+        // failure). The retry must recognize the exact backup already in place,
+        // repair only the receipt/checkpoint, and continue at relaunch rather
+        // than copying the backup a second time or getting stuck on the old
+        // replacement identity.
+        let receiptFixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: receiptFixture.root) }
+        var receiptRepairEvents: [String] = []
+        let receiptRepair = try makeCoordinator(receiptFixture)
+        receiptRepair.terminateEditedAppBeforeUndo = { _, _ in
+            receiptRepairEvents.append("quit")
+            return .readyForDelivery(priorApplicationPath: nil)
+        }
+        receiptRepair.restoreInstalledAppFromBackup = { installedPath, backupPath in
+            receiptRepairEvents.append("restore")
+            do {
+                try FileManager.default.removeItem(atPath: installedPath)
+                try FileManager.default.copyItem(atPath: backupPath, toPath: installedPath)
+                // Deliberately omit the receipt transition: this models a
+                // successful filesystem restore followed by a failed metadata
+                // publication in AppRelaunchService.restoreInstalledAppFromBackup.
+                return true
+            } catch { return false }
+        }
+        receiptRepair.launchRestoredAppAfterUndo = { _, _ in
+            receiptRepairEvents.append("reopen")
+            return .relaunchedFreshBuild
+        }
+        try require(receiptRepair.undoSavedAppVersion(receiptFixture.receipt),
+                    "receipt-repair fixture was not selected")
+        try await wait(until: { receiptRepair.undoFailureMessage != nil })
+        try require(receiptRepairEvents == ["quit", "restore"],
+                    "receipt-repair fixture did not stop after an unconfirmed receipt: (receiptRepairEvents)")
+        receiptRepair.undoDeliveredChange()
+        try await wait(until: { !receiptRepair.undoIsInProgress && receiptRepair.deliveredChangeCanBeUndone == false })
+        try require(receiptRepairEvents == ["quit", "restore", "reopen"],
+                    "receipt repair repeated restore or skipped relaunch: (receiptRepairEvents)")
+        guard case .valid(let repairedReceipt) = receiptFixture.store.load(receiptFixture.receipt.identifier) else {
+            throw CheckFailure(message: "receipt-repair fixture lost its receipt")
+        }
+        try require(repairedReceipt.phase == .restored,
+                    "receipt-repair retry did not publish the restored phase")
     }
 
     @MainActor

@@ -4226,10 +4226,82 @@ final class OnDemandEditCoordinator: ObservableObject {
     // every on-demand run without a seam; this hook is for app-specific
     // extras.)
 
+    /// Reconcile the receipt when the filesystem restore already succeeded but
+    /// the receipt's `.installed` → `.restored` publication did not. This is a
+    /// narrow crash/storage-retry path: the live recovery record proves that
+    /// this coordinator already owned the Undo, while the full payload probe
+    /// proves that the old bundle is in place. It must not copy the backup a
+    /// second time. Once the metadata is repaired, the normal checkpointed
+    /// recovery resumes at relaunch.
+    private func repairReceiptForAlreadyRestoredFiles(_ receipt: AppDeliveryReceipt) {
+        guard let liveUndoRecoveryRecord,
+              liveUndoRecoveryRecord.deliveryReceiptIdentifier == receipt.identifier,
+              undoRecovery.completed.isEmpty,
+              !undoIsInProgress else { return }
+
+        let flowGenerationAtStart = flowGeneration
+        let repairGeneration = UUID()
+        undoGeneration = repairGeneration
+        undoIsInProgress = true
+        undoFailureMessage = nil
+        phase = .committing
+        statusLine = "Checking the restored app record before continuing Undo…"
+
+        Task { [weak self] in
+            guard let self else { return }
+            guard self.flowGeneration == flowGenerationAtStart,
+                  self.undoGeneration == repairGeneration,
+                  self.undoIsInProgress else { return }
+
+            let payloadFailure = await self.persistedReceiptPayloadUndoFailure(
+                receipt, restored: true
+            )
+            guard self.flowGeneration == flowGenerationAtStart,
+                  self.undoGeneration == repairGeneration,
+                  self.undoIsInProgress else { return }
+
+            // The receipt may still be installed because the earlier restore
+            // returned after the app swap but before its metadata publication.
+            // If the payload is not the exact backup, fall through to the
+            // ordinary restore path; no metadata is changed by this probe.
+            guard payloadFailure == nil else {
+                self.undoIsInProgress = false
+                self.phase = .done
+                self.undoDeliveredChange(reconcileRestoredReceipt: false)
+                return
+            }
+
+            do {
+                guard case .valid(let current) = self.appDeliveryReceiptStore.load(receipt.identifier),
+                      current.identity == receipt.identity,
+                      current.phase == .installed else {
+                    throw AppDeliveryReceiptStore.StoreError.identityMismatch
+                }
+                _ = try self.appDeliveryReceiptStore.transition(current, to: .restored)
+                guard self.undoRecovery.restoreConfirmedAppCheckpoint() else {
+                    throw AppDeliveryReceiptStore.StoreError.invalidTransition
+                }
+            } catch {
+                self.undoIsInProgress = false
+                self.undoFailureMessage = "The previous app files are restored, but Iris could not finish saving that result. Try Undo again; Iris will recheck the saved app before continuing."
+                self.statusLine = self.undoFailureMessage
+                self.phase = .done
+                return
+            }
+
+            self.undoIsInProgress = false
+            self.phase = .done
+            self.undoDeliveredChange(reconcileRestoredReceipt: false)
+        }
+    }
+
     /// Undo a delivered change after the fact: bring the INSTALLED app back
     /// (quit the rebuilt instance, launch the installed bundle), restore the
     /// source checkout, and forget the queued patch only after all steps succeed.
-    func undoDeliveredChange() {
+    /// `reconcileRestoredReceipt` is false only for the internal continuation
+    /// after the already-restored-files repair above; it prevents a recursive
+    /// content probe while preserving the ordinary recovery path.
+    func undoDeliveredChange(reconcileRestoredReceipt: Bool = true) {
         guard canRetryUndo,
               let slug = activeAppSlug,
               let branchName = committedBranchName,
@@ -4244,6 +4316,12 @@ final class OnDemandEditCoordinator: ObservableObject {
                 return
             }
             if receipt.phase == .installed {
+                if reconcileRestoredReceipt,
+                   liveUndoRecoveryRecord?.deliveryReceiptIdentifier == receipt.identifier,
+                   undoRecovery.completed.isEmpty {
+                    repairReceiptForAlreadyRestoredFiles(receipt)
+                    return
+                }
                 guard persistedReceiptUndoFailure(receipt) == nil else {
                     undoFailureMessage = "The saved app version changed before Undo could start. Iris left the installed app alone."
                     statusLine = undoFailureMessage

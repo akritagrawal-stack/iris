@@ -35,6 +35,8 @@ struct SavedVersionLifecycleChecks {
         do {
             try checkReceiptRoundTripAndPayloadIdentity()
             print("PASS receipt source/base and installed bundle identity survive restart")
+            try checkCrossAppDeliveryStateMatrix()
+            print("PASS installed, clone-only, failed-package, and interrupted-before-relaunch states stay distinct")
             try checkUndoOfferRequiresInstalledReceipt()
             print("PASS clone-only launches never offer Undo; installed receipt and backup are required")
             try checkRecoveryMarkerRefusesFinalSymlink()
@@ -50,6 +52,127 @@ struct SavedVersionLifecycleChecks {
             print("SAVED VERSION LIFECYCLE CHECKS STOPPED: \(error.localizedDescription)")
             exit(1)
         }
+    }
+
+    private static func checkCrossAppDeliveryStateMatrix() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        // Successful installed replacement: the exact installed receipt and
+        // both payload paths make Undo available.
+        try require(OnDemandEditCoordinator.installedDeliveryUndoIsAvailable(
+            installedCopyReplaced: true,
+            installedPath: fixture.installed.path,
+            backupPath: fixture.backup.path,
+            receipt: fixture.receipt
+        ), "successful installed replacement was not Undoable")
+        try require(OnDemandEditCoordinator.symptomUndoAvailabilityMessage(
+            appName: "Saved Notes", installedCopyReplaced: true, undoAvailable: true
+        ).contains("Undo to go back"), "installed replacement did not expose its Undo status")
+
+        // Clone-only launch: the rebuilt artifact can run, but the installed
+        // receipt gate remains false and the status names the unchanged copy.
+        try require(!OnDemandEditCoordinator.installedDeliveryUndoIsAvailable(
+            installedCopyReplaced: false,
+            installedPath: fixture.installed.path,
+            backupPath: fixture.backup.path,
+            receipt: fixture.receipt
+        ), "clone-only launch exposed installed Undo")
+        let cloneOnlyStatus = OnDemandEditCoordinator.symptomUndoAvailabilityMessage(
+            appName: "Saved Notes", installedCopyReplaced: false, undoAvailable: false
+        )
+        try require(cloneOnlyStatus.contains("installed Saved Notes was left unchanged")
+            && cloneOnlyStatus.contains("Undo is unavailable"),
+            "clone-only status did not disclose unavailable Undo")
+        let missingRecoveryStatus = OnDemandEditCoordinator.symptomUndoAvailabilityMessage(
+            appName: "Saved Notes", installedCopyReplaced: true, undoAvailable: false
+        )
+        try require(missingRecoveryStatus.contains("installed app was replaced")
+            && missingRecoveryStatus.contains("complete recovery details"),
+            "missing recovery metadata did not disclose unavailable Undo")
+
+        // Failed or unfinished package: nothing is installed, but an unchanged
+        // saved source with its identity can be retried.
+        guard case .noLaunchableApp = AppRelaunchService.packagingVerdict(
+            freshLaunchableAppBundlePath: nil,
+            buildSucceeded: false,
+            buildOutputTail: "error: fixture package failed"
+        ) else {
+            throw CheckFailure(message: "failed package was not classified as unfinished")
+        }
+        try require(OnDemandEditCoordinator.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: true,
+            hasSavedDeliveryIdentity: true,
+            phase: .done,
+            hasEditTask: false,
+            undoNeedsRecovery: false,
+            installedCopyReplaced: false
+        ), "failed package did not retain a retry eligibility path")
+        try require(!OnDemandEditCoordinator.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: true,
+            hasSavedDeliveryIdentity: true,
+            phase: .done,
+            hasEditTask: false,
+            undoNeedsRecovery: false,
+            installedCopyReplaced: true
+        ), "installed replacement incorrectly retained delivery retry")
+        try require(!OnDemandEditCoordinator.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: true,
+            hasSavedDeliveryIdentity: true,
+            phase: .awaitingSymptomConfirmation,
+            hasEditTask: false,
+            undoNeedsRecovery: false,
+            installedCopyReplaced: false
+        ), "active delivery incorrectly exposed saved retry")
+
+        // Interrupted before relaunch: a prepared receipt is visible but must
+        // not be promoted or exposed as Undo while the installed path is still
+        // the prior payload.
+        let files = FileManager.default
+        // Keep the nested store on the same physical temporary root used by
+        // makeFixture. Foundation spells that root as /var on this host,
+        // while the receipt store rejects the /var -> /private symlink.
+        let physicalRoot = fixture.store.baseDirectory.deletingLastPathComponent()
+        let interruptedRoot = fixture.root.appendingPathComponent("interrupted")
+        let interruptedStoreRoot = physicalRoot.appendingPathComponent("interrupted")
+        let interruptedInstalled = interruptedRoot.appendingPathComponent("installed/Notes.app")
+        let interruptedArtifact = interruptedRoot.appendingPathComponent("clone/release/Notes.app")
+        let interruptedBackup = interruptedRoot.appendingPathComponent("backups/Notes.app")
+        try files.createDirectory(at: interruptedRoot, withIntermediateDirectories: true)
+        try files.createDirectory(at: interruptedInstalled.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try files.createDirectory(at: interruptedArtifact.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try files.createDirectory(at: interruptedBackup.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try files.copyItem(at: fixture.backup, to: interruptedInstalled)
+        try files.copyItem(at: fixture.artifact, to: interruptedArtifact)
+        try files.copyItem(at: fixture.backup, to: interruptedBackup)
+        let interruptedStore = AppDeliveryReceiptStore(
+            baseDirectory: interruptedStoreRoot.appendingPathComponent("receipts")
+        )
+        let interrupted = AppDeliveryReceipt(
+            identifier: UUID(), bundleIdentifier: fixture.receipt.bundleIdentifier,
+            installedPath: interruptedInstalled.path,
+            sourceArtifactPath: interruptedArtifact.path,
+            backupPath: interruptedBackup.path,
+            phase: .prepared,
+            sourceIdentity: fixture.sourceIdentity,
+            installedBundleIdentity: fixture.receipt.installedBundleIdentity,
+            replacementBundleIdentity: fixture.receipt.replacementBundleIdentity,
+            backupBundleIdentity: fixture.receipt.backupBundleIdentity
+        )
+        try interruptedStore.savePrepared(interrupted)
+        try require(try interruptedStore.reconcilePreparedInstallations() == 0,
+            "interrupted-before-relaunch receipt was promoted without an installed swap")
+        guard case .valid(let retained) = interruptedStore.load(interrupted.identifier) else {
+            throw CheckFailure(message: "interrupted-before-relaunch receipt was lost")
+        }
+        try require(retained.phase == .prepared,
+            "interrupted-before-relaunch receipt did not remain visibly prepared")
+        try require(!OnDemandEditCoordinator.installedDeliveryUndoIsAvailable(
+            installedCopyReplaced: true,
+            installedPath: interruptedInstalled.path,
+            backupPath: interruptedBackup.path,
+            receipt: retained
+        ), "prepared interrupted receipt exposed Undo")
     }
 
     private static func checkReceiptRoundTripAndPayloadIdentity() throws {

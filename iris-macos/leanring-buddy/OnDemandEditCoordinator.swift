@@ -425,10 +425,31 @@ final class OnDemandEditCoordinator: ObservableObject {
     @Published private(set) var offersRetryWithMemory: Bool = false
     @Published private(set) var savedDeliveryMayBeRetried = false
     private var savedDeliveryIdentity: SavedEditDeliveryIdentity?
+
+    /// A failed delivery may already have built an artifact. The retry action
+    /// packages the saved source again, so a prior build is not a reason to
+    /// hide a retry after a quit or launch failure.
+    nonisolated static func savedDeliveryRetryIsEligible(
+        savedDeliveryMayBeRetried: Bool,
+        hasSavedDeliveryIdentity: Bool,
+        phase: OnDemandEditPhase,
+        hasEditTask: Bool,
+        undoNeedsRecovery: Bool,
+        installedCopyReplaced: Bool
+    ) -> Bool {
+        savedDeliveryMayBeRetried && hasSavedDeliveryIdentity && phase == .done
+            && !hasEditTask && !undoNeedsRecovery && !installedCopyReplaced
+    }
+
     var canRetrySavedDelivery: Bool {
-        savedDeliveryMayBeRetried && savedDeliveryIdentity != nil && phase == .done
-            && editTask == nil && !undoNeedsRecovery && !deliveryProgress.freshAppBuilt
-            && !deliveryProgress.installedCopyReplaced
+        Self.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: savedDeliveryMayBeRetried,
+            hasSavedDeliveryIdentity: savedDeliveryIdentity != nil,
+            phase: phase,
+            hasEditTask: editTask != nil,
+            undoNeedsRecovery: undoNeedsRecovery,
+            installedCopyReplaced: deliveryProgress.installedCopyReplaced
+        )
     }
 
     func retrySavedDelivery() {
@@ -549,6 +570,23 @@ final class OnDemandEditCoordinator: ObservableObject {
               FileManager.default.fileExists(atPath: installed),
               FileManager.default.fileExists(atPath: backup) else { return false }
         return true
+    }
+
+    /// Explain why the symptom card cannot offer Undo. A clone-only launch and
+    /// an installed swap without complete recovery metadata are different facts
+    /// and must not share a misleading Undo promise.
+    nonisolated static func symptomUndoAvailabilityMessage(
+        appName: String,
+        installedCopyReplaced: Bool,
+        undoAvailable: Bool
+    ) -> String {
+        if undoAvailable {
+            return "Undo to go back to the installed \(appName), or try again."
+        }
+        if installedCopyReplaced {
+            return "The installed app was replaced, but Undo is unavailable because Iris could not save complete recovery details."
+        }
+        return "The installed \(appName) was left unchanged, so Undo is unavailable for this run."
     }
     var canStopUndo: Bool {
         !undoIsInProgress && !isCheckingInterruptedUndo
@@ -4109,11 +4147,29 @@ final class OnDemandEditCoordinator: ObservableObject {
             statusLine = "Fixed — \(appName) is running the change (branch \(branchName))."
             editRunner.finishApplied()
         case .stillBroken:
-            statusLine = "Noted — still broken. Iris has recorded what it tried so the next attempt starts from there. Undo to go back to the installed \(appName), or try again."
+            if deliveredChangeCanBeUndone {
+                statusLine = "Noted — still broken. Iris has recorded what it tried so the next attempt starts from there. Undo to go back to the installed \(appName), or try again."
+            } else {
+                statusLine = "Noted: still broken. Iris has recorded what it tried so the next attempt starts from there. "
+                    + Self.symptomUndoAvailabilityMessage(
+                        appName: appName,
+                        installedCopyReplaced: deliveryProgress.installedCopyReplaced,
+                        undoAvailable: false
+                    ) + " You can try again."
+            }
             offersRetryWithMemory = true
             editRunner.finishStopped()
         case .cannotTell:
-            statusLine = "Left as unverified — the change is on branch \(branchName) and \(appName) is running it. You can undo any time from here."
+            if deliveredChangeCanBeUndone {
+                statusLine = "Left as unverified — the change is on branch \(branchName) and \(appName) is running it. You can undo any time from here."
+            } else {
+                statusLine = "Left as unverified: the change is on branch \(branchName) and \(appName) is running it. "
+                    + Self.symptomUndoAvailabilityMessage(
+                        appName: appName,
+                        installedCopyReplaced: deliveryProgress.installedCopyReplaced,
+                        undoAvailable: false
+                    )
+            }
             editRunner.finishApplied()
         case .machineCheckedFixed, .machineCheckedStillBroken:
             // Not a reader verdict, so it never ends the phase — the buttons

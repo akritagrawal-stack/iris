@@ -17,6 +17,12 @@ const args = JSON.parse(encodedArgs);
 const userData = path.join(profileRoot, "user-data");
 const sessionData = path.join(profileRoot, "session-data");
 
+function profilePort(root) {
+  let hash = 2166136261;
+  for (const char of path.resolve(root)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  return 45000 + (hash >>> 0) % 10000;
+}
+
 // Electron requires these paths before readiness. Keep the fixture isolated
 // even when the ESM entrypoint is evaluated asynchronously.
 fsSync.mkdirSync(userData, { recursive: true });
@@ -538,7 +544,8 @@ async function run() {
     distDir: DIST,
     binDir: path.join(userData, "bin"),
     host: "127.0.0.1",
-    port: 0,
+    // Keep each private profile on a stable origin across relaunch actions.
+    port: profilePort(profileRoot),
   });
   markStage("browser-window");
   window = new BrowserWindow({

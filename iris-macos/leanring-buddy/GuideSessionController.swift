@@ -1176,7 +1176,7 @@ final class GuideSessionController: ObservableObject {
                 hasOfflineFixture: offlineNativeFixture != nil
            ) {
             loadState = .guideCouldNotBeLoaded(slug: slug,
-                userFacingMessage: "Iris Test marketplace guides require an explicit native acceptance launch. Use regular Iris for normal marketplace installations.")
+                userFacingMessage: "Iris Test marketplace guides are unavailable in this test host. Use a native Test launch for acceptance or regular Iris for normal marketplace installations.")
             // The refusal still needs a visible card when opened from Settings.
             surfaceTheGuideCardAtTheEye?()
             return

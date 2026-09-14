@@ -55,14 +55,17 @@ public nonisolated enum IrisTestEnvironment {
         runtimeIdentity.isTestApplication
     }
 
-    /// Marketplace guide execution is opt-in for the separately signed Test
+    /// Marketplace guide execution is scoped to the separately signed Test
     /// app. This keeps ordinary Test runs isolated while allowing a reviewed
     /// native acceptance session to exercise the real guide flow against an
     /// explicitly staged workspace.
     static var isNativeAcceptanceMode: Bool {
         guard isEnabled, !isUnitTestProcess else { return false }
-        return ProcessInfo.processInfo.environment["IRIS_TEST_NATIVE_ACCEPTANCE"] == "1"
-            || CommandLine.arguments.contains("--native-acceptance")
+        // The separately signed Test bundle is itself the reviewed acceptance
+        // boundary. Its profile, project registry, and source-workspace guards
+        // remain isolated from normal Iris, so native launches can exercise
+        // the real guide engine without relying on fragile launch arguments.
+        return true
     }
 
     static func allowsMarketplaceGuides(

@@ -21,9 +21,8 @@ The Test configuration rebuilt successfully from commit `1395f28`; strict code-s
 
 ### 2026-09-14 explicit native marketplace-guide admission
 
-Iris Test now admits the real marketplace guide engine only in an explicitly
-requested native acceptance session (`IRIS_TEST_NATIVE_ACCEPTANCE=1`). Ordinary
-Test launches still refuse marketplace installations, and unit tests retain the
+Iris Test now admits the real marketplace guide engine only in the separately signed native Test acceptance boundary. Unit-test
+hosts still refuse marketplace installations, and unit tests retain the
 isolated offline-fixture path. The admission predicate has focused coverage in
 `GuideSessionTests`; no user checkout or normal Iris profile is broadened.
 

@@ -706,8 +706,11 @@ final class AppRelaunchService {
         /// when the fresh build's signing identity differs from the installed
         /// copy's (or either is unsigned/ad-hoc), so macOS may treat it as a
         /// different app and reset its TCC grants — disclosed, never hidden.
+        /// `receiptIdentifier` is the exact durable receipt created for this
+        /// swap. Callers must carry it forward instead of rediscovering a
+        /// receipt by matching paths (which is ambiguous after repeated edits).
         case replacedInstalledApp(installedPath: String, backupPath: String, grantsMayReset: Bool,
-                                  recoveryWarning: String? = nil)
+                                  recoveryWarning: String? = nil, receiptIdentifier: UUID? = nil)
         /// No installed copy of this bundle id exists apart from the clone's own
         /// build output, so there is nothing to replace. Not an error — the
         /// caller launches the build-dir artifact as it always did.
@@ -840,7 +843,8 @@ final class AppRelaunchService {
             }
             return .replacedInstalledApp(
                 installedPath: installedPath, backupPath: backupPath,
-                grantsMayReset: grantsMayReset, recoveryWarning: warning
+                grantsMayReset: grantsMayReset, recoveryWarning: warning,
+                receiptIdentifier: receipt.identifier
             )
         case .failure(let reason):
             return .deliveryFailed(reason: reason)

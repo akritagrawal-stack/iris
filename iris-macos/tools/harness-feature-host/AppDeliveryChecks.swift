@@ -875,9 +875,11 @@ struct AppDeliveryChecks {
             grantsMayReset: false, store: receipts, undoRecoveryStore: receiptUndoStore,
             retentionPolicy: receiptRetentionPolicy)
         let warning: String?
+        let returnedReceiptIdentifier: UUID?
         switch recorded {
-        case .replacedInstalledApp(_, _, _, let recoveryWarning):
+        case .replacedInstalledApp(_, _, _, let recoveryWarning, let receiptIdentifier):
             warning = recoveryWarning
+            returnedReceiptIdentifier = receiptIdentifier
         case .deliveryFailed(let reason):
             throw AppDeliveryCheckError.failed("receipt-backed delivery failed: \(reason)")
         case .noInstalledCopyToReplace:
@@ -890,6 +892,8 @@ struct AppDeliveryChecks {
         guard case .valid(let persisted)? = restartedStore.entries().first else {
             throw AppDeliveryCheckError.failed("delivery did not leave a readable receipt")
         }
+        try require(returnedReceiptIdentifier == persisted.identifier,
+                    "delivery result did not carry the exact receipt that was persisted")
         try require(persisted.phase == .installed && persisted.backupPath == recordedBackup.path,
                     "delivery history did not record the actual backup and installed phase")
         try require(marker(of: installed) == "fresh-v2" && marker(of: recordedBackup) == "installed-v1",

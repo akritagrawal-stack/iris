@@ -493,9 +493,62 @@ final class OnDemandEditCoordinator: ObservableObject {
     @Published private(set) var stoppedUndoRecoveryPaths: [String] = []
     private var stopUndoArchiveReceipt: DeliveredEditUndoRecoveryStore.ArchiveReceipt?
     private var stopUndoWasRequested = false
+    /// A clone launch is not an installed delivery. Keep the presentation
+    /// state and the action gate tied to the durable installed receipt so a
+    /// clone-only run can never expose an Undo button that cannot restore an
+    /// installed app. The restored-receipt branch is the one exception: it is
+    /// a resumable transaction whose restore stage already completed.
+    private var durableInstalledUndoIsAvailable: Bool {
+        guard let receiptIdentifier = deliveredReceiptIdentifier,
+              case .valid(let receipt) = appDeliveryReceiptStore.load(receiptIdentifier) else {
+            return false
+        }
+        return Self.installedDeliveryUndoIsAvailable(
+            installedCopyReplaced: deliveryProgress.installedCopyReplaced,
+            installedPath: deliveredInstalledAppPath,
+            backupPath: deliveredInstalledBackupPath,
+            receipt: receipt
+        )
+    }
+
+    private var resumableRestoredUndoIsAvailable: Bool {
+        guard let receiptIdentifier = deliveredReceiptIdentifier,
+              case .valid(let receipt) = appDeliveryReceiptStore.load(receiptIdentifier),
+              receipt.phase == .restored,
+              liveUndoRecoveryRecord != nil,
+              undoRecovery.completed.contains(.restore) else { return false }
+        return true
+    }
+
     var canRetryUndo: Bool {
-        deliveredChangeCanBeUndone && !undoIsInProgress && !interruptedUndoRequiresReview
+        (durableInstalledUndoIsAvailable || resumableRestoredUndoIsAvailable)
+            && !undoIsInProgress && !interruptedUndoRequiresReview
             && stopUndoArchiveReceipt == nil && !stopUndoWasRequested
+    }
+
+    /// The only state that may publish an in-session Undo offer. A successful
+    /// installed swap transitions the receipt to `.installed`; a clone launch
+    /// leaves this false even though the rebuilt artifact is running.
+    nonisolated static func installedDeliveryUndoIsAvailable(
+        installedCopyReplaced: Bool,
+        installedPath: String?,
+        backupPath: String?,
+        receipt: AppDeliveryReceipt?
+    ) -> Bool {
+        guard installedCopyReplaced,
+              let installedPath,
+              let backupPath,
+              let receipt,
+              receipt.isValid,
+              receipt.phase == .installed,
+              receipt.hasCompleteUndoMetadata else { return false }
+        let installed = URL(fileURLWithPath: installedPath).standardizedFileURL.path
+        let backup = URL(fileURLWithPath: backupPath).standardizedFileURL.path
+        guard receipt.installedPath == installed,
+              receipt.backupPath == backup,
+              FileManager.default.fileExists(atPath: installed),
+              FileManager.default.fileExists(atPath: backup) else { return false }
+        return true
     }
     var canStopUndo: Bool {
         !undoIsInProgress && !isCheckingInterruptedUndo
@@ -1254,7 +1307,12 @@ final class OnDemandEditCoordinator: ObservableObject {
                 self.deliveredReceiptIdentifier = receiptID
                 self.deliveredInstalledAppPath = receipt.installedPath
                 self.deliveredInstalledBackupPath = receipt.backupPath
-                self.deliveredChangeCanBeUndone = true
+                self.deliveredChangeCanBeUndone = Self.installedDeliveryUndoIsAvailable(
+                    installedCopyReplaced: receipt.phase == .installed,
+                    installedPath: receipt.installedPath,
+                    backupPath: receipt.backupPath,
+                    receipt: receipt
+                )
                 self.liveUndoRecoveryRecord = record
                 self.undoRecovery.reset()
                 if resumeIdentity.appState == .restored {
@@ -3712,22 +3770,28 @@ final class OnDemandEditCoordinator: ObservableObject {
 
     /// Bind the in-session undo to the same durable receipt the installed
     /// delivery wrote. A separate store or a path-only match is not enough:
-    /// two edits can target one app path over time.
+    /// two edits can target one app path over time. The delivery service passes
+    /// the exact receipt ID; if it is missing or no longer matches the receipt
+    /// facts, Undo remains unavailable rather than guessing.
     private func rememberReceiptForDelivery(
+        receiptIdentifier: UUID?,
         sourceIdentity: AppDeliveryReceipt.SourceIdentity,
         installedPath: String,
         backupPath: String
     ) {
         let installed = URL(fileURLWithPath: installedPath).standardizedFileURL.path
         let backup = URL(fileURLWithPath: backupPath).standardizedFileURL.path
-        deliveredReceiptIdentifier = appDeliveryReceiptStore.entries().compactMap { entry -> UUID? in
-            guard case .valid(let receipt) = entry,
-                  receipt.phase == .installed,
-                  receipt.installedPath == installed,
-                  receipt.backupPath == backup,
-                  receipt.sourceIdentity == sourceIdentity else { return nil }
-            return receipt.identifier
-        }.first
+        guard let receiptIdentifier,
+              case .valid(let receipt) = appDeliveryReceiptStore.load(receiptIdentifier),
+              receipt.phase == .installed,
+              receipt.installedPath == installed,
+              receipt.backupPath == backup,
+              receipt.sourceIdentity == sourceIdentity else {
+            deliveredReceiptIdentifier = nil
+            runLog?.record("delivery: exact installed receipt was unavailable or mismatched; Undo remains unavailable")
+            return
+        }
+        deliveredReceiptIdentifier = receiptIdentifier
     }
 
     /// Deliver the fresh build OVER the reader's installed copy (founder
@@ -3744,6 +3808,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         deliveredInstalledBackupPath = nil
         deliveredReceiptIdentifier = nil
         deliveryProgress.installedCopyReplaced = false
+        deliveredChangeCanBeUndone = false
         let deliveryResult: AppRelaunchService.InstalledDeliveryResult
         if let deliverWithContext = deliverEditedAppOverInstalledAppWithRecoveryContext,
            let sourceIdentity {
@@ -3757,13 +3822,14 @@ final class OnDemandEditCoordinator: ObservableObject {
         statusLine = "Installing the rebuilt \(appName) over your copy…"
         let launchPath: String
         switch deliveryResult {
-        case .replacedInstalledApp(let installedPath, let backupPath, let grantsMayReset, let recoveryWarning):
+        case .replacedInstalledApp(let installedPath, let backupPath, let grantsMayReset, let recoveryWarning, let receiptIdentifier):
             deliveryProgress.installedCopyReplaced = true
             launchPath = installedPath
             deliveredInstalledAppPath = installedPath
             deliveredInstalledBackupPath = backupPath
             if let sourceIdentity {
                 rememberReceiptForDelivery(
+                    receiptIdentifier: receiptIdentifier,
                     sourceIdentity: sourceIdentity,
                     installedPath: installedPath,
                     backupPath: backupPath
@@ -3787,6 +3853,7 @@ final class OnDemandEditCoordinator: ObservableObject {
             editRunner.note("Couldn't replace your installed \(appName) (\(reason)) — running the rebuilt copy from the clone instead.")
             runLog?.record("delivered: replace failed (\(reason)) — running from build dir")
         }
+        deliveredChangeCanBeUndone = durableInstalledUndoIsAvailable
         packagedArtifactPath = launchPath
         return launchPath
     }
@@ -3800,9 +3867,18 @@ final class OnDemandEditCoordinator: ObservableObject {
         phase = .awaitingSymptomConfirmation
         deliveryProgress.relaunched = true
         runLog?.record("relaunch: succeeded; behavior not yet confirmed")
-        deliveredChangeCanBeUndone = true
+        deliveredChangeCanBeUndone = durableInstalledUndoIsAvailable
+        if !deliveredChangeCanBeUndone {
+            runLog?.record("undo: unavailable; no durable installed receipt and backup for this delivery")
+        }
         symptomRecheckSummary = nil
-        statusLine = "\(appName) is running with the change. Give it a moment, then tell Iris whether it's actually fixed."
+        if !deliveryProgress.installedCopyReplaced {
+            statusLine = "\(appName) is running from Iris's rebuilt copy. Your installed app is unchanged, so Undo is unavailable for this run."
+        } else if !deliveredChangeCanBeUndone {
+            statusLine = "\(appName) is running with the change, but Iris could not save complete Undo details. Undo is unavailable for this run."
+        } else {
+            statusLine = "\(appName) is running with the change. Give it a moment, then tell Iris whether it's actually fixed."
+        }
         editRunner.note("Relaunched \(appName) with the change. Looking again in a moment…")
         let normalUsage = normalCodexUsage
         Task { [weak self, normalUsage] in
@@ -3842,7 +3918,13 @@ final class OnDemandEditCoordinator: ObservableObject {
             if let artifactPath = self.packagedArtifactPath,
                !self.deliveryProgress.installedCopyReplaced {
                 summaryParts.append(
-                    "running the build at \(artifactPath); Iris did not replace a separately installed copy, so use this build to test the change"
+                    "running the build at \(artifactPath); your installed app is unchanged and Undo is unavailable for this run"
+                )
+            }
+            if self.deliveryProgress.installedCopyReplaced,
+               !self.deliveredChangeCanBeUndone {
+                summaryParts.append(
+                    "the installed app was replaced, but complete Undo details were not saved, so Undo is unavailable for this run"
                 )
             }
             if !self.packagingMetadataFailures.isEmpty {
@@ -4304,7 +4386,12 @@ final class OnDemandEditCoordinator: ObservableObject {
         deliveredReceiptIdentifier = receipt.identifier
         deliveredInstalledAppPath = receipt.installedPath
         deliveredInstalledBackupPath = receipt.backupPath
-        deliveredChangeCanBeUndone = true
+        deliveredChangeCanBeUndone = Self.installedDeliveryUndoIsAvailable(
+            installedCopyReplaced: true,
+            installedPath: receipt.installedPath,
+            backupPath: receipt.backupPath,
+            receipt: receipt
+        )
         savedVersionUndoIsPending = true
         previousVersionWasRestored = false
         deliveryProgress.codeSaved = true

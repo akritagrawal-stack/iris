@@ -24,6 +24,58 @@ import Testing
     #expect(session.ledger.snapshot.accountedInputBytes == 5)
 }
 
+@Test @MainActor func routeInputAllowanceBlocksAnOversizedReviewBeforeTransport() async throws {
+    var physicalCalls = 0
+    let session = try HarnessModelSession(
+        implementationArm: .lunaMax,
+        settings: .init(maxCalls: 2, maxInputBytes: 2_000_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        serializedInputByteCounter: { _ in 512 * 1024 + 1 },
+        now: { 100 }
+    ) { _ in
+        physicalCalls += 1
+        return HarnessModelReply(text: "unexpected")
+    }
+
+    await #expect(throws: HarnessModelSession.SessionError.routeInputBudgetExceeded(
+        phase: .review,
+        requestedInputBytes: 512 * 1024 + 1,
+        maximumInputBytes: 512 * 1024
+    )) {
+        _ = try await session.respond(
+            phase: .review,
+            systemPrompt: "review",
+            conversation: [],
+            maximumOutputTokens: 100
+        )
+    }
+    #expect(physicalCalls == 0)
+    #expect(session.ledger.snapshot.admittedCallCount == 0)
+    #expect(session.taskLifecycle.snapshot.state == .blocked)
+}
+
+@Test @MainActor func routeOutputAllowanceCapsCallerRequestBeforeTransport() async throws {
+    var observedLimit: Int?
+    let session = try HarnessModelSession(
+        implementationArm: .lunaMax,
+        settings: .init(maxCalls: 1, maxInputBytes: 10_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { request in
+        observedLimit = request.maximumOutputTokens
+        return HarnessModelReply(text: "bounded")
+    }
+
+    _ = try await session.respond(
+        phase: .review,
+        systemPrompt: "review",
+        conversation: [],
+        maximumOutputTokens: 10_000
+    )
+    #expect(observedLimit == 1_200)
+    #expect(session.ledger.snapshot.admittedCallCount == 1)
+}
+
 @Test @MainActor func exactCandidateThatWouldConsumeReviewReserveYieldsBeforeAdmission() async throws {
     var physicalCalls = 0
     let session = try HarnessModelSession(

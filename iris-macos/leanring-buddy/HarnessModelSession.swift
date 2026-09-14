@@ -47,6 +47,11 @@ final class HarnessModelSession {
         case responseTooLarge
         case invalidLimits
         case deterministicRouteRequiresLocalExecutor
+        case routeInputBudgetExceeded(
+            phase: HarnessRunTaskKind,
+            requestedInputBytes: UInt64,
+            maximumInputBytes: UInt64
+        )
         case yieldToVerification(
             inputBytes: UInt64,
             preservedInputBytes: UInt64,
@@ -60,6 +65,8 @@ final class HarnessModelSession {
             case .invalidLimits: return "The edit's resource limits are invalid."
             case .deterministicRouteRequiresLocalExecutor:
                 return "This operation is deterministic and must use the local executor; no model request was sent."
+            case .routeInputBudgetExceeded(let phase, let requestedInputBytes, let maximumInputBytes):
+                return "The \(phase.rawValue) request is \(requestedInputBytes) bytes, above its \(maximumInputBytes)-byte route allowance. No model request was sent."
             case .yieldToVerification:
                 return "This edit stopped before its next request could consume the input space preserved for independent review. The current source still needs verification."
             }
@@ -160,10 +167,29 @@ final class HarnessModelSession {
             throw SessionError.deterministicRouteRequiresLocalExecutor
         }
         markLifecycleStarted(at: .init(nanoseconds: timestamp))
+        // The policy owns the upper bound. A caller can request a smaller
+        // response for a cheap turn, but cannot silently enlarge a route's
+        // output budget and bypass the routing contract.
+        let effectiveMaximumOutputTokens = min(
+            maximumOutputTokens,
+            Int(decision.maximumOutputTokens)
+        )
         let request = HarnessModelRequest(route: route, routeClass: decision.routeClass, phase: phase,
-            systemPrompt: systemPrompt, conversation: conversation, maximumOutputTokens: maximumOutputTokens)
+            systemPrompt: systemPrompt, conversation: conversation,
+            maximumOutputTokens: effectiveMaximumOutputTokens)
         let inputBytes = try serializedInputByteCounter(request)
         let inputCounts = try Self.inputCounts(for: request)
+        guard inputBytes <= decision.maximumInputBytes else {
+            markLifecycleBlocked(
+                reason: "The request exceeded the selected route's input allowance.",
+                at: .init(nanoseconds: timestamp)
+            )
+            throw SessionError.routeInputBudgetExceeded(
+                phase: phase,
+                requestedInputBytes: inputBytes,
+                maximumInputBytes: decision.maximumInputBytes
+            )
+        }
         let availableAfterPreserving = ledger.remainingInputByteCapacity(
             afterPreservingInputBytes: preservingInputBytes
         )

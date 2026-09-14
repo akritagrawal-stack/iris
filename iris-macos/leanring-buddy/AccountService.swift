@@ -166,8 +166,10 @@ enum AccountServiceError: Error, Equatable, Sendable {
 // MARK: - The service
 
 /// The production boundary is Keychain only. Tests inject an in-memory store.
-@MainActor
-struct AccountSessionStorage {
+/// The closures are synchronous because Security.framework is synchronous.
+/// Reconnect runs them on a detached worker so the main actor never waits for
+/// securityd, while the service keeps all account state on the main actor.
+nonisolated struct AccountSessionStorage: @unchecked Sendable {
     var read: () -> Result<String?, KeychainStoreError>
     var save: (String) throws -> Void
     var delete: () throws -> Void
@@ -180,6 +182,47 @@ struct AccountSessionStorage {
             delete: { try KeychainStore.deleteSecret(ofKind: .supabaseRefreshToken) },
             reconnect: { KeychainStore.readSecretResult(ofKind: .supabaseRefreshToken, allowsUserInteraction: true) }
         )
+    }
+}
+
+private enum SavedSessionReconnectRead: Sendable {
+    case completed(Result<String?, KeychainStoreError>)
+    case cancelled
+    case timedOut
+}
+
+/// A bounded wait can stop awaiting Security.framework, but cannot interrupt a
+/// kernel or securityd call already in progress. This gate lets the caller
+/// regain the main actor while the one owned worker remains single-flight.
+private final class SavedSessionReconnectWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: SavedSessionReconnectRead?
+    private var continuation: CheckedContinuation<SavedSessionReconnectRead, Never>?
+
+    func resolve(_ result: SavedSessionReconnectRead) {
+        lock.lock()
+        guard self.result == nil else {
+            lock.unlock()
+            return
+        }
+        self.result = result
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: result)
+    }
+
+    func wait() async -> SavedSessionReconnectRead {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let result {
+                lock.unlock()
+                continuation.resume(returning: result)
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+        }
     }
 }
 
@@ -233,6 +276,11 @@ final class AccountService: ObservableObject {
     private var currentAccessTokenExpiryDate: Date?
     private var currentRefreshToken: String?
     private var refreshTask: Task<String?, Never>?
+    private var savedSessionReconnectTask: Task<SavedSessionReconnectRead, Never>?
+    private var savedSessionReconnectAttemptID: UUID?
+    private var savedSessionReconnectWaiter: SavedSessionReconnectWaiter?
+    private var savedSessionReconnectTimedOutAttemptID: UUID?
+    private let savedSessionReconnectWaitNanoseconds: UInt64
     private var sessionGeneration = UUID()
     private var lastRestoreAttempt: Date?
     private var sessionWasExplicitlyEnded = false
@@ -269,32 +317,82 @@ final class AccountService: ObservableObject {
     /// access works. Check it before rotating the saved refresh token.
     @discardableResult
     func reconnectSavedSession() async -> Bool {
-        guard !sessionWasExplicitlyEnded, !isSignInInProgress, !isRestoringSession else { return false }
-        var saved = sessionStorage.read()
-        if case .failure = saved {
-            guard case .success = sessionStorage.reconnect() else {
+        guard !sessionWasExplicitlyEnded, !isSignInInProgress,
+              !isRestoringSession, savedSessionReconnectTask == nil else { return false }
+        let attemptID = UUID()
+        let generation = sessionGeneration
+        let storage = sessionStorage
+        let worker = Task.detached(priority: .userInitiated) { () -> SavedSessionReconnectRead in
+            guard !Task.isCancelled else { return .cancelled }
+            let initial = storage.read()
+            guard case .failure = initial else { return .completed(initial) }
+            guard !Task.isCancelled else { return .cancelled }
+            guard case .success = storage.reconnect() else { return .completed(initial) }
+            guard !Task.isCancelled else { return .cancelled }
+            // A successful interactive call is not sufficient. The result
+            // below is always a fresh routine, no-interaction read.
+            return .completed(storage.read())
+        }
+        let waiter = SavedSessionReconnectWaiter()
+        savedSessionReconnectTask = worker
+        savedSessionReconnectAttemptID = attemptID
+        savedSessionReconnectWaiter = waiter
+        isRestoringSession = true
+        let waitNanoseconds = savedSessionReconnectWaitNanoseconds
+
+        Task { @MainActor [weak self, worker] in
+            _ = await worker.value
+            self?.settleTimedOutSavedSessionReconnect(attemptID: attemptID, generation: generation)
+        }
+        Task.detached(priority: .utility) {
+            try? await Task.sleep(nanoseconds: waitNanoseconds)
+            waiter.resolve(.timedOut)
+        }
+        Task.detached(priority: .utility) {
+            waiter.resolve(await worker.value)
+        }
+
+        let saved = await waiter.wait()
+        guard savedSessionReconnectAttemptID == attemptID,
+              sessionGeneration == generation,
+              !sessionWasExplicitlyEnded else { return false }
+        let token: String?
+        switch saved {
+        case .cancelled:
+            return false
+        case .timedOut:
+            savedSessionReconnectTimedOutAttemptID = attemptID
+            signInFailureMessage = "macOS is still handling Reconnect saved login. Iris stopped waiting and kept your saved login. You can sign out, or wait before trying again."
+            Task { @MainActor [weak self, worker] in
+                _ = await worker.value
+                self?.settleTimedOutSavedSessionReconnect(attemptID: attemptID, generation: generation)
+            }
+            return false
+        case .completed(let result):
+            savedSessionReconnectTask = nil
+            savedSessionReconnectAttemptID = nil
+            savedSessionReconnectWaiter = nil
+            isRestoringSession = false
+            if case .failure = result {
                 needsSavedLoginAuthorization = true
                 signInFailureMessage = "Keychain access was not approved. Your saved login was kept. Try Reconnect saved login when ready."
                 return false
             }
-            saved = sessionStorage.read()
-        }
-        switch saved {
-        case .failure:
-            needsSavedLoginAuthorization = true
-            signInFailureMessage = "macOS still blocks background access to your saved login. Reconnect and choose Always Allow for \(runningAppName) in the Keychain prompt. Nothing was deleted."
-            return false
-        case .success(let token):
-            guard token != nil || currentRefreshToken != nil else {
+            guard case .success(let savedToken) = result else { return false }
+            guard savedToken != nil || currentRefreshToken != nil else {
                 needsSavedLoginAuthorization = false
                 signInFailureMessage = "No saved login was found. Sign in once to connect your account."
                 return false
             }
+            token = savedToken
         }
         needsSavedLoginAuthorization = false
         signInFailureMessage = nil
         // Never replace a newer, unsaved in-memory token with the older disk copy.
-        await restorePreviousSessionIfPossible(forceRetry: true)
+        if currentRefreshToken == nil { currentRefreshToken = token }
+        lastRestoreAttempt = Date()
+        retrySavingCurrentSession()
+        _ = await currentAccessTokenRefreshingIfNeeded()
         return signedInAccount != nil && sessionPersistenceMessage == nil && signInFailureMessage == nil
     }
 
@@ -316,10 +414,12 @@ final class AccountService: ObservableObject {
         urlSession: URLSession = .shared,
         sessionStorage: AccountSessionStorage? = nil,
         projectConfiguration: (@MainActor () -> (URL, String)?)? = nil,
-        loadOtherCredentials: Bool = true
+        loadOtherCredentials: Bool = true,
+        savedSessionReconnectWaitNanoseconds: UInt64 = 15_000_000_000
     ) {
         self.urlSession = urlSession
         self.sessionStorage = sessionStorage ?? .keychain
+        self.savedSessionReconnectWaitNanoseconds = savedSessionReconnectWaitNanoseconds
         self.projectConfiguration = projectConfiguration ?? {
             guard let url = SupabaseProjectConfiguration.projectURL(),
                   let key = SupabaseProjectConfiguration.anonymousKey() else { return nil }
@@ -353,10 +453,29 @@ final class AccountService: ObservableObject {
         sessionGeneration = UUID()
         refreshTask?.cancel()
         refreshTask = nil
+        savedSessionReconnectTask?.cancel()
+        savedSessionReconnectTask = nil
+        savedSessionReconnectAttemptID = nil
+        savedSessionReconnectTimedOutAttemptID = nil
+        savedSessionReconnectWaiter?.resolve(.cancelled)
+        savedSessionReconnectWaiter = nil
         isRestoringSession = false
         activeWebAuthenticationSession?.cancel()
         activeWebAuthenticationSession = nil
         isSignInInProgress = false
+    }
+
+    private func settleTimedOutSavedSessionReconnect(attemptID: UUID, generation: UUID) {
+        guard savedSessionReconnectAttemptID == attemptID,
+              savedSessionReconnectTimedOutAttemptID == attemptID else { return }
+        savedSessionReconnectTask = nil
+        savedSessionReconnectAttemptID = nil
+        savedSessionReconnectWaiter = nil
+        savedSessionReconnectTimedOutAttemptID = nil
+        isRestoringSession = false
+        guard !sessionWasExplicitlyEnded, sessionGeneration == generation else { return }
+        needsSavedLoginAuthorization = true
+        signInFailureMessage = "macOS did not finish reconnecting your saved login in time. Your saved login was kept. Try Reconnect saved login again when Keychain is available."
     }
 
     /// Re-read metadata after the reader explicitly reconnects a saved item.

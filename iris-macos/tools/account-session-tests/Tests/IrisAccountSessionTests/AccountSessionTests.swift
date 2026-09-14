@@ -101,6 +101,94 @@ struct AccountSessionTests {
         #expect(storage.storedRefreshToken == "refresh-after-restart")
     }
 
+    @Test func aBlockedExplicitReconnectLeavesTheMainActorResponsiveAndUsesOneWorker() async throws {
+        let storage = BlockingReconnectSessionStorage(refreshToken: "refresh-blocked")
+        let harness = AccountTestHarness(
+            sessionStorage: storage.accountStorage(),
+            responsePlans: [.response(statusCode: 200, body: sessionBody(refreshToken: "refresh-after-reconnect"))]
+        )
+        let reconnect = Task { @MainActor in await harness.service.reconnectSavedSession() }
+        try await waitForReconnectStart(storage)
+
+        var mainActorHeartbeat = false
+        Task { @MainActor in mainActorHeartbeat = true }
+        await Task.yield()
+        #expect(mainActorHeartbeat)
+        #expect(await harness.service.reconnectSavedSession() == false)
+        #expect(storage.reconnectCount == 1)
+
+        storage.releaseReconnect()
+        #expect(await reconnect.value)
+        #expect(harness.service.signedInAccount?.emailAddress == "reader@example.test")
+        #expect(storage.readCount == 2 && storage.reconnectCount == 1)
+        #expect(harness.sequence.requestCount == 1)
+    }
+
+    @Test func aTimedOutReconnectIgnoresItsLateResultWithoutStartingANewRefresh() async throws {
+        let storage = BlockingReconnectSessionStorage(refreshToken: "refresh-timeout")
+        let harness = AccountTestHarness(
+            sessionStorage: storage.accountStorage(), responsePlans: [],
+            savedSessionReconnectWaitNanoseconds: 1_000_000
+        )
+        let didReconnect = await harness.service.reconnectSavedSession()
+        #expect(!didReconnect)
+        try await waitForReconnectStart(storage)
+        #expect(harness.service.isRestoringSession)
+        #expect(harness.service.signInFailureMessage?.contains("stopped waiting") == true)
+
+        storage.releaseReconnect()
+        try await waitForRestoreToSettle(harness.service)
+        #expect(harness.service.signedInAccount == nil)
+        #expect(harness.sequence.requestCount == 0)
+        #expect(storage.reconnectCount == 1 && storage.readCount == 2)
+    }
+
+    @Test func signOutCancelsABlockedReconnectAndPreventsLateSessionRevival() async throws {
+        let storage = BlockingReconnectSessionStorage(refreshToken: "refresh-signout")
+        let harness = AccountTestHarness(
+            sessionStorage: storage.accountStorage(),
+            responsePlans: [.response(statusCode: 200, body: sessionBody(refreshToken: "late-refresh"))],
+            savedSessionReconnectWaitNanoseconds: 5_000_000_000
+        )
+        let reconnect = Task { @MainActor in await harness.service.reconnectSavedSession() }
+        try await waitForReconnectStart(storage)
+        harness.service.signOut()
+        storage.releaseReconnect()
+        #expect(await reconnect.value == false)
+        await Task.yield()
+
+        #expect(harness.service.signedInAccount == nil)
+        #expect(harness.sequence.requestCount == 0)
+        #expect(storage.reconnectCount == 1 && storage.deleteCount == 1)
+    }
+
+    @Test func aNewSignInInvalidatesABlockedReconnectBeforeItsLateResultCanApply() async throws {
+        let storage = BlockingReconnectSessionStorage(refreshToken: "refresh-reconnect-old")
+        let harness = AccountTestHarness(
+            sessionStorage: storage.accountStorage(),
+            responsePlans: [
+                .response(
+                    statusCode: 200,
+                    body: sessionBody(accessToken: "access-new-sign-in", refreshToken: "refresh-new-sign-in", emailAddress: "new@example.test")
+                )
+            ],
+            savedSessionReconnectWaitNanoseconds: 5_000_000_000
+        )
+        let reconnect = Task { @MainActor in await harness.service.reconnectSavedSession() }
+        try await waitForReconnectStart(storage)
+        let signIn = Task { @MainActor in
+            await harness.service.signIn(withEmailAddress: "new@example.test", password: "fixture-password")
+        }
+        try await harness.sequence.waitForRequestCount(1)
+        storage.releaseReconnect()
+        await signIn.value
+        #expect(await reconnect.value == false)
+
+        #expect(harness.service.signedInAccount?.emailAddress == "new@example.test")
+        #expect(harness.sequence.requestCount == 1)
+        #expect(storage.reconnectCount == 1)
+    }
+
     @Test(arguments: [errSecInteractionNotAllowed, errSecUserCanceled])
     func anExplicitReconnectDenialPreservesAnExistingInMemorySession(status: OSStatus) async throws {
         let storage = InMemorySessionStorage(refreshToken: "refresh-kept")
@@ -483,5 +571,23 @@ struct AccountSessionTests {
         })
         #expect(attemptedAdd)
         #expect(missingStatus == errSecSuccess)
+    }
+
+    private func waitForReconnectStart(
+        _ storage: BlockingReconnectSessionStorage
+    ) async throws {
+        for _ in 0..<200 {
+            if storage.hasStartedReconnect() { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        throw SessionFixtureError.offline
+    }
+
+    private func waitForRestoreToSettle(_ service: AccountService) async throws {
+        for _ in 0..<200 {
+            if !service.isRestoringSession { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        throw SessionFixtureError.offline
     }
 }

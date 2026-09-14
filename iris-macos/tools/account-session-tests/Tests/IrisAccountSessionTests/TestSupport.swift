@@ -71,6 +71,78 @@ final class InMemorySessionStorage: @unchecked Sendable {
     }
 }
 
+/// A disposable storage adapter that blocks only its explicit reconnect call.
+/// It never touches Security.framework or an installed Iris profile.
+final class BlockingReconnectSessionStorage: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var reconnectIsBlocked = true
+    private var reconnectStarted = false
+    private(set) var readCount = 0
+    private(set) var reconnectCount = 0
+    private(set) var deleteCount = 0
+    var storedRefreshToken: String?
+    var readResult: Result<String?, KeychainStoreError>
+
+    init(refreshToken: String) {
+        self.storedRefreshToken = refreshToken
+        self.readResult = .failure(.keychainOperationFailed(status: errSecInteractionNotAllowed))
+    }
+
+    func accountStorage() -> AccountSessionStorage {
+        AccountSessionStorage(
+            read: { [weak self] in
+                guard let self else { return .success(nil) }
+                self.condition.lock()
+                defer { self.condition.unlock() }
+                self.readCount += 1
+                if case .success = self.readResult { return .success(self.storedRefreshToken) }
+                return self.readResult
+            },
+            save: { [weak self] token in
+                guard let self else { return }
+                self.condition.lock()
+                self.storedRefreshToken = token
+                self.readResult = .success(token)
+                self.condition.unlock()
+            },
+            delete: { [weak self] in
+                guard let self else { return }
+                self.condition.lock()
+                self.deleteCount += 1
+                self.storedRefreshToken = nil
+                self.readResult = .success(nil)
+                self.condition.unlock()
+            },
+            reconnect: { [weak self] in
+                guard let self else { return .success(nil) }
+                self.condition.lock()
+                self.reconnectCount += 1
+                self.reconnectStarted = true
+                self.condition.broadcast()
+                while self.reconnectIsBlocked {
+                    self.condition.wait()
+                }
+                self.readResult = .success(self.storedRefreshToken)
+                self.condition.unlock()
+                return .success(self.storedRefreshToken)
+            }
+        )
+    }
+
+    func hasStartedReconnect() -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return reconnectStarted
+    }
+
+    func releaseReconnect() {
+        condition.lock()
+        reconnectIsBlocked = false
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
 enum SessionFixtureError: Error, Equatable {
     case offline
     case keychainWriteDenied
@@ -249,16 +321,26 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 final class AccountTestHarness {
     let host: String
     let sequence: StubResponseSequence
-    let storage: InMemorySessionStorage
     let service: AccountService
 
-    init(
+    convenience init(
         storage: InMemorySessionStorage,
-        responsePlans: [StubResponsePlan]
+        responsePlans: [StubResponsePlan],
+        savedSessionReconnectWaitNanoseconds: UInt64 = 15_000_000_000
+    ) {
+        self.init(
+            sessionStorage: storage.accountStorage(), responsePlans: responsePlans,
+            savedSessionReconnectWaitNanoseconds: savedSessionReconnectWaitNanoseconds
+        )
+    }
+
+    init(
+        sessionStorage: AccountSessionStorage,
+        responsePlans: [StubResponsePlan],
+        savedSessionReconnectWaitNanoseconds: UInt64 = 15_000_000_000
     ) {
         self.host = "fixture-\(UUID().uuidString.lowercased()).account-session.test"
         self.sequence = StubResponseSequence(responsePlans: responsePlans)
-        self.storage = storage
         StubURLProtocol.register(sequence, forHost: host)
 
         let configuration = URLSessionConfiguration.ephemeral
@@ -267,9 +349,10 @@ final class AccountTestHarness {
         let projectURL = URL(string: "https://\(host)")!
         self.service = AccountService(
             urlSession: urlSession,
-            sessionStorage: storage.accountStorage(),
+            sessionStorage: sessionStorage,
             projectConfiguration: { (projectURL, "fixture-anon-key") },
-            loadOtherCredentials: false
+            loadOtherCredentials: false,
+            savedSessionReconnectWaitNanoseconds: savedSessionReconnectWaitNanoseconds
         )
     }
 

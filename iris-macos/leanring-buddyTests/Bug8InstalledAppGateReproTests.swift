@@ -485,7 +485,7 @@ struct Bug8InstalledAppGateReproTests {
               "status": "pilot",
               "sourceOwner": "Blueturboguy07",
               "sourceRepo": "kneecap",
-              "sourceCommit": null,
+              "sourceCommit": "fc48ba487a1e0d0cd10b30d6600acd2895ffdbed",
               "outputType": "mobile_app",
               "estimatedMinutes": 40,
               "readmeSectionIds": [],
@@ -583,6 +583,20 @@ struct Bug8InstalledAppGateReproTests {
             urlSession: URLSession(configuration: configuration),
             userDefaults: defaults
         )
+        // Iris Test deliberately refuses marketplace guides unless the test
+        // owns a validated native fixture. Admit exactly this disposable
+        // Kneecap pin rather than weakening the production refusal.
+        let fixtureRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/iris-native-guide-fixture-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        let offlineFixture = GuideOfflineNativeFixture(
+            guideID: "kneecap",
+            guideRevision: 2,
+            expectedOrigin: try #require(GuideSourceWorkspaceOrigin.parse("https://github.com/Blueturboguy07/kneecap")),
+            expectedCommit: "fc48ba487a1e0d0cd10b30d6600acd2895ffdbed",
+            workspaceRoot: fixtureRoot
+        )
         let controller = GuideSessionController(
             guideService: guideService,
             watchLoop: WatchLoop(
@@ -603,7 +617,8 @@ struct Bug8InstalledAppGateReproTests {
                     guideContext: context,
                     pacing: .instant
                 )
-            }
+            },
+            offlineNativeFixture: offlineFixture
         )
         // The one-time autonomy grant lives in UserDefaults on the real machine;
         // this run must not depend on whether some earlier session left it on.
@@ -801,6 +816,17 @@ struct Bug8InstalledAppGateReproTests {
             urlSession: URLSession(configuration: configuration),
             userDefaults: defaults
         )
+        let fixtureRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/iris-native-guide-fixture-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        let offlineFixture = GuideOfflineNativeFixture(
+            guideID: "kneecap",
+            guideRevision: 2,
+            expectedOrigin: try #require(GuideSourceWorkspaceOrigin.parse("https://github.com/Blueturboguy07/kneecap")),
+            expectedCommit: "fc48ba487a1e0d0cd10b30d6600acd2895ffdbed",
+            workspaceRoot: fixtureRoot
+        )
         let loginShell = GuideAutopilotShellSession(startingDirectory: checkoutFolder)
         let sideShell = GuideAutopilotShellSession(startingDirectory: checkoutFolder)
         let controller = GuideSessionController(
@@ -823,7 +849,8 @@ struct Bug8InstalledAppGateReproTests {
                     guideContext: context,
                     pacing: .instant
                 )
-            }
+            },
+            offlineNativeFixture: offlineFixture
         )
         controller.confirmAutonomousControl = { true }
         let workspaceLookup = FakeInstalledApplicationLookup(installed: ["com.apple.dt.Xcode"])

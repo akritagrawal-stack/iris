@@ -1958,7 +1958,10 @@ final class GuideSessionController: ObservableObject {
             irisTrace("autopilot: start refused — guide not open (loadState=\(loadState))")
             return
         }
-        guard !guideNeedsPublisherWorkspaceMigration else {
+        // A fixture is an explicitly admitted, pinned test copy. It may keep
+        // the published guide's legacy HOME-relative paths so this suite can
+        // exercise the install gate; normal controllers always pass nil here.
+        guard !guideNeedsPublisherWorkspaceMigration || offlineNativeFixture != nil else {
             autopilotBlockedExplanation = "This published guide still names its project folder through HOME-relative commands. Iris will not automate it until Publik publishes structural prepared-workspace steps for this version."
             irisTrace("autopilot: start refused — source guide needs workspace migration")
             return
@@ -1986,7 +1989,7 @@ final class GuideSessionController: ObservableObject {
             irisTrace("autopilot: start refused — no runner factory wired")
             return
         }
-        if let offlineNativeFixture {
+        if let offlineNativeFixture, guideHasStructuralWorkspaceSteps {
             guard let binding = selectedWorkspaceBinding,
                   offlineNativeFixture.accepts(binding) else {
                 autopilotBlockedExplanation = "This Iris Test fixture has no validated prepared workspace."

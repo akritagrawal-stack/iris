@@ -378,3 +378,16 @@ to the named RC itself. Iris displayed its setup panel stating that permissions
 were revoked: this exact RC copy must be re-added under Accessibility, and
 Screen Recording must be granted again. The panel remains open for that
 operator action; no privacy entries were changed automatically.
+
+## Integrated workspace and harness recheck, September 14
+
+The current integration HEAD is `4035dd6`, which keeps cancelled setup recovery
+strict and rejects repeated staging from a ready record. The standalone source
+workspace checks completed **4/4**, covering adversarial origin/ownership/path
+guards, bounded cancellation, local Git staging and preservation, and truthful
+cancellation recovery records. A fresh `harness-feature-host --checks` build
+completed successfully from the current 181-source host with diagnostic,
+routing, review-reserve, freshness, candidate-record, cancellation, and repair
+checkpoint checks passing. This remains headless evidence; it does not convert
+the pending native permission, live screen-positioning, or physical-iPhone
+requirements into accepted results.

@@ -2494,7 +2494,10 @@ struct OverlayEyeInputBarView: View {
         panel.prompt = "Use source folder"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task {
-            _ = await guideSessionController.inspectReaderSelectedSourceWorkspace(sourcePath: url.path)
+            let inspection = await guideSessionController.inspectReaderSelectedSourceWorkspace(sourcePath: url.path)
+            if case .success = inspection {
+                _ = await guideSessionController.prepareSelectedSourceWorkspace(choice: .createIsolatedWorktree)
+            }
         }
     }
 }

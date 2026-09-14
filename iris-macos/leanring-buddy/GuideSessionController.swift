@@ -1566,6 +1566,8 @@ final class GuideSessionController: ObservableObject {
             selectedWorkspaceMemory.save(binding)
             cancelledSourceWorkspaceRequest = nil
             sourceWorkspaceSetupState = .ready(binding)
+            shouldShowSourceWorkspaceRecovery = false
+            autopilotBlockedExplanation = nil
             return .success(binding)
         } catch let error as GuideSourceWorkspacePreparationError {
             guard sourceWorkspaceGeneration == generation,

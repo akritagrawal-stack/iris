@@ -149,13 +149,16 @@ final class MenuBarPanelManager: NSObject {
     }
 
     /// SwiftUI has not laid new content out at the moment state changes. Wait
-    /// for the next runloop, but never queue more than one fitting pass; an
+    /// one display beat, but never queue more than one fitting pass; an
     /// otherwise harmless group of state updates used to make the panel chase
     /// its own layout and produced visible jitter during loading and dragging.
     private func queueContentFit() {
         guard !hasQueuedContentFit, !isApplyingProgrammaticFrame else { return }
         hasQueuedContentFit = true
-        DispatchQueue.main.async { [weak self] in
+        // A plain `async` can still run while AppKit is in the host view's
+        // layout pass. Deferring one frame keeps `fittingSize` out of that
+        // pass, avoiding the recursive layout warning and the jump it caused.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16)) { [weak self] in
             guard let self else { return }
             self.hasQueuedContentFit = false
             guard self.panel?.isVisible == true, !self.isApplyingProgrammaticFrame else { return }

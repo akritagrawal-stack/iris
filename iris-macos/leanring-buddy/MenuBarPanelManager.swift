@@ -63,6 +63,10 @@ final class MenuBarPanelManager: NSObject {
     /// of staying open where nobody can see it.
     private var screenLayoutChangeObserver: NSObjectProtocol?
     private var isApplyingProgrammaticFrame = false
+    /// A single SwiftUI state change can update several subviews and each may
+    /// request a content fit. Coalescing those requests avoids repeatedly
+    /// setting the panel frame while AppKit is laying it out.
+    private var hasQueuedContentFit = false
     private var pendingPlacementUpdates = SettingsPanelPlacementUpdates()
     private var placementSaveTask: Task<Void, Never>?
 
@@ -96,12 +100,7 @@ final class MenuBarPanelManager: NSObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            // SwiftUI has not laid the new content out yet at the moment the
-            // state changes, so the re-measure waits for the next runloop turn.
-            DispatchQueue.main.async {
-                guard let self, self.panel?.isVisible == true else { return }
-                self.positionPanelBelowStatusItem()
-            }
+            self?.queueContentFit()
         }
 
         showPanelObserver = NotificationCenter.default.addObserver(
@@ -146,6 +145,21 @@ final class MenuBarPanelManager: NSObject {
         }
         if let observer = showPanelObserver {
             NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// SwiftUI has not laid new content out at the moment state changes. Wait
+    /// for the next runloop, but never queue more than one fitting pass; an
+    /// otherwise harmless group of state updates used to make the panel chase
+    /// its own layout and produced visible jitter during loading and dragging.
+    private func queueContentFit() {
+        guard !hasQueuedContentFit, !isApplyingProgrammaticFrame else { return }
+        hasQueuedContentFit = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.hasQueuedContentFit = false
+            guard self.panel?.isVisible == true, !self.isApplyingProgrammaticFrame else { return }
+            self.positionPanelBelowStatusItem()
         }
     }
 

@@ -1982,7 +1982,8 @@ final class GuideSessionController: ObservableObject {
     func startAutopilot() {
         guard !IrisTestEnvironment.isEnabled
             || IrisTestEnvironment.isUnitTestProcess
-            || offlineNativeFixture != nil else {
+            || offlineNativeFixture != nil
+            || IrisTestEnvironment.isNativeAcceptanceMode else {
             autopilotBlockedExplanation = "Marketplace installation is off in Iris Test. Your normal apps are protected."
             return
         }

@@ -62,17 +62,8 @@ public nonisolated enum IrisTestEnvironment {
     /// refusal into a broad test-build exception.
     static var isUnitTestProcess: Bool {
         let environment = ProcessInfo.processInfo.environment
-        if environment["XCTestConfigurationFilePath"] != nil
-            || environment["XCTestSessionIdentifier"] != nil {
-            return true
-        }
-
-        // Swift Testing can load an Iris Test host directly instead of using
-        // the older XCTest environment variables. XCTest is still linked into
-        // that host; a launched Iris Test app never links it. This preserves
-        // the production marketplace refusal while allowing native test
-        // fixtures to exercise their explicitly stubbed local state paths.
-        return NSClassFromString("XCTestCase") != nil
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestSessionIdentifier"] != nil
     }
 
     public static var displayName: String { runtimeIdentity.displayName }

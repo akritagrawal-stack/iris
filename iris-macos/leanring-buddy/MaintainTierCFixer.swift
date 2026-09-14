@@ -753,7 +753,10 @@ final class MaintainTierCFixer {
         // stages and persists a candidate only after this loop has proved the
         // changed paths are model-owned; nil leaves every existing cleanup path
         // unchanged.
-        failedReviewRetention: MaintainTierCFailedReviewRetention? = nil
+        failedReviewRetention: MaintainTierCFailedReviewRetention? = nil,
+        // Test-only process policy injection. Native tests bind this to their
+        // exact disposable clone; nil keeps the runtime-selected policy.
+        processPolicy: MaintainSandbox.ProcessPolicy? = nil
     ) async -> MaintainOnDemandEditResult {
         progressHandler?(.modelRouteSelected(description: provider.routeDescription))
         let changeKindTrailer = kind == .feature ? "on-demand-feature" : "on-demand-bug-fix"
@@ -806,7 +809,8 @@ final class MaintainTierCFixer {
             manifestChangeApproval: manifestChangeApproval,
             priorAttemptsDidNotCureTheComplaint: priorAttemptsDidNotCureTheComplaint,
             runsAnIndependentReview: runsAnIndependentReview,
-            failedReviewRetention: failedReviewRetention
+            failedReviewRetention: failedReviewRetention,
+            processPolicy: processPolicy
         )
         switch outcome {
         case .committed(let branchName, let suitePassed, let symptomVerifiedByRepro):
@@ -877,12 +881,15 @@ final class MaintainTierCFixer {
         manifestChangeApproval: MaintainTierCManifestChangeApproval? = nil,
         priorAttemptsDidNotCureTheComplaint: Bool = false,
         runsAnIndependentReview: Bool = true,
-        failedReviewRetention: MaintainTierCFailedReviewRetention? = nil
+        failedReviewRetention: MaintainTierCFailedReviewRetention? = nil,
+        processPolicy: MaintainSandbox.ProcessPolicy? = nil
     ) async -> EditLoopOutcome {
         guard MaintainSandbox.isAvailable else {
             return .notEligible(reason: "the sandbox is unavailable on this machine")
         }
-        guard let runner = try? MaintainShellRunner(repoRootPath: clonePath) else {
+        guard let runner = try? MaintainShellRunner(
+            repoRootPath: clonePath, explicitPolicy: processPolicy
+        ) else {
             return .notEligible(reason: "the clone path is not usable")
         }
 

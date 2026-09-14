@@ -827,6 +827,9 @@ final class OnDemandEditCoordinator: ObservableObject {
     private let installProvenanceStore: InstallProvenanceStore
     private let patchQueue: PatchQueue
     private let clonePathLock: MaintainClonePathLock
+    /// An optional test-only policy bound to the exact disposable clone.
+    /// Production callers leave this nil and use the runtime-selected policy.
+    private let processPolicy: MaintainSandbox.ProcessPolicy?
     /// The normal app keeps its established per-run log location. Isolated
     /// hosts provide a disposable directory so creating a test run cannot
     /// prune a reader's historical transcripts.
@@ -1232,6 +1235,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         installProvenanceStore: InstallProvenanceStore,
         patchQueue: PatchQueue,
         clonePathLock: MaintainClonePathLock? = nil,
+        processPolicy: MaintainSandbox.ProcessPolicy? = nil,
         topRequestsForApp: @escaping (_ appSlug: String) async -> [String] = { _ in [] },
         probeRequestTriggers: (
             (
@@ -1265,6 +1269,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         self.installProvenanceStore = installProvenanceStore
         self.patchQueue = patchQueue
         self.clonePathLock = clonePathLock ?? .shared
+        self.processPolicy = processPolicy
         self.runLogDirectoryPath = runLogDirectoryPath ?? OnDemandEditRunLog.runsDirectoryPath
         self.makeHarnessWorkflow = makeHarnessWorkflow
         self.harnessPlanningWatchdogNanoseconds = max(
@@ -2571,7 +2576,9 @@ final class OnDemandEditCoordinator: ObservableObject {
             }
         }
         let recheckIdentity = pendingRecheckIdentity
-        guard let runner = try? MaintainShellRunner(repoRootPath: resolvedClonePath) else {
+        guard let runner = try? MaintainShellRunner(
+            repoRootPath: resolvedClonePath, processPolicy: processPolicy
+        ) else {
             runLog?.finish(outcome: "not started: the clone path is not usable")
             runLog = nil
             failRun(reason: "the clone path is not usable", resolvedClonePath: resolvedClonePath)

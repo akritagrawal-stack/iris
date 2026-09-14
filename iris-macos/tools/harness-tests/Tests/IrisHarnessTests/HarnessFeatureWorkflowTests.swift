@@ -72,8 +72,8 @@ import Testing
     let session = try HarnessModelSession(implementationArm: .astraLow,
         settings: HarnessRunLedgerSettings(maxCalls: 3, maxInputBytes: 40_000),
         maximumDurationNanoseconds: 2_000_000_000) { input in
-            let payload = try JSONSerialization.jsonObject(with: Data(input.conversation[0].text.utf8)) as! [String: String]
-            let request = payload["userRequest"]!
+            let payload = try JSONSerialization.jsonObject(with: Data(input.conversation[0].text.utf8)) as! [String: Any]
+            let request = payload["userRequest"] as! String
             if request == "Older request" {
                 await withCheckedContinuation { firstReply = $0 }
             }

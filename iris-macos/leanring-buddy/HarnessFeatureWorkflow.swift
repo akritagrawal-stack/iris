@@ -263,7 +263,17 @@ final class HarnessFeatureWorkflow {
         pendingResolvedQuestionIDs = []
         clarificationRoundCount = 0
         let generation = beginPlanningGeneration()
-        let input: [String: String] = ["userRequest": request, "repositoryObservations": repositorySummary]
+        // Reserve any code-detectable product-choice slots before the model
+        // plans. This keeps the planner from spending the entire bounded
+        // question budget on optional details and then silently losing the
+        // decision a novice actually left implicit. The post-plan guard below
+        // remains the fail-closed fallback when a provider ignores this hint.
+        let requiredProductChoiceTopics = Self.requiredProductChoiceTopics(for: request)
+        let input: [String: Any] = [
+            "userRequest": request,
+            "repositoryObservations": repositorySummary,
+            "requiredProductChoiceTopics": requiredProductChoiceTopics.map(\.rawValue),
+        ]
         let data = try JSONSerialization.data(withJSONObject: input, options: [.sortedKeys])
         let reply = try await modelSession.respond(phase: .intake, systemPrompt: Self.planningPrompt,
             conversation: [HarnessModelMessage(role: "user", text: String(decoding: data, as: UTF8.self))],
@@ -696,6 +706,15 @@ final class HarnessFeatureWorkflow {
 
     private static let destinationChoiceQuestionID = "destination-selection"
 
+    /// Product-choice slots that can be detected without asking another model
+    /// to interpret the request. Keep this list deliberately small: a missing
+    /// slot is a reason to ask the reader, never permission to guess or a new
+    /// workflow state. The planner receives these slots before it writes its
+    /// brief, and `briefWithRequiredDestinationChoice` verifies the result.
+    static func requiredProductChoiceTopics(for request: String) -> [HarnessClarificationTopic] {
+        requestNeedsDestinationChoice(request) ? [.destination] : []
+    }
+
     /// Kept internal for deterministic regression tests. It deliberately
     /// recognizes only cross-surface movement language; a normal request for a
     /// copy button or a visual change must not trigger an interview.
@@ -983,11 +1002,14 @@ final class HarnessFeatureWorkflow {
     user or a new test framework. Simple changes need no extra ceremony.
     Do not ask technical questions the repository can answer. Every targeted
     question must have kind "productChoice" and ask only a decision the user owns
-    because it changes the desired experience, scope or safety. Ask zero to three
-    specific questions and give two or three concrete options per question. Put
-    guesses and unresolved feasibility in modelAssumptions, never in
-    explicitNonGoals or user decisions. Do not infer a restriction simply because
-    a narrower implementation would be easier.
+    because it changes the desired experience, scope or safety. The input may
+    include requiredProductChoiceTopics detected by a small host-side intake
+    guard. Reserve one question slot for each listed topic, unless the request
+    already answers that choice; do not spend a reserved slot on an optional
+    detail. Ask zero to three specific questions and give two or three concrete
+    options per question. Put guesses and unresolved feasibility in
+    modelAssumptions, never in explicitNonGoals or user decisions. Do not infer a
+    restriction simply because a narrower implementation would be easier.
     Return exactly one JSON object, no fences, with all these keys:
     {"userRequest":"exact original request","desiredOutcome":"plain-language outcome",
     "explicitNonGoals":[],"acceptanceCriteria":[{"id":"check-1","kind":"userObservable","statement":"observable check"}],

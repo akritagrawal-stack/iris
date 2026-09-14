@@ -227,6 +227,74 @@ func plannerAddsOneDestinationChoiceWhenANontechnicalRequestLeavesTheTabImplicit
 }
 
 @Test @MainActor
+func plannerInputReservesOnlyHostDetectedProductChoiceSlots() async throws {
+    let request = "I want Whisper Flow to paste into the right tab"
+    let brief = try HarnessTaskBrief(
+        userRequest: request,
+        desiredOutcome: "Put the spoken text in the intended tab",
+        acceptanceCriteria: [
+            .init(id: "insert", statement: "The text appears in the intended tab without being sent")
+        ],
+        milestones: [.init(id: "target", title: "Choose the destination")]
+    )
+    var captured: [HarnessModelRequest] = []
+    let session = try HarnessModelSession(
+        implementationArm: .astraLow,
+        settings: .init(maxCalls: 2, maxInputBytes: 80_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { input in
+        captured.append(input)
+        return HarnessModelReply(text: try encodedBrief(brief))
+    }
+    let workflow = HarnessFeatureWorkflow(modelSession: session)
+
+    _ = try await workflow.plan(request: request, repositorySummary: "browser tabs")
+
+    let payload = try #require(
+        try JSONSerialization.jsonObject(
+            with: Data(captured[0].conversation[0].text.utf8)
+        ) as? [String: Any]
+    )
+    #expect(payload["requiredProductChoiceTopics"] as? [String] == ["destination"])
+    #expect(workflow.state?.brief.targetedQuestions.map(\.id) == ["destination-selection"])
+}
+
+@Test @MainActor
+func clearLocalPlanCarriesNoReservedProductChoiceSlots() async throws {
+    let request = "make the Save button text larger"
+    let brief = try HarnessTaskBrief(
+        userRequest: request,
+        desiredOutcome: "Make the Save label easier to read",
+        acceptanceCriteria: [
+            .init(id: "larger-label", statement: "The Save label is visibly larger")
+        ],
+        milestones: [.init(id: "style", title: "Adjust the existing label style")]
+    )
+    var captured: [HarnessModelRequest] = []
+    let session = try HarnessModelSession(
+        implementationArm: .astraLow,
+        settings: .init(maxCalls: 2, maxInputBytes: 80_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { input in
+        captured.append(input)
+        return HarnessModelReply(text: try encodedBrief(brief))
+    }
+    let workflow = HarnessFeatureWorkflow(modelSession: session)
+
+    _ = try await workflow.plan(request: request, repositorySummary: "SaveButton.swift owns the label")
+
+    let payload = try #require(
+        try JSONSerialization.jsonObject(
+            with: Data(captured[0].conversation[0].text.utf8)
+        ) as? [String: Any]
+    )
+    #expect(payload["requiredProductChoiceTopics"] as? [String] == [])
+    #expect(workflow.unansweredQuestionIDs.isEmpty)
+}
+
+@Test @MainActor
 func plannerDestinationQuestionIsNotDuplicatedWhenItUsesNoviceLanguage() async throws {
     let request = "I want Whisper Flow to paste into the right tab"
     let brief = try HarnessTaskBrief(

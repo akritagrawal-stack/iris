@@ -336,3 +336,11 @@ these local reruns.
 
 The RC was rebuilt from integration commit `4cd082a`; the debug dylib hash
 remains `ae3e80a56a34368dc56d80bb488e65df83f5dc03ea94ed0f40dc9459b7045eeb`.
+
+## Focused Kneecap install acceptance, September 14
+
+The focused Xcode run completed **18/18 tests across 4 suites** covering exact
+Kneecap discovery, installed-app exclusion, resumed execution in the named
+checkout, retry after a surfaced gate, ownership release, and missing-tool
+self-install through completion. This is strong install and recovery evidence;
+it does not replace the pending native permission and device handoff journey.

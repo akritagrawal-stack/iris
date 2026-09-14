@@ -396,6 +396,18 @@ The named RC was rebuilt from the current integrated HEAD after this check. Its
 debug dylib SHA-256 is now
 `ca04fa6ad47dcfdb29c3c865583a6c37ef4f6afe5fad21a20bf7e88c858b87ea`.
 
+## 2026-09-14 signed RC refresh
+
+The shared RC was rebuilt from the integrated worktree with the stable local
+identity `Iris Local Code Signing` (bundle identifier
+`com.publikhq.iris.test`). The current executable hashes are recorded in
+`/Users/Shared/Iris-RC-20260914/ARTIFACT_SHA256.txt`. Native launch now reaches
+`Iris · Active` without the setup permissions panel, and the RC's Ask/Edit/New
+chat and Saved app versions surfaces were exercised through computer use.
+The cleanup preview still refused safely because the receipt inventory is
+incomplete; no files were removed. Marketplace guide and spatial-pointing
+acceptance remain a regular-Iris/native journey gate.
+
 ## NitroAI transfer source coverage, September 14
 
 The NitroAI checkout already contains real Settings controls for exporting and

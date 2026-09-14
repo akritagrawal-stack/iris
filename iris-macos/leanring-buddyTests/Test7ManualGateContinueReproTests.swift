@@ -123,7 +123,7 @@ import Testing
           "status": "pilot",
           "sourceOwner": "Blueturboguy07",
           "sourceRepo": "WhimprFlow",
-          "sourceCommit": null,
+          "sourceCommit": "0000000000000000000000000000000000000001",
           "outputType": "desktop_app",
           "estimatedMinutes": 20,
           "readmeSectionIds": [],
@@ -165,7 +165,7 @@ import Testing
     /// makes those steps real gates: `everyToolThisStepWatchesForIsAlreadyPresent`
     /// would otherwise auto-advance them and the reader would never see a
     /// button to press.
-    private static let toolsTheGatesWaitFor: Set<String> = ["cargo", "cmake"]
+    private nonisolated static let toolsTheGatesWaitFor: Set<String> = ["cargo", "cmake"]
 
     /// One live session: the controller, the shell it drives, and every gate the
     /// takeover was asked to park on (which is what `CompanionManager` wires to
@@ -178,16 +178,36 @@ import Testing
         var returnsToCenter = 0
         /// Whether the advisory resume check reached its model call at all.
         let resumeCheck: ResumeCheckWitness
+        private var fixtureRoot: URL?
 
         init(
             controller: GuideSessionController,
             shell: RecordingShell,
-            resumeCheck: ResumeCheckWitness
+            resumeCheck: ResumeCheckWitness,
+            fixtureRoot: URL
         ) {
             self.controller = controller
             self.shell = shell
             self.resumeCheck = resumeCheck
+            self.fixtureRoot = fixtureRoot
         }
+
+        /// Tear down the controller's callbacks before leaving a test. The
+        /// callbacks capture this fixture to record UI events, while this
+        /// fixture owns the controller; leaving that cycle intact keeps the
+        /// test process alive even after its assertions have passed.
+        func finish() {
+            controller.stopAutopilot()
+            controller.onAutopilotWaitingForReaderAtGate = nil
+            controller.onAutopilotResumedFromGate = nil
+            if let fixtureRoot {
+                // This root belongs only to this one Iris Test fixture. It
+                // never reaches the reader's normal Iris data or projects.
+                try? FileManager.default.removeItem(at: fixtureRoot)
+                self.fixtureRoot = nil
+            }
+        }
+
     }
 
     /// Records whether the advisory "where is this install actually up to"
@@ -220,6 +240,28 @@ import Testing
             )
         }
         let resumeCheckWitness = ResumeCheckWitness()
+        let fixtureRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Caches/iris-native-guide-fixture-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: fixtureRoot, withIntermediateDirectories: true
+        )
+        let fixtureOrigin = try #require(
+            GuideSourceWorkspaceOrigin.parse(
+                "https://github.com/Blueturboguy07/WhimprFlow"
+            )
+        )
+        let offlineFixture = try #require(GuideOfflineNativeFixture(
+            guideID: "manual-gate",
+            guideRevision: 1,
+            expectedOrigin: fixtureOrigin,
+            // The test-only guide response carries this pin so Iris Test can
+            // admit its disposable workspace without opening a real project.
+            expectedCommit: "0000000000000000000000000000000000000001",
+            workspaceRoot: fixtureRoot
+        ))
         let controller = GuideSessionController(
             guideService: GuideService(
                 apiBase: GuideService.defaultAPIBase,
@@ -254,7 +296,8 @@ import Testing
                     guideContext: context,
                     pacing: .instant
                 )
-            }
+            },
+            offlineNativeFixture: offlineFixture
         )
         // The autonomy grant lives in UserDefaults and its state on this Mac
         // decides whether `startAutopilot` even runs. Inject a granted one over
@@ -263,7 +306,7 @@ import Testing
         let grantDefaults = try #require(
             UserDefaults(suiteName: "iris.test7.manualgate.grant.\(UUID().uuidString)")
         )
-        var grant = AutopilotAutonomyGrant(userDefaults: grantDefaults)
+        let grant = AutopilotAutonomyGrant(userDefaults: grantDefaults)
         grant.grant()
         controller.autonomyGrant = grant
         controller.confirmAutonomousControl = { true }
@@ -278,7 +321,10 @@ import Testing
         }
 
         let install = LiveInstall(
-            controller: controller, shell: shell, resumeCheck: resumeCheckWitness
+            controller: controller,
+            shell: shell,
+            resumeCheck: resumeCheckWitness,
+            fixtureRoot: fixtureRoot
         )
         controller.onAutopilotWaitingForReaderAtGate = { title, _ in
             install.gatesParkedOn.append(title)
@@ -339,7 +385,7 @@ import Testing
     /// CMake gate he named. The install must carry on by itself from there.
     @Test func tappingContinueAtTheCMakeGateResumesTheInstall() async throws {
         let install = try await Self.startTheInstall()
-        defer { install.controller.stopAutopilot() }
+        defer { install.finish() }
 
         // Gate one: Install Rust.
         #expect(
@@ -383,7 +429,7 @@ import Testing
     /// manual gate rather than CMake specially.
     @Test func tappingContinueAtTheFirstGateResumesTheInstall() async throws {
         let install = try await Self.startTheInstall()
-        defer { install.controller.stopAutopilot() }
+        defer { install.finish() }
 
         #expect(await pump { install.gatesParkedOn.count >= 1 })
         let stepBeforeTheTap = install.controller.currentStepIndex
@@ -404,7 +450,7 @@ import Testing
     /// must not skip a step the guide still needs, and must not wedge the loop.
     @Test func tappingContinueTwiceDoesNotSkipTheStepAfterTheGate() async throws {
         let install = try await Self.startTheInstall()
-        defer { install.controller.stopAutopilot() }
+        defer { install.finish() }
 
         try await parkAtTheCMakeGate(install)
         install.controller.readerFinishedTheGatedStep()
@@ -446,7 +492,7 @@ import Testing
         // Each tool probe shells out on a real Mac, so the drive loop really is
         // suspended here for a moment on its way into a gate.
         let install = try await Self.startTheInstall(toolCheckDelay: .milliseconds(400))
-        defer { install.controller.stopAutopilot() }
+        defer { install.finish() }
 
         #expect(
             await pump { install.gatesParkedOn.count >= 1 },
@@ -488,7 +534,7 @@ import Testing
     /// being fixed, so the bar is honoured instead.
     @Test func continueStillWorksAfterTheReaderPressedBackInThePanel() async throws {
         let install = try await Self.startTheInstall()
-        defer { install.controller.stopAutopilot() }
+        defer { install.finish() }
 
         try await parkAtTheCMakeGate(install)
         let theStepTheBarIsAbout = install.controller.currentStepIndex
@@ -523,6 +569,7 @@ import Testing
     /// and this goes red.
     @Test func continueAdvancesTheGuideEvenWithAutopilotAlreadyStopped() async throws {
         let install = try await Self.startTheInstall()
+        defer { install.finish() }
 
         #expect(await pump { install.gatesParkedOn.count >= 1 })
         let stepTheGateParkedOn = install.controller.currentStepIndex
@@ -566,7 +613,7 @@ import Testing
             // as it did on his Mac.
             toolCheckDelay: .milliseconds(250)
         )
-        defer { install.controller.stopAutopilot() }
+        defer { install.finish() }
         try #require(
             install.controller.currentStepIndex == 4,
             "the guide must resume where the reader left it, or this test proves nothing"

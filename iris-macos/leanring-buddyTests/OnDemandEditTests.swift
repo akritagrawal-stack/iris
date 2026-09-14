@@ -1849,7 +1849,10 @@ struct OnDemandEditEngineTests {
     /// Reproduces the complex-feature failure before the first edit: the
     /// provider keeps rereading setup and transfer fixtures until Iris gives a
     /// bounded steer, then emits the source edit the request needs.
-    final class PreEditRereadingProvider: MaintainModelProviding, HarnessExecutionObserving {
+    // Keep this provider deliberately production-shaped. CodexMaintainProvider
+    // does not conform to HarnessExecutionObserving; the convergence bound is
+    // task-driven and must therefore apply to the real provider path too.
+    final class PreEditRereadingProvider: MaintainModelProviding {
         let displayName = "pre-edit-rereader"
         let identifier = "test-provider-pre-edit-rereader"
         let isAvailable = true
@@ -1885,8 +1888,6 @@ struct OnDemandEditEngineTests {
             let command = readOnlyCommands[min(callCount, readOnlyCommands.count - 1)]
             return "Checking the transfer setup.\n```bash\n\(command)\n```"
         }
-
-        func observeEngineProgress(_ event: MaintainTierCProgressEvent) {}
     }
 
     /// A real harness provider must either converge after the bounded steer or

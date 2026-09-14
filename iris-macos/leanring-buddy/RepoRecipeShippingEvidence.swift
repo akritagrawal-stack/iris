@@ -140,11 +140,10 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
         }
 
         if !safeChangedElectronPaths.isEmpty {
-            let coveredPaths = coveredElectronPaths(
+            let coveredPaths = manifestCoveredElectronPaths(
                 changedPaths: Array(safeChangedElectronPaths),
                 packageJSON: packageJSON,
-                configurationPaths: configurationPaths,
-                repoRootPath: repoRootPath
+                configurationPaths: configurationPaths
             )
             if coveredPaths.isEmpty {
                 lines.append(
@@ -168,8 +167,9 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
         let summary = lines.joined(separator: "\n")
         let summaryData = Data(summary.utf8)
         guard summaryData.count <= maximumNativeReviewSummaryBytes else {
-            return String(decoding: summaryData.prefix(maximumNativeReviewSummaryBytes), as: UTF8.self)
-                + "\n[SHIPPING EVIDENCE SUMMARY TRUNCATED: omitted details remain unproven.]"
+            let suffix = "\n[SHIPPING EVIDENCE SUMMARY TRUNCATED: omitted details remain unproven.]"
+            let availableBytes = max(0, maximumNativeReviewSummaryBytes - Data(suffix.utf8).count)
+            return String(decoding: summaryData.prefix(availableBytes), as: UTF8.self) + suffix
         }
         return summary
     }
@@ -284,45 +284,6 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
         return buildConfiguration.keys.contains(where: builderConfigurationKeys.contains)
     }
 
-    /// Extract only static quoted entries from a known JavaScript packaging
-    /// config's `files: [...]` property. This deliberately declines dynamic
-    /// values, unbounded parsing, and arbitrary config keys. A false negative
-    /// keeps the native reviewer fail-closed; it can never be used to execute
-    /// or authorize the config.
-    private static func staticFilesPatterns(in configSource: String) -> [String] {
-        let filesArrayPattern = #"(?is)\bfiles\s*:\s*\[(.{0,8192}?)\]"#
-        guard let filesRegex = try? NSRegularExpression(pattern: filesArrayPattern) else {
-            return []
-        }
-        let sourceRange = NSRange(configSource.startIndex..<configSource.endIndex, in: configSource)
-        var patterns: [String] = []
-        var seen = Set<String>()
-        filesRegex.enumerateMatches(in: configSource, options: [], range: sourceRange) { match, _, stop in
-            guard let match,
-                  match.numberOfRanges >= 2,
-                  let bodyRange = Range(match.range(at: 1), in: configSource) else { return }
-            let body = String(configSource[bodyRange])
-            let stringRegex = try? NSRegularExpression(pattern: #"[\"']([^\"'\r\n]{1,256})[\"']"#)
-            guard let stringRegex else { return }
-            let bodyRange = NSRange(body.startIndex..<body.endIndex, in: body)
-            stringRegex.enumerateMatches(in: body, options: [], range: bodyRange) { stringMatch, _, stringStop in
-                guard let stringMatch,
-                      stringMatch.numberOfRanges >= 2,
-                      let valueRange = Range(stringMatch.range(at: 1), in: body) else { return }
-                let value = String(body[valueRange])
-                guard value.utf8.count <= 256,
-                      !containsPromptUnsafeScalars(value),
-                      seen.insert(value).inserted else { return }
-                patterns.append(value)
-                if patterns.count >= maximumStaticFilesPatternCount {
-                    stringStop.pointee = true
-                    stop.pointee = true
-                }
-            }
-        }
-        return patterns
-    }
-
     private static func manifestFilesPatterns(_ packageJSON: [String: Any]) -> [String] {
         guard let buildConfiguration = packageJSON["build"] as? [String: Any] else { return [] }
         let values: [Any]
@@ -338,68 +299,37 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
                   string.utf8.count <= 256,
                   !containsPromptUnsafeScalars(string) else { return nil }
             return string
-        }.prefix(maximumStaticFilesPatternCount).map { $0 }
+        }.prefix(maximumManifestFilePatternCount).map { $0 }
     }
 
-    private static func coveredElectronPaths(
+    /// Only an inline JSON `build.files` declaration, with no competing config
+    /// file and no exclusion rule, may establish packaged inclusion. JavaScript
+    /// and YAML configs remain unparsed: comments, expressions, ordering, and
+    /// overrides make a partial parser less trustworthy than "not proven".
+    private static func manifestCoveredElectronPaths(
         changedPaths: [String],
         packageJSON: [String: Any],
-        configurationPaths: [String],
-        repoRootPath: String
+        configurationPaths: [String]
     ) -> [String] {
-        var patterns = manifestFilesPatterns(packageJSON)
-        for configurationPath in configurationPaths {
-            guard patterns.count < maximumStaticFilesPatternCount,
-                  let source = RepoRecipeFiles.readText(
-                      configurationPath,
-                      underRepoRoot: repoRootPath
-                  ) else { continue }
-            patterns.append(contentsOf: staticFilesPatterns(in: source).prefix(
-                max(0, maximumStaticFilesPatternCount - patterns.count)
-            ))
-        }
+        guard configurationPaths.isEmpty else { return [] }
+        let patterns = manifestFilesPatterns(packageJSON)
+        guard !patterns.isEmpty,
+              !patterns.contains(where: { $0.hasPrefix("!") }) else { return [] }
         return changedPaths.filter { path in
-            patterns.contains { globPattern($0, covers: path) }
+            patterns.contains { manifestPattern($0, covers: path) }
         }
     }
 
-    /// Match the small static glob vocabulary used by packaging allowlists.
-    /// Patterns with a leading negation are not treated as positive coverage;
-    /// a config that excludes a path must remain a reviewer concern.
-    private static func globPattern(_ pattern: String, covers path: String) -> Bool {
-        guard !pattern.hasPrefix("!"),
-              pattern.utf8.count <= 256,
-              !containsPromptUnsafeScalars(pattern),
-              let regex = try? NSRegularExpression(
-                  pattern: globRegularExpression(for: pattern)
-              ) else { return false }
-        let range = NSRange(path.startIndex..<path.endIndex, in: path)
-        return regex.firstMatch(in: path, options: [], range: range) != nil
-    }
-
-    private static func globRegularExpression(for pattern: String) -> String {
-        var expression = "^"
-        var index = pattern.startIndex
-        while index < pattern.endIndex {
-            let character = pattern[index]
-            if character == "*" {
-                let next = pattern.index(after: index)
-                if next < pattern.endIndex, pattern[next] == "*" {
-                    expression += ".*"
-                    index = pattern.index(after: next)
-                } else {
-                    expression += "[^/]*"
-                    index = next
-                }
-            } else if character == "?" {
-                expression += "[^/]"
-                index = pattern.index(after: index)
-            } else {
-                expression += NSRegularExpression.escapedPattern(for: String(character))
-                index = pattern.index(after: index)
-            }
-        }
-        return expression + "$"
+    /// This is intentionally not a general glob engine. Exact files and a
+    /// full directory inclusion are enough for a reliable affirmative signal;
+    /// every other pattern remains unproven.
+    private static func manifestPattern(_ pattern: String, covers path: String) -> Bool {
+        guard pattern.utf8.count <= 256,
+              !containsPromptUnsafeScalars(pattern) else { return false }
+        if pattern == path { return true }
+        guard pattern.hasSuffix("/**") else { return false }
+        let directory = String(pattern.dropLast(3))
+        return safeReviewRelativePath(directory) != nil && path.hasPrefix(directory + "/")
     }
 
     private static func boundedSafePathList(_ paths: [String]) -> String {
@@ -432,7 +362,7 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
         }
     }
 
-    private static let maximumStaticFilesPatternCount = 32
+    private static let maximumManifestFilePatternCount = 32
 
     private static let bidiFormattingControlValues: Set<UInt32> = [
         0x202A, 0x202B, 0x202C, 0x202D, 0x202E,

@@ -192,12 +192,6 @@ import Testing
             """#,
             "electron/main.mjs": "export {}\n",
             "electron/iris-test-preload.cjs": "module.exports = {}\n",
-            "electron-builder.cjs": #"""
-            module.exports = {
-              files: ["dist/**", "electron/**"],
-              publish: { token: "config-secret-value" }
-            };
-            """#,
         ])
         defer { Self.removeFixtureRepo(repoRootPath) }
 
@@ -210,13 +204,10 @@ import Testing
 
         #expect(summary.contains("SANITIZED ELECTRON SHIPPING EVIDENCE"))
         #expect(summary.contains("electron/main.mjs"))
-        #expect(summary.contains("electron-builder.cjs"))
         #expect(summary.contains("electron/iris-test-preload.cjs"))
         #expect(summary.contains("allowlist"))
         #expect(!summary.contains("manifest-secret-value"))
-        #expect(!summary.contains("config-secret-value"))
-        #expect(!summary.contains("module.exports"))
-        #expect(Data(summary.utf8).count <= 4 * 1024 + 256)
+        #expect(Data(summary.utf8).count <= 4 * 1024)
 
         let (_, reviewUser) = FeatureEditAdversarialReviewer.reviewPrompt(
             request: "Add a test-only desktop marker",
@@ -226,7 +217,54 @@ import Testing
             shippingEvidence: summary
         )
         #expect(reviewUser.contains("Sanitized shipping evidence"))
-        #expect(reviewUser.contains("electron-builder.cjs"))
+        #expect(reviewUser.contains("electron/iris-test-preload.cjs"))
+    }
+
+    @Test func nativeReviewSummaryDoesNotTreatExclusionsOrConfigFilesAsPackagingProof() throws {
+        let excludedRoot = try Self.makeFixtureRepo(files: [
+            "package.json": #"""
+            {
+              "main": "electron/main.mjs",
+              "scripts": { "dist:mac": "electron-builder --mac" },
+              "dependencies": { "electron": "43.1.1" },
+              "build": { "files": ["electron/**", "!electron/iris-test-preload.cjs"] }
+            }
+            """#,
+            "electron/main.mjs": "export {}\n",
+            "electron/iris-test-preload.cjs": "module.exports = {}\n",
+        ])
+        defer { Self.removeFixtureRepo(excludedRoot) }
+        let excluded = try #require(RepoRecipeElectronShippingEvidence.nativeReviewSummary(
+            repoRootPath: excludedRoot,
+            changedPaths: ["electron/iris-test-preload.cjs"]
+        ))
+        #expect(excluded.contains("packaged inclusion as unproven"))
+        #expect(!excluded.contains("allowlist covering electron/iris-test-preload.cjs"))
+
+        let configRoot = try Self.makeFixtureRepo(files: [
+            "package.json": #"""
+            {
+              "main": "electron/main.mjs",
+              "scripts": { "dist:mac": "electron-builder --mac" },
+              "dependencies": { "electron": "43.1.1" },
+              "build": { "files": ["electron/**"] }
+            }
+            """#,
+            "electron/main.mjs": "export {}\n",
+            "electron/iris-test-preload.cjs": "module.exports = {}\n",
+            "electron-builder.cjs": #"""
+            // files: ["electron/**"]
+            module.exports = { files: dynamicFiles, publish: { token: "config-secret-value" } };
+            """#,
+        ])
+        defer { Self.removeFixtureRepo(configRoot) }
+        let configSummary = try #require(RepoRecipeElectronShippingEvidence.nativeReviewSummary(
+            repoRootPath: configRoot,
+            changedPaths: ["electron/iris-test-preload.cjs"]
+        ))
+        #expect(configSummary.contains("packaged inclusion as unproven"))
+        #expect(!configSummary.contains("config-secret-value"))
+        #expect(!configSummary.contains("dynamicFiles"))
     }
 
     @Test func incidentalElectronToolingDoesNotDisplaceARealTauriRecipe() throws {

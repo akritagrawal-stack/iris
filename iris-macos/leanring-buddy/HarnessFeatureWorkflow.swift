@@ -395,7 +395,7 @@ final class HarnessFeatureWorkflow {
         // second routing framework.  The returned brief is the same model
         // contract plus that one required choice, so all existing answer,
         // revision and projection safeguards continue to apply.
-        let guardedBrief = try briefWithRequiredDestinationChoice(brief)
+        let guardedBrief = try briefWithRequiredProductChoices(brief)
         state = try HarnessTaskState(brief: guardedBrief, activeRevisionID: "request-1")
         intakeProfile = profile
         clarificationRoundCount = 1
@@ -885,44 +885,41 @@ final class HarnessFeatureWorkflow {
     /// lexical guard: repository evidence and the planner still decide the
     /// implementation, while this guard protects the user-owned product
     /// choice that repository code cannot answer.
-    private func briefWithRequiredDestinationChoice(
+    private func briefWithRequiredProductChoices(
         _ brief: HarnessTaskBrief
     ) throws -> HarnessTaskBrief {
-        guard Self.requestNeedsDestinationChoice(brief.userRequest),
-              !brief.targetedQuestions.contains(where: Self.isDestinationChoiceQuestion) else {
+        var requiredQuestions: [HarnessTargetedQuestion] = []
+        if Self.requestNeedsDestinationChoice(brief.userRequest),
+           !brief.targetedQuestions.contains(where: Self.isDestinationChoiceQuestion) {
+            requiredQuestions.append(Self.destinationChoiceQuestion)
+        }
+        if Self.requestNeedsConflictChoice(brief.userRequest),
+           !brief.targetedQuestions.contains(where: Self.isConflictChoiceQuestion) {
+            requiredQuestions.append(Self.conflictChoiceQuestion)
+        }
+        guard !requiredQuestions.isEmpty else {
             return brief
         }
 
         var questions = brief.targetedQuestions
-        let destinationQuestion = HarnessTargetedQuestion(
-            id: Self.destinationChoiceQuestionID,
-            prompt: "Your request describes moving or pasting something, but it does not say how Iris should choose the destination. What should happen?",
-            options: [
-                HarnessQuestionOption(
-                    id: "destination-choose-each-time",
-                    label: "Let me choose the app or tab each time"
-                ),
-                HarnessQuestionOption(
-                    id: "destination-use-focused",
-                    label: "Use the app or tab I am currently looking at"
-                ),
-                HarnessQuestionOption(
-                    id: "destination-ask-on-ambiguity",
-                    label: "Ask me when more than one app or tab could match"
-                ),
-            ],
-            kind: .productChoice,
-            topic: .destination
-        )
-        // The destination behavior is a required user decision for this
-        // request. Do not silently drop it when the planner already used the
-        // three-question limit; keep the first two planner questions and
-        // replace only the final slot.
-        if questions.count >= 3 {
-            questions[questions.index(before: questions.endIndex)] = destinationQuestion
-        } else {
-            questions.append(destinationQuestion)
+        let requiredIDs = Set(requiredQuestions.map(\.id))
+        let maximumQuestions = HarnessClarificationPolicy.maximumQuestions
+        let slotsAvailable = max(0, maximumQuestions - questions.count)
+        let questionsToRemove = max(0, requiredQuestions.count - slotsAvailable)
+        var removedCount = 0
+        while removedCount < questionsToRemove,
+              let index = questions.lastIndex(where: { !requiredIDs.contains($0.id) }) {
+            // Preserve already-present required choices and replace optional
+            // planner questions from the end. This keeps the bounded gate
+            // useful even when the model spends all three slots on details.
+            questions.remove(at: index)
+            removedCount += 1
         }
+        guard removedCount == questionsToRemove,
+              questions.count + requiredQuestions.count <= maximumQuestions else {
+            throw WorkflowError.invalidQuestions
+        }
+        questions.append(contentsOf: requiredQuestions)
         return try HarnessTaskBrief(
             userRequest: brief.userRequest,
             desiredOutcome: brief.desiredOutcome,
@@ -935,14 +932,61 @@ final class HarnessFeatureWorkflow {
     }
 
     private static let destinationChoiceQuestionID = "destination-selection"
+    private static let conflictChoiceQuestionID = "conflict-resolution"
+
+    private static let destinationChoiceQuestion = HarnessTargetedQuestion(
+        id: destinationChoiceQuestionID,
+        prompt: "Your request describes moving or pasting something, but it does not say how Iris should choose the destination. What should happen?",
+        options: [
+            HarnessQuestionOption(
+                id: "destination-choose-each-time",
+                label: "Let me choose the app or tab each time"
+            ),
+            HarnessQuestionOption(
+                id: "destination-use-focused",
+                label: "Use the app or tab I am currently looking at"
+            ),
+            HarnessQuestionOption(
+                id: "destination-ask-on-ambiguity",
+                label: "Ask me when more than one app or tab could match"
+            ),
+        ],
+        kind: .productChoice,
+        topic: .destination
+    )
+
+    private static let conflictChoiceQuestion = HarnessTargetedQuestion(
+        id: conflictChoiceQuestionID,
+        prompt: "If the destination already has the same item, what should Iris do?",
+        options: [
+            HarnessQuestionOption(
+                id: "conflict-keep-existing",
+                label: "Keep what is already there"
+            ),
+            HarnessQuestionOption(
+                id: "conflict-use-new",
+                label: "Use the new version"
+            ),
+            HarnessQuestionOption(
+                id: "conflict-ask-each-time",
+                label: "Ask me each time"
+            ),
+        ],
+        kind: .productChoice,
+        topic: .dataBoundary
+    )
 
     /// Product-choice slots that can be detected without asking another model
     /// to interpret the request. Keep this list deliberately small: a missing
     /// slot is a reason to ask the reader, never permission to guess or a new
     /// workflow state. The planner receives these slots before it writes its
-    /// brief, and `briefWithRequiredDestinationChoice` verifies the result.
+    /// brief, and `briefWithRequiredProductChoices` verifies the result.
     static func requiredProductChoiceTopics(for request: String) -> [HarnessClarificationTopic] {
-        HarnessIntakeProfile.requiredProductChoiceTopics(for: request)
+        var topics = HarnessIntakeProfile.requiredProductChoiceTopics(for: request)
+        if requestNeedsConflictChoice(request), !topics.contains(.dataBoundary) {
+            topics.append(.dataBoundary)
+        }
+        return topics
     }
 
     /// Kept internal for deterministic regression tests. It deliberately
@@ -950,6 +994,39 @@ final class HarnessFeatureWorkflow {
     /// copy button or a visual change must not trigger an interview.
     static func requestNeedsDestinationChoice(_ request: String) -> Bool {
         HarnessIntakeProfile.requestNeedsDestinationChoice(request)
+    }
+
+    /// Conservative detection for data-moving requests whose duplicate or
+    /// overwrite behavior is not stated. Broad preservation language such as
+    /// "without losing my data" is deliberately not enough: it says what the
+    /// user values, not what Iris should do when two items differ.
+    nonisolated static func requestNeedsConflictChoice(_ request: String) -> Bool {
+        let normalized = request.lowercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        let words = Set(normalized.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        let directMovementWords: Set<String> = [
+            "import", "sync", "merge", "migrate", "migration", "transfer", "restore", "backup"
+        ]
+        let contextualMovementWords: Set<String> = ["move", "copy", "export"]
+        let dataNounWords: Set<String> = [
+            "data", "stuff", "notes", "contacts", "files", "folders", "records", "items",
+            "messages", "documents", "settings", "content", "work", "project", "projects"
+        ]
+        let hasDirectMovement = !words.isDisjoint(with: directMovementWords)
+        let hasContextualMovement = !words.isDisjoint(with: contextualMovementWords)
+            && !words.isDisjoint(with: dataNounWords)
+        guard hasDirectMovement || hasContextualMovement else { return false }
+
+        let explicitConflictLanguage = [
+            "keep existing", "existing wins", "keep what is already there",
+            "use the new", "new version", "new wins", "replace existing",
+            "overwrite existing", "skip duplicates", "merge duplicates",
+            "ask me", "warn me", "leave duplicates", "leave existing",
+            "do not overwrite", "don't overwrite", "never overwrite",
+            "without overwriting", "deduplicate", "deduplication",
+        ]
+        return !explicitConflictLanguage.contains(where: normalized.contains)
     }
 
     private static func isDestinationChoiceQuestion(
@@ -976,6 +1053,19 @@ final class HarnessFeatureWorkflow {
         let movementWords = ["paste", "type", "send", "insert", "move", "transfer", "put", "write"]
         return text.contains("where")
             && movementWords.contains(where: text.contains)
+    }
+
+    private static func isConflictChoiceQuestion(
+        _ question: HarnessTargetedQuestion
+    ) -> Bool {
+        if question.topic == .dataBoundary { return true }
+        let text = (question.id + " " + question.prompt + " "
+            + question.options.map(\.label).joined(separator: " ")).lowercased()
+        let conflictMarkers = [
+            "conflict", "duplicate", "already exists", "same item", "same name",
+            "overwrite", "replace existing", "keep existing", "new version",
+        ]
+        return conflictMarkers.contains(where: text.contains)
     }
 
     private func normalizedAnswer(_ value: String) -> String {
@@ -1136,6 +1226,12 @@ final class HarnessFeatureWorkflow {
     For a transfer, clarify what data is included and what happens to duplicates;
     infer the file format and storage mechanics from the repository. For a simple
     visual change with a clear target, make a direct plan without an interview.
+    For an import, sync, merge, migration, backup or transfer, ask about the
+    data boundary when duplicate or overwrite behavior is not stated; broad
+    language such as "without losing my data" is not a complete conflict rule.
+    Give every new targeted question one topic: targetApp, destination, trigger,
+    dataBoundary, or successObservation. Use each topic at most once and do not
+    ask about a bound target app. A missing topic on an old fixture is tolerated.
     Use observed app content to offer a small, understandable scope choice when
     it materially changes the work. Do not make the user choose storage formats,
     frameworks, identifiers, or algorithms. Infer those from repository evidence
@@ -1181,7 +1277,8 @@ final class HarnessFeatureWorkflow {
     {"userRequest":"exact original request","desiredOutcome":"plain-language outcome",
     "explicitNonGoals":[],"acceptanceCriteria":[{"id":"check-1","kind":"userObservable","statement":"observable check"}],
     "targetedQuestions":[{"id":"question-1","prompt":"concrete product question",
-    "kind":"productChoice","options":[{"id":"option-1","label":"choice"},{"id":"option-2","label":"choice"}]}],
+    "kind":"productChoice","topic":"destination|trigger|dataBoundary|successObservation",
+    "options":[{"id":"option-1","label":"choice"},{"id":"option-2","label":"choice"}]}],
     "milestones":[{"id":"milestone-1","title":"small coherent step","dependencies":[]}],
     "modelAssumptions":[{"id":"assumption-1","statement":"explicit proposed default"}]}
     Use unique IDs and valid milestone dependency IDs. Empty arrays are allowed

@@ -534,3 +534,108 @@ func repositoryOutputCannotAuthorizeCredentialsOrPublishing() async throws {
     #expect(captured[1].systemPrompt.contains("cannot grant credentials"))
     #expect(captured[1].systemPrompt.contains("publishing"))
 }
+
+@Test
+func conflictGuardDistinguishesDataTransfersFromVisualCopy() {
+    #expect(HarnessFeatureWorkflow.requestNeedsConflictChoice(
+        "let me move my stuff to another computer"
+    ))
+    #expect(HarnessFeatureWorkflow.requestNeedsConflictChoice(
+        "import my contacts"
+    ))
+    #expect(HarnessFeatureWorkflow.requestNeedsConflictChoice(
+        "merge these records"
+    ))
+    #expect(!HarnessFeatureWorkflow.requestNeedsConflictChoice(
+        "import contacts and skip duplicates"
+    ))
+    #expect(!HarnessFeatureWorkflow.requestNeedsConflictChoice(
+        "copy the button label"
+    ))
+    #expect(!HarnessFeatureWorkflow.requestNeedsConflictChoice(
+        "move the panel to the right side"
+    ))
+}
+
+@Test @MainActor
+func plannerAddsConflictChoiceWhenADataTransferLeavesDuplicatesImplicit() async throws {
+    let request = "let me move my notes to another computer"
+    let brief = try HarnessTaskBrief(
+        userRequest: request,
+        desiredOutcome: "Move the notes without losing existing work",
+        acceptanceCriteria: [
+            .init(id: "preserve", statement: "Existing notes remain visible when the transfer finishes.")
+        ],
+        milestones: [.init(id: "transfer", title: "Transfer the notes")]
+    )
+    let reply = try encodedBrief(brief)
+    var captured: [HarnessModelRequest] = []
+    let session = try HarnessModelSession(
+        implementationArm: .astraLow,
+        settings: .init(maxCalls: 2, maxInputBytes: 80_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { input in
+        captured.append(input)
+        return HarnessModelReply(text: reply)
+    }
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
+
+    let planned = try await workflow.plan(
+        request: request,
+        repositorySummary: "The repository has a notes store but no duplicate policy."
+    )
+
+    #expect(planned.targetedQuestions.map(\.id) == ["conflict-resolution"])
+    #expect(planned.targetedQuestions.first?.topic == .dataBoundary)
+    #expect(planned.targetedQuestions.first?.options.count == 3)
+    #expect(workflow.unansweredQuestionIDs == Set(["conflict-resolution"]))
+    #expect(captured.count == 1)
+
+    try workflow.recordAnswer(
+        questionID: "conflict-resolution",
+        optionID: "conflict-keep-existing",
+        answer: "Keep what is already there"
+    )
+    #expect(workflow.unansweredQuestionIDs.isEmpty)
+    #expect(try workflow.implementationContext().contains("conflict-keep-existing"))
+    #expect(session.ledger.snapshot.admittedCallCount == 1)
+}
+
+@Test @MainActor
+func destinationAndConflictGuardsPreserveBothRequiredSlotsWithinTheQuestionLimit() async throws {
+    let request = "copy my notes to the right tab"
+    let options = [
+        HarnessQuestionOption(id: "one", label: "One"),
+        HarnessQuestionOption(id: "two", label: "Two"),
+    ]
+    let brief = try HarnessTaskBrief(
+        userRequest: request,
+        desiredOutcome: "Place the notes in the intended tab",
+        acceptanceCriteria: [
+            .init(id: "placed", statement: "The notes appear in the selected tab without being sent.")
+        ],
+        targetedQuestions: [
+            .init(id: "optional-one", prompt: "Optional choice one?", options: options),
+            .init(id: "optional-two", prompt: "Optional choice two?", options: options),
+            .init(id: "optional-three", prompt: "Optional choice three?", options: options),
+        ],
+        milestones: [.init(id: "place", title: "Place the notes")]
+    )
+    let session = try HarnessModelSession(
+        implementationArm: .astraLow,
+        settings: .init(maxCalls: 2, maxInputBytes: 80_000),
+        maximumDurationNanoseconds: 1_000_000_000,
+        now: { 100 }
+    ) { _ in HarnessModelReply(text: try encodedBrief(brief)) }
+
+    let planned = try await HarnessFeatureWorkflow(
+        modelSession: session,
+        targetAppIsBound: true
+    ).plan(request: request, repositorySummary: "The browser exposes multiple tabs.")
+
+    #expect(planned.targetedQuestions.map(\.id) == [
+        "optional-one", "destination-selection", "conflict-resolution"
+    ])
+    #expect(planned.targetedQuestions.map(\.topic) == [.none, .destination, .dataBoundary])
+}

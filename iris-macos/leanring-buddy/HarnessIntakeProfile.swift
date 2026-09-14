@@ -177,7 +177,8 @@ nonisolated struct HarnessIntakeProfile: Codable, Equatable, Sendable {
             "current window", "this window", "selected window", "active window", "focused window",
             "current note", "this note", "selected note", "active note",
             "choose the app", "choose a tab", "choose the tab", "specific app",
-            "specific tab", "destination", "where i choose", "app i choose",
+            "specific tab", "destination", "where i choose", "app i choose", "app i select",
+            "tab i choose", "tab i select", "window i choose", "window i select",
         ]
         if explicitSelectionLanguage.contains(where: normalized.contains) { return false }
 

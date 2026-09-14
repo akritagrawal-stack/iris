@@ -47,6 +47,28 @@ func pasteIntoTheRightTabIsComplexAndReservesDestination() {
 }
 
 @Test
+func explicitReaderChosenDestinationDoesNotTriggerASecondQuestion() {
+    for request in [
+        "paste into the tab I choose",
+        "paste into the tab I select",
+        "write this into the window I choose",
+        "put this into the app I select",
+    ] {
+        #expect(
+            !HarnessIntakeProfile.requestNeedsDestinationChoice(request),
+            "\(request) already states that the reader chooses the destination"
+        )
+    }
+
+    let profile = HarnessIntakeProfile.classify(
+        request: "paste into the tab I choose",
+        repositorySummary: "The browser adapter exposes tab observations and insert-only actions.",
+        targetAppIsBound: true
+    )
+    #expect(profile.reservedTopics.isEmpty)
+}
+
+@Test
 func highRiskExternalActionUsesTheHighRiskRoute() {
     let profile = HarnessIntakeProfile.classify(
         request: "send this message to the customer",

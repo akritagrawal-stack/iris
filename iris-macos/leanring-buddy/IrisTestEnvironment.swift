@@ -83,10 +83,11 @@ public nonisolated enum IrisTestEnvironment {
             return true
         }
 
-        // Swift Testing can load an Iris Test host directly instead of using
-        // the older XCTest environment variables. XCTest is still linked into
-        // that host; a launched Iris Test app never links it.
-        return NSClassFromString("XCTestCase") != nil
+        // Do not infer this from a loaded XCTest symbol. The application target
+        // can load test support through Xcode previews, which would otherwise
+        // make a launched native acceptance app look like a test host and
+        // silently disable its explicit acceptance flag.
+        return false
     }
 
     public static var displayName: String { runtimeIdentity.displayName }

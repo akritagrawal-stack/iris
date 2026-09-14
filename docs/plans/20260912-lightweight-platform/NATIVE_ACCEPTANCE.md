@@ -334,8 +334,8 @@ hash unchanged. Native acceptance is still pending the existing permission
 state and a connected trusted iPhone; no new native claim is inferred from
 these local reruns.
 
-The RC was rebuilt from integration commit `4cd082a`; the debug dylib hash
-remains `ae3e80a56a34368dc56d80bb488e65df83f5dc03ea94ed0f40dc9459b7045eeb`.
+The RC was rebuilt from integration commit `2d71fb7`; the debug dylib hash is
+`6bc1910c25661903fcb34af3b7e28cc59ce9828df920f1de3f0a493d3abaf77c`.
 
 ## Focused Kneecap install acceptance, September 14
 

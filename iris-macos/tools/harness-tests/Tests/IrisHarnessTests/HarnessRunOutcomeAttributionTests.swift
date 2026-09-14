@@ -213,4 +213,69 @@ struct HarnessRunOutcomeAttributionTests {
         #expect(ledger.snapshot.measuredInputTokens == 12)
         #expect(ledger.snapshot.measuredOutputTokens == 8)
     }
+
+    @Test("later lifecycle evidence enriches unknown stages without changing run identity")
+    func laterEvidenceEnrichesTheSameRun() throws {
+        let initial = try HarnessRunOutcomeAttribution(
+            runID: "run-enrichment",
+            requestedRoute: route,
+            verification: .unknown,
+            delivery: .unknown,
+            relaunch: .unknown,
+            uiAcceptance: .unknown
+        )
+        let later = try HarnessRunOutcomeAttribution(
+            runID: "run-enrichment",
+            candidateID: "candidate-9",
+            requestedRoute: route,
+            providerConfirmedModel: "gpt-6-astra-confirmed",
+            elapsedNanoseconds: 42,
+            verification: .passed,
+            delivery: .passed,
+            relaunch: .passed,
+            undo: .passed,
+            uiAcceptance: .accepted
+        )
+
+        let merged = try #require(initial.merging(later))
+        #expect(merged.candidateID == "candidate-9")
+        #expect(merged.providerConfirmedModel == "gpt-6-astra-confirmed")
+        #expect(merged.elapsedNanoseconds == 42)
+        #expect(merged.uiAccepted == true)
+        #expect(merged.outcome == .acceptedFullLifecycle)
+    }
+
+    @Test("conflicting known reader decisions or candidate identities are rejected")
+    func conflictingEvidenceIsRejected() throws {
+        let accepted = try HarnessRunOutcomeAttribution(
+            runID: "run-conflict",
+            candidateID: "candidate-a",
+            requestedRoute: route,
+            verification: .passed,
+            delivery: .passed,
+            relaunch: .passed,
+            uiAcceptance: .accepted
+        )
+        let rejected = try HarnessRunOutcomeAttribution(
+            runID: "run-conflict",
+            candidateID: "candidate-a",
+            requestedRoute: route,
+            verification: .passed,
+            delivery: .passed,
+            relaunch: .passed,
+            uiAcceptance: .rejected
+        )
+        #expect(accepted.merging(rejected) == nil)
+
+        let differentCandidate = try HarnessRunOutcomeAttribution(
+            runID: "run-conflict",
+            candidateID: "candidate-b",
+            requestedRoute: route,
+            verification: .passed,
+            delivery: .passed,
+            relaunch: .passed,
+            uiAcceptance: .accepted
+        )
+        #expect(accepted.merging(differentCandidate) == nil)
+    }
 }

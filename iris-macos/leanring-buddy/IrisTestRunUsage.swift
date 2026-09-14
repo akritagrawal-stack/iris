@@ -126,8 +126,8 @@ final class IrisTestRunUsage {
     }
 
     /// Record a ledger checkpoint and, when supplied, the observed product
-    /// result. A mismatched or second conflicting attribution is ignored so a
-    /// stale async callback cannot overwrite the current run's evidence.
+    /// result. A later checkpoint can enrich unknown lifecycle stages, while a
+    /// stale or contradictory callback cannot overwrite known run evidence.
     func record(
         _ snapshot: HarnessRunLedgerSnapshot,
         outcome: HarnessRunOutcomeAttribution? = nil
@@ -164,9 +164,13 @@ final class IrisTestRunUsage {
             irisTrace("Iris Test ignored lifecycle evidence for another model route")
             return false
         }
-        if let existing = outcomeAttribution, existing != outcome {
-            irisTrace("Iris Test ignored conflicting lifecycle evidence")
-            return false
+        if let existing = outcomeAttribution {
+            guard let merged = existing.merging(outcome) else {
+                irisTrace("Iris Test ignored conflicting lifecycle evidence")
+                return false
+            }
+            outcomeAttribution = merged
+            return true
         }
         outcomeAttribution = outcome
         return true

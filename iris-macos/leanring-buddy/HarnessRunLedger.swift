@@ -475,6 +475,39 @@ nonisolated struct HarnessRunOutcomeAttribution: Equatable, Sendable {
         outcome == .acceptedFullLifecycle
     }
 
+    /// Merge a later checkpoint into this same run. Unknown or unavailable
+    /// observations may be enriched by a concrete result, while contradictory
+    /// known identity or reader decisions are rejected.
+    func merging(_ later: Self) -> Self? {
+        guard runID == later.runID,
+              requestedRoute == later.requestedRoute else { return nil }
+        guard let mergedAcceptance = Self.mergeAcceptance(uiAcceptance, later.uiAcceptance) else {
+            return nil
+        }
+        if let candidateID, let laterCandidateID = later.candidateID,
+           candidateID != laterCandidateID {
+            return nil
+        }
+        if let providerConfirmedModel,
+           let laterProviderModel = later.providerConfirmedModel,
+           providerConfirmedModel != laterProviderModel {
+            return nil
+        }
+        return try? Self(
+            schemaVersion: schemaVersion,
+            runID: runID,
+            candidateID: candidateID ?? later.candidateID,
+            requestedRoute: requestedRoute,
+            providerConfirmedModel: providerConfirmedModel ?? later.providerConfirmedModel,
+            elapsedNanoseconds: elapsedNanoseconds ?? later.elapsedNanoseconds,
+            verification: Self.mergeStage(verification, later.verification),
+            delivery: Self.mergeStage(delivery, later.delivery),
+            relaunch: Self.mergeStage(relaunch, later.relaunch),
+            undo: Self.mergeStage(undo, later.undo),
+            uiAcceptance: mergedAcceptance
+        )
+    }
+
     private static func schemaIsCurrent(_ value: Int) -> Bool {
         value == currentSchemaVersion
     }
@@ -509,6 +542,34 @@ nonisolated struct HarnessRunOutcomeAttribution: Equatable, Sendable {
             return hasFailure ? .failed : .unknown
         }
     }
+
+    private static func mergeStage(
+        _ earlier: HarnessRunStageResult,
+        _ later: HarnessRunStageResult
+    ) -> HarnessRunStageResult {
+        if earlier == .failed || later == .failed { return .failed }
+        if earlier == .passed || later == .passed { return .passed }
+        if earlier == .unavailable || later == .unavailable { return .unavailable }
+        if earlier == .skipped || later == .skipped { return .skipped }
+        return .unknown
+    }
+
+    private static func mergeAcceptance(
+        _ earlier: HarnessRunUIAcceptance,
+        _ later: HarnessRunUIAcceptance
+    ) -> HarnessRunUIAcceptance? {
+        if earlier == later { return earlier }
+        switch (earlier, later) {
+        case (.unknown, _), (.unavailable, .accepted), (.unavailable, .rejected):
+            return later
+        case (.accepted, .unknown), (.accepted, .unavailable),
+             (.rejected, .unknown), (.rejected, .unavailable):
+            return earlier
+        default:
+            return nil
+        }
+    }
+
 }
 
 nonisolated public enum HarnessRunLedgerError: Error, LocalizedError, Equatable, Sendable {

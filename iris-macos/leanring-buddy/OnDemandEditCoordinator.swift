@@ -839,6 +839,11 @@ final class OnDemandEditCoordinator: ObservableObject {
     private let makeHarnessWorkflow: (() throws -> HarnessFeatureWorkflow)?
     private let editReadiness: @MainActor () -> OnDemandEditReadiness
     private var harnessWorkflow: HarnessFeatureWorkflow?
+    /// The counts-only usage writer for the current Test workflow. It remains
+    /// alive after the model ledger stops so delivery, relaunch, reader
+    /// acceptance, and Undo can amend the same run document.
+    private var harnessRunUsage: IrisTestRunUsage?
+    private var acceptedHarnessCandidateID: String?
     /// The ordinary app's in-memory Codex accounting for the current request.
     /// It is deliberately separate from the Iris Test comparison ledger and is
     /// never persisted as a second store.
@@ -2045,6 +2050,63 @@ final class OnDemandEditCoordinator: ObservableObject {
     ) {
         guard let workflow, harnessWorkflow === workflow else { return }
         _ = workflow.modelSession.finish(reason: reason)
+        recordHarnessProductOutcome(uiAcceptance: .unknown)
+    }
+
+    /// Bind the usage writer created alongside a Test workflow. The writer is
+    /// intentionally supplied by the isolated app factory, so normal Iris
+    /// never creates or persists Test usage records.
+    func bindHarnessRunUsage(_ usage: IrisTestRunUsage) {
+        guard IrisTestEnvironment.isEnabled else { return }
+        harnessRunUsage = usage
+        acceptedHarnessCandidateID = nil
+    }
+
+    /// Attribute the current workflow's measured model calls to the product
+    /// stages observed by the coordinator. A missing stage stays unknown; it
+    /// never becomes a pass because a model response or build succeeded.
+    private func recordHarnessProductOutcome(
+        uiAcceptance: HarnessRunUIAcceptance,
+        undo explicitUndoResult: HarnessRunStageResult? = nil
+    ) {
+        guard IrisTestEnvironment.isEnabled,
+              let workflow = harnessWorkflow,
+              let usage = harnessRunUsage else { return }
+
+        let verificationResult: HarnessRunStageResult
+        if verificationReceipt?.hasFailure == true {
+            verificationResult = .failed
+        } else if earnedVerification?.rung == .independentlyReviewed {
+            verificationResult = .passed
+        } else {
+            verificationResult = .unknown
+        }
+
+        let deliveryResult: HarnessRunStageResult = deliveryProgress.freshAppBuilt
+            ? .passed : .unknown
+        let relaunchResult: HarnessRunStageResult = deliveryProgress.relaunched
+            ? .passed : .unknown
+        let undoResult = explicitUndoResult ?? {
+            if previousVersionWasRestored { return HarnessRunStageResult.passed }
+            if deliveryProgress.installedCopyReplaced && !deliveredChangeCanBeUndone {
+                return HarnessRunStageResult.unavailable
+            }
+            return HarnessRunStageResult.unknown
+        }()
+
+        guard let attribution = try? HarnessRunOutcomeAttribution(
+            runID: usage.runIdentifier,
+            candidateID: acceptedHarnessCandidateID,
+            requestedRoute: workflow.modelSession.implementationArm.route,
+            verification: verificationResult,
+            delivery: deliveryResult,
+            relaunch: relaunchResult,
+            undo: undoResult,
+            uiAcceptance: uiAcceptance
+        ) else {
+            return
+        }
+        usage.recordOutcome(attribution, snapshot: workflow.modelSession.ledger.snapshot)
     }
 
     private static func harnessStopReason(
@@ -4055,6 +4117,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         if !deliveredChangeCanBeUndone {
             runLog?.record("undo: unavailable; no durable installed receipt and backup for this delivery")
         }
+        recordHarnessProductOutcome(uiAcceptance: .unknown)
         symptomRecheckSummary = nil
         if !deliveryProgress.installedCopyReplaced {
             statusLine = "\(appName) is running from Iris's rebuilt copy. Your installed app is unchanged, so Undo is unavailable for this run."
@@ -4264,6 +4327,7 @@ final class OnDemandEditCoordinator: ObservableObject {
             ) else {
                 throw AppDeliveryReceiptStore.StoreError.identityMismatch
             }
+            acceptedHarnessCandidateID = candidate.candidateID.uuidString
             runLog?.record("accepted candidate persisted after reader Fixed; L6 review, installed receipt and live evidence revalidated")
         } catch {
             // A partial write is intentionally left inert: restart/recheck
@@ -4323,6 +4387,13 @@ final class OnDemandEditCoordinator: ObservableObject {
             // `persistSymptomVerdict` directly and never comes through here.
             return
         }
+        if verdict == .fixed {
+            persistAcceptedCandidateAfterReaderFixed()
+        }
+        recordHarnessProductOutcome(
+            uiAcceptance: verdict == .fixed ? .accepted
+                : verdict == .stillBroken ? .rejected : .unknown
+        )
         phase = .done
         // Founder ruling (Sep 3 2026): once the edit works, act on its own — a
         // PR for a BUG FIX, a publik changelog for a FEATURE ("not auto pr for
@@ -4330,7 +4401,6 @@ final class OnDemandEditCoordinator: ObservableObject {
         // and push to publik db"). The reader saying it works is the strongest
         // form of "it works" there is.
         if verdict == .fixed {
-            persistAcceptedCandidateAfterReaderFixed()
             actOnAWorkingEdit(because: .readerSaidFixed)
         }
     }
@@ -5015,6 +5085,7 @@ final class OnDemandEditCoordinator: ObservableObject {
                 self.undoFailureMessage = failure
                 self.statusLine = failure
                 self.runLog?.record("undo incomplete: \(failure)")
+                self.recordHarnessProductOutcome(uiAcceptance: .unknown, undo: .failed)
                 self.phase = .done
                 return
             }
@@ -5029,6 +5100,7 @@ final class OnDemandEditCoordinator: ObservableObject {
                 self.undoIsInProgress = false
                 self.undoFailureMessage = "Your previous app and working files are restored, but Iris could not finish saving that result. Try Undo again to finish; completed recovery steps will not repeat."
                 self.statusLine = self.undoFailureMessage
+                self.recordHarnessProductOutcome(uiAcceptance: .unknown, undo: .failed)
                 self.phase = .done
                 return
             }
@@ -5039,6 +5111,7 @@ final class OnDemandEditCoordinator: ObservableObject {
             self.deliveredInstalledAppPath = nil
             self.deliveredInstalledBackupPath = nil
             self.deliveredReceiptIdentifier = nil
+            self.recordHarnessProductOutcome(uiAcceptance: .unknown, undo: .passed)
             self.editRunner.note("Undone: the original \(appName) and source checkout are restored. Branch \(branchName) was kept as recovery history.")
             self.editRunner.finishStopped()
             self.releaseLockIfHeld()
@@ -6574,6 +6647,8 @@ final class OnDemandEditCoordinator: ObservableObject {
         flowGeneration = UUID()
         clarificationAnswerPairsForPrompt = []
         harnessWorkflow = nil
+        harnessRunUsage = nil
+        acceptedHarnessCandidateID = nil
         harnessBehaviorAssessment = nil
         unverifiedTestCandidateIsAvailable = false
         unverifiedTestCandidateRegistryProject = nil
@@ -6589,6 +6664,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         acceptedCandidateVerificationEvidenceID = nil
         acceptedCandidateReviewEvidenceID = nil
         acceptedCandidateReviewRevision = nil
+        acceptedHarnessCandidateID = nil
         adversarialReviewIssues = []
         deliveryProgress = EditDeliveryProgress()
         OnDemandEditInterruptedRunRecovery.forgetUnlessReviewIsRequired()

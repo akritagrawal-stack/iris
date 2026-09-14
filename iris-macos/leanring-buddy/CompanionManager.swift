@@ -291,6 +291,7 @@ final class CompanionManager: ObservableObject {
     /// throttle/mute machinery (that exists to stop AI nagging — wrong for an
     /// act the reader started). Lazy so it shares the one provenance store.
     lazy var onDemandEditCoordinator: OnDemandEditCoordinator = {
+        weak var coordinatorReference: OnDemandEditCoordinator?
         let coordinator = OnDemandEditCoordinator(
             installProvenanceStore: installProvenanceStore,
             patchQueue: PatchQueue(),
@@ -310,6 +311,7 @@ final class CompanionManager: ObservableObject {
                     usage.recordAdmission(reservation, inputCounts: inputCounts)
                 }
                 workflow.modelSession.ledgerDidChange = { usage.record($0) }
+                coordinatorReference?.bindHarnessRunUsage(usage)
                 return workflow
             } : nil
         )
@@ -363,6 +365,8 @@ final class CompanionManager: ObservableObject {
                   let runner = try? MaintainShellRunner(repoRootPath: clonePath) else { return false }
             return await OnDemandEditPullRequestOpener.readerCanPushToTheRepo(behind: runner)
         }
+
+        coordinatorReference = coordinator
 
         // Rebuild → relaunch (Option A). Relaunch is offered only when the
         // catalog supplies a REAL macBundleId (tri-state — never guessed) AND

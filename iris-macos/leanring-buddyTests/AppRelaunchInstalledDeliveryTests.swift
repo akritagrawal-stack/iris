@@ -86,6 +86,38 @@ import Testing
         #expect(chosen == nil)
     }
 
+    /// A packaging failure must remain retryable after Iris Test restarts, but
+    /// this small record is intentionally only an identity handoff: it cannot
+    /// retain a prompt, diff, API key, or built app. The coordinator still
+    /// rechecks this identity against Git and the Iris Test registry before it
+    /// exposes a retry action.
+    @Test func savedDeliveryRetryRecordRoundTripsAndCanBeDiscarded() {
+        let suiteName = "iris.saved-delivery-retry-test.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("the isolated UserDefaults suite could not be created")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = SavedDeliveryRetryStore(userDefaults: defaults)
+        let record = SavedDeliveryRetryRecord(
+            appSlug: "iris-delivery-fixture",
+            appName: "Iris Test Delivery",
+            changeID: "change-fixture",
+            identity: SavedEditDeliveryIdentity(
+                clonePath: "/Users/someone/IrisTestDelivery",
+                branchName: "iris/edit-fixture",
+                commit: String(repeating: "a", count: 40)
+            )
+        )
+
+        #expect(store.load() == nil)
+        store.save(record)
+        #expect(store.load() == record)
+        store.clear()
+        #expect(store.load() == nil)
+    }
+
     /// The undo snapshot lives under Application Support, keyed by a
     /// filesystem-safe form of the bundle id, and keeps the app's own bundle
     /// name so the restored copy is recognizably itself.

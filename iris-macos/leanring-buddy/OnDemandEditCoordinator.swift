@@ -425,6 +425,7 @@ final class OnDemandEditCoordinator: ObservableObject {
     @Published private(set) var offersRetryWithMemory: Bool = false
     @Published private(set) var savedDeliveryMayBeRetried = false
     private var savedDeliveryIdentity: SavedEditDeliveryIdentity?
+    private let savedDeliveryRetryStore: SavedDeliveryRetryStore
 
     /// A failed delivery may already have built an artifact. The retry action
     /// packages the saved source again, so a prior build is not a reason to
@@ -468,6 +469,7 @@ final class OnDemandEditCoordinator: ObservableObject {
             defer { if self.flowGeneration == generation { self.editTask = nil } }
             guard await identity.stillMatchesSource() else {
                 self.statusLine = "The saved source has changed since this edit. Iris left your app alone. Review the newer source before applying an update."
+                self.forgetSavedDeliveryRetry()
                 self.releaseLockIfHeld()
                 self.phase = .done
                 return
@@ -475,6 +477,52 @@ final class OnDemandEditCoordinator: ObservableObject {
             self.runLog?.record("delivery retry: reusing saved source; no model edit requested")
             await self.beginAutomaticDelivery(branchName: branch)
         }
+    }
+
+    /// A package failure happens after source has been committed but before an
+    /// app is replaced. Restore that precise retry only for Iris Test and only
+    /// after the current clone still proves it is the same clean branch.
+    private func restoreSavedDeliveryRetryIfStillCurrent() {
+        guard IrisTestEnvironment.isEnabled,
+              let record = savedDeliveryRetryStore.load() else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            guard await record.identity.stillMatchesSource(),
+                  IrisTestProjectRegistry.project(slug: record.appSlug)?.clonePath == record.identity.clonePath,
+                  IrisTestProjectRegistry.permitsEdit(slug: record.appSlug, clonePath: record.identity.clonePath)
+            else {
+                self.savedDeliveryRetryStore.clear()
+                return
+            }
+            guard self.editTask == nil, self.phase == .pickApp else { return }
+            self.activeAppSlug = record.appSlug
+            self.activeAppName = record.appName
+            self.changeId = record.changeID
+            self.committedBranchName = record.identity.branchName
+            self.resolvedClonePath = record.identity.clonePath
+            self.savedDeliveryIdentity = record.identity
+            self.savedDeliveryMayBeRetried = true
+            self.phase = .done
+            self.statusLine = "Update not applied yet. Iris rechecked your saved source and can retry packaging without asking the model to edit it again."
+        }
+    }
+
+    private func persistSavedDeliveryRetryIfEligible() {
+        guard IrisTestEnvironment.isEnabled,
+              savedDeliveryMayBeRetried,
+              let appSlug = activeAppSlug,
+              let changeID = changeId,
+              let identity = savedDeliveryIdentity else { return }
+        savedDeliveryRetryStore.save(SavedDeliveryRetryRecord(
+            appSlug: appSlug,
+            appName: activeAppName ?? appSlug,
+            changeID: changeID,
+            identity: identity
+        ))
+    }
+
+    private func forgetSavedDeliveryRetry() {
+        savedDeliveryRetryStore.clear()
     }
 
     /// True while a delivered change can still be undone after the fact (the
@@ -1177,6 +1225,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         )? = nil,
         deliveredUndoRecoveryStore: DeliveredEditUndoRecoveryStore? = nil,
         appDeliveryReceiptStore: AppDeliveryReceiptStore? = nil,
+        savedDeliveryRetryStore: SavedDeliveryRetryStore? = nil,
         makeHarnessWorkflow: (() throws -> HarnessFeatureWorkflow)? = nil,
         harnessPlanningWatchdogNanoseconds: UInt64? = nil,
         runLogDirectoryPath: String? = nil,
@@ -1206,8 +1255,10 @@ final class OnDemandEditCoordinator: ObservableObject {
         self.performOnDemandEdit = performOnDemandEdit ?? Self.defaultPerformOnDemandEdit
         self.deliveredUndoRecoveryStore = deliveredUndoRecoveryStore ?? DeliveredEditUndoRecoveryStore()
         self.appDeliveryReceiptStore = appDeliveryReceiptStore ?? AppDeliveryReceiptStore()
+        self.savedDeliveryRetryStore = savedDeliveryRetryStore ?? SavedDeliveryRetryStore()
         loadInterruptedUndoRecoveryForReview()
         refreshSavedUndoArchives()
+        restoreSavedDeliveryRetryIfStillCurrent()
     }
 
     private func makeRunLog(
@@ -3647,6 +3698,7 @@ final class OnDemandEditCoordinator: ObservableObject {
                 "delivery: version record was not saved; behavior unconfirmed"
             )
             savedDeliveryMayBeRetried = true
+            persistSavedDeliveryRetryIfEligible()
             releaseLockIfHeld()
             phase = .done
             return
@@ -5340,6 +5392,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         let appName = activeAppName ?? (activeAppSlug ?? "the app")
         statusLine = "Your change is saved on branch \(branchName), but the update was not applied to \(appName). Restarting the current app will not apply it."
         savedDeliveryMayBeRetried = savedDeliveryIdentity != nil
+        persistSavedDeliveryRetryIfEligible()
         releaseLockIfHeld()
         packagedArtifactPath = nil
         phase = .done
@@ -5386,6 +5439,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         let appName = activeAppName ?? (activeAppSlug ?? "the app")
         statusLine = "Left \(appName) running without replacing it. Your change is saved on branch \(branchName). Close the app when your work is saved, then retry the update; restarting the old app alone will not apply it."
         savedDeliveryMayBeRetried = savedDeliveryIdentity != nil
+        persistSavedDeliveryRetryIfEligible()
         releaseLockIfHeld()
         packagedArtifactPath = nil
         phase = .done
@@ -5414,6 +5468,7 @@ final class OnDemandEditCoordinator: ObservableObject {
             "delivery: packaging did not produce a runnable app; behavior unconfirmed"
         )
         if case .packagingFailed = packaging { savedDeliveryMayBeRetried = savedDeliveryIdentity != nil }
+        persistSavedDeliveryRetryIfEligible()
         statusLine = "Update not applied. Your current \(appName) was left unchanged. The source change is saved on branch \(branchName). Packaging needs attention: \(detail). Restarting the current app will not apply this change."
         releaseLockIfHeld()
         packagedArtifactPath = nil
@@ -5430,6 +5485,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         switch result {
         case .relaunchedFreshBuild:
             deliveryProgress.relaunched = true
+            forgetSavedDeliveryRetry()
             if deliveryIsAutomatic {
                 // The lock stays held through the re-check: an undo still
                 // touches the clone (branch drop + checkout).
@@ -5452,6 +5508,9 @@ final class OnDemandEditCoordinator: ObservableObject {
                 "delivery: relaunch failed and prior app was restored; behavior unconfirmed"
             )
             statusLine = "Iris couldn't open the updated app (\(reason)). Your previous app is running. The source change remains on branch \(branchName), but restarting the old app will not apply it."
+            savedDeliveryMayBeRetried = savedDeliveryIdentity != nil
+                && !deliveryProgress.installedCopyReplaced
+            persistSavedDeliveryRetryIfEligible()
             releaseLockIfHeld()
             packagedArtifactPath = nil
             phase = .done

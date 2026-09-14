@@ -10,6 +10,32 @@ private enum BackupRetentionCheckError: Error, LocalizedError {
     }
 }
 
+private final class InjectedDirectoryEnumerator: FileManager.DirectoryEnumerator {
+    private let values: [Any]
+    private let errorURL: URL
+    private let errorHandler: (URL, Error) -> Bool
+    private var index = 0
+    private var reportedError = false
+
+    init(values: [Any], errorURL: URL, errorHandler: @escaping (URL, Error) -> Bool) {
+        self.values = values
+        self.errorURL = errorURL
+        self.errorHandler = errorHandler
+        super.init()
+    }
+
+    override func nextObject() -> Any? {
+        if index < values.count {
+            defer { index += 1 }
+            return values[index]
+        }
+        guard !reportedError else { return nil }
+        reportedError = true
+        _ = errorHandler(errorURL, NSError(domain: "BackupRetentionChecks", code: 1))
+        return nil
+    }
+}
+
 /// Disposable checks for backup admission. They never use the installed Iris
 /// profile and never remove anything outside their unique temporary root.
 @main
@@ -70,6 +96,7 @@ struct BackupRetentionChecks {
         try checkReceiptEnvelopeFailureReconciles(root: root); groups += 1
         try checkCleanupScanCeilingFailsBeforeDeletion(root: root); groups += 1
         try checkAcceptedEvidenceScanCeilingFailsBeforeDecodeAll(root: root); groups += 1
+        try checkEnumerationErrorsFailClosedBeforeDeletion(root: root); groups += 1
         try checkCleanupAliasAndPolicyGuards(root: root); groups += 1
         print("BACKUP RETENTION CHECKS PASS: \(groups) groups")
     }
@@ -533,6 +560,84 @@ struct BackupRetentionChecks {
         try require(records.count == AppDeliveryReceiptStore.maximumCleanupEvidenceRecords + 1,
                     "accepted evidence ceiling mutated records before failing closed")
         print("PASS accepted evidence decode has a visible bounded scan ceiling before deletion")
+    }
+
+    private static func checkEnumerationErrorsFailClosedBeforeDeletion(root: URL) throws {
+        let receiptFixture = try Self.fixture(root: root, name: "enumeration-error-receipts")
+        let identifier = "com.fixture.retention.enumeration-error"
+        try makeBundle(at: receiptFixture.installed, identifier: identifier, payload: "current")
+        try makeBundle(at: receiptFixture.replacement, identifier: identifier, payload: "replacement")
+        let backup = receiptFixture.backupRoot.appendingPathComponent(
+            "com.fixture.retention.enumeration-error/old/Retention.app", isDirectory: true
+        )
+        try makeBundle(at: backup, identifier: identifier, payload: "old")
+        let receipt = try saveRestoredReceipt(
+            store: receiptFixture.store, installed: receiptFixture.installed,
+            replacement: receiptFixture.replacement, backup: backup, identifier: identifier,
+            startedAt: Date(timeIntervalSince1970: 1_600_000_000)
+        )
+        let receiptURL = receiptFixture.store.url(for: receipt.identifier)
+        let receiptErrorStore = AppDeliveryReceiptStore(
+            baseDirectory: receiptFixture.receiptRoot,
+            directoryEnumeratorFactory: { directory, _, handler in
+                InjectedDirectoryEnumerator(values: [receiptURL], errorURL: directory, errorHandler: handler)
+            }
+        )
+        var removedReceipt = false
+        do {
+            _ = try receiptErrorStore.cleanupRestoredBackups(
+                bundleIdentifier: identifier, backupRoot: receiptFixture.backupRoot,
+                recoveryStore: receiptFixture.recoveryStore, protectedPaths: [],
+                policy: .init(now: Date().addingTimeInterval(8 * 24 * 60 * 60)),
+                removeReceiptEnvelope: { _ in removedReceipt = true }
+            )
+            throw BackupRetentionCheckError.failed("receipt enumeration error was accepted")
+        } catch AppDeliveryReceiptStore.CleanupError.unreadableInventory {
+            try require(!removedReceipt && FileManager.default.fileExists(atPath: backup.path),
+                        "receipt enumeration error permitted deletion")
+        }
+
+        let evidenceFixture = try Self.fixture(root: root, name: "enumeration-error-evidence")
+        try makeBundle(at: evidenceFixture.installed, identifier: identifier, payload: "current")
+        try makeBundle(at: evidenceFixture.replacement, identifier: identifier, payload: "replacement")
+        let evidenceBackup = evidenceFixture.backupRoot.appendingPathComponent(
+            "com.fixture.retention.enumeration-error/old/Retention.app", isDirectory: true
+        )
+        try makeBundle(at: evidenceBackup, identifier: identifier, payload: "old")
+        let evidenceReceipt = try saveRestoredReceipt(
+            store: evidenceFixture.store, installed: evidenceFixture.installed,
+            replacement: evidenceFixture.replacement, backup: evidenceBackup, identifier: identifier,
+            startedAt: Date(timeIntervalSince1970: 1_600_000_000)
+        )
+        try FileManager.default.createDirectory(
+            at: evidenceFixture.store.acceptedCandidatesDirectory, withIntermediateDirectories: true
+        )
+        let evidenceStore = AppDeliveryReceiptStore(
+            baseDirectory: evidenceFixture.receiptRoot,
+            directoryEnumeratorFactory: { directory, options, handler in
+                if directory == evidenceFixture.store.acceptedCandidatesDirectory {
+                    return InjectedDirectoryEnumerator(values: [], errorURL: directory, errorHandler: handler)
+                }
+                return FileManager.default.enumerator(
+                    at: directory, includingPropertiesForKeys: nil, options: options, errorHandler: handler
+                )
+            }
+        )
+        var removedEvidence = false
+        do {
+            _ = try evidenceStore.cleanupRestoredBackups(
+                bundleIdentifier: identifier, backupRoot: evidenceFixture.backupRoot,
+                recoveryStore: evidenceFixture.recoveryStore, protectedPaths: [],
+                policy: .init(now: Date().addingTimeInterval(8 * 24 * 60 * 60)),
+                removeReceiptEnvelope: { _ in removedEvidence = true }
+            )
+            throw BackupRetentionCheckError.failed("accepted evidence enumeration error was accepted")
+        } catch AppDeliveryReceiptStore.CleanupError.unreadableInventory {
+            try require(!removedEvidence && FileManager.default.fileExists(atPath: evidenceBackup.path)
+                        && FileManager.default.fileExists(atPath: evidenceStore.url(for: evidenceReceipt.identifier).path),
+                        "accepted evidence enumeration error permitted deletion")
+        }
+        print("PASS receipt and accepted-evidence enumeration errors fail closed before deletion")
     }
 
     private static func checkCleanupAliasAndPolicyGuards(root: URL) throws {

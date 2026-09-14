@@ -581,9 +581,17 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
     static let defaultBaseDirectory = IrisTestEnvironment.applicationSupportDirectory
         .appendingPathComponent("edit-delivery-receipts", isDirectory: true)
     let baseDirectory: URL
+    typealias DirectoryEnumeratorFactory = (
+        URL, FileManager.DirectoryEnumerationOptions, @escaping (URL, Error) -> Bool
+    ) -> FileManager.DirectoryEnumerator?
+    private let directoryEnumeratorFactory: DirectoryEnumeratorFactory?
 
-    init(baseDirectory: URL = Self.defaultBaseDirectory) {
+    init(
+        baseDirectory: URL = Self.defaultBaseDirectory,
+        directoryEnumeratorFactory: DirectoryEnumeratorFactory? = nil
+    ) {
         self.baseDirectory = baseDirectory.standardizedFileURL
+        self.directoryEnumeratorFactory = directoryEnumeratorFactory
     }
 
     /// Measure all existing backup bundles and validate every receipt and
@@ -1412,11 +1420,14 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                 throw CleanupError.unreadableInventory
             }
             guard (metadata.st_mode & S_IFMT) == S_IFDIR,
-                  pathHasNoSymlinkComponents(directory.path, allowMissing: false),
-                  let files = FileManager.default.enumerator(
-                    at: directory, includingPropertiesForKeys: nil,
-                    options: [.skipsSubdirectoryDescendants]
-                  ) else { throw CleanupError.corruptInventory }
+                  pathHasNoSymlinkComponents(directory.path, allowMissing: false) else {
+                throw CleanupError.corruptInventory
+            }
+            var enumerationFailed = false
+            guard let files = enumerator(
+                at: directory, options: [.skipsSubdirectoryDescendants],
+                errorHandler: { _, _ in enumerationFailed = true; return false }
+            ) else { throw CleanupError.unreadableInventory }
             while let file = files.nextObject() as? URL {
                 let name = file.lastPathComponent
                 if directory == acceptedCandidatesDirectory && file == acceptedCandidateEvidenceDirectory {
@@ -1443,6 +1454,7 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                     if let receiptID = evidence.receiptIdentifier { protectedIDs.insert(receiptID) }
                 }
             }
+            guard !enumerationFailed else { throw CleanupError.unreadableInventory }
         }
         return protectedIDs
     }
@@ -1459,9 +1471,10 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
               pathHasNoSymlinkComponents(baseDirectory.path, allowMissing: false) else {
             throw RetentionError.unsafePath
         }
-        guard let files = FileManager.default.enumerator(
-            at: baseDirectory, includingPropertiesForKeys: nil,
-            options: [.skipsSubdirectoryDescendants]
+        var enumerationFailed = false
+        guard let files = enumerator(
+            at: baseDirectory, options: [.skipsSubdirectoryDescendants],
+            errorHandler: { _, _ in enumerationFailed = true; return false }
         ) else { throw RetentionError.unreadableInventory }
         var receipts: [AppDeliveryReceipt] = []
         while let file = files.nextObject() as? URL {
@@ -1491,7 +1504,22 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                 throw RetentionError.corruptInventory
             }
         }
+        guard !enumerationFailed else { throw RetentionError.unreadableInventory }
         return receipts
+    }
+
+    private func enumerator(
+        at directory: URL,
+        options: FileManager.DirectoryEnumerationOptions,
+        errorHandler: @escaping (URL, Error) -> Bool
+    ) -> FileManager.DirectoryEnumerator? {
+        if let directoryEnumeratorFactory {
+            return directoryEnumeratorFactory(directory, options, errorHandler)
+        }
+        return FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: nil,
+            options: options, errorHandler: errorHandler
+        )
     }
 
     private func addRecoveryReference(

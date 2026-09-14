@@ -863,7 +863,6 @@ final class Bug6E2EReaderSession {
                         runtimeEvidence.screenshotIsOfTheReadersWholeScreen,
                     additionalPromptSections: additionalPromptSections,
                     manifestChangeApproval: manifestChangeApproval,
-                    processPolicy: clone.processPolicy,
                     // A REAL command over the real tree, not `true`: it exits 0
                     // only once the model's edit is actually in the file, so a
                     // run that committed nothing cannot reach a branch. The
@@ -875,7 +874,8 @@ final class Bug6E2EReaderSession {
                             + " crates/whimpr-core/src/settings.rs",
                         testCommand: nil,
                         commandSubdirectory: nil
-                    )
+                    ),
+                    processPolicy: clone.processPolicy
                 )
             }
         )

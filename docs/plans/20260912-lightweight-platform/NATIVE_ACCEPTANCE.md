@@ -361,3 +361,12 @@ responses, late prerequisite results, cancelled retries, duplicate retry taps,
 navigation cancellation, and replacement-session isolation. These checks cover
 the state machine's stale-target and cancellation boundaries; live screen
 positioning still requires the native permission gate.
+
+## Focused delivery and recovery acceptance, September 14
+
+After removing generated test/build artifacts that had exhausted the volume,
+the focused Xcode run completed **21/21 tests across 2 suites**. Installed
+delivery, backup identity, startup reconciliation, orphan recovery, dirty-tree
+protection, retry records, relaunch selection, and Undo snapshot restoration
+all passed. The prior run's failures were filesystem `ENOSPC` fixture failures,
+not product assertion failures.

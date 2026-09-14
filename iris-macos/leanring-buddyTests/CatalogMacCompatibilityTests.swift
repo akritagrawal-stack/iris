@@ -55,6 +55,7 @@ struct CatalogMacCompatibilityTests {
         )
         #expect(compatibility == .mobileOnly)
         #expect(!CatalogMacDiscoveryPolicy.maySuggest(isInstalled: false, compatibility: compatibility))
+        #expect(CatalogMacDiscoveryPolicy.mayShowInDeliberateSearch(isInstalled: false, compatibility: compatibility))
     }
 
     @Test func unknownCompatibilityIsNotSuggestedButRemainsSearchableWithAnHonestLabel() {

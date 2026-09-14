@@ -55,6 +55,10 @@ app behavior; a launched build does not prove replacement; an app replacement
 does not prove a physical-device path; missing provider usage is unknown rather
 than zero.
 
+The focused power-user matrix, including cancellation, stale screen evidence,
+cost accounting and the current Kneecap catalog finding, is in
+[IRIS-HARNESS-POWER-USER-EVAL-MATRIX.md](IRIS-HARNESS-POWER-USER-EVAL-MATRIX.md).
+
 ## Release scenarios
 
 Freeze these as a compact, high-signal suite before broadening functionality:

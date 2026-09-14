@@ -60,7 +60,15 @@ nonisolated enum CatalogMacDiscoveryPolicy {
     static func mayShowInDeliberateSearch(
         isInstalled: Bool, compatibility: CatalogMacCompatibility
     ) -> Bool {
-        !isInstalled && (compatibility.isConfirmedForThisMac || compatibility == .unknown)
+        // Explicit search is also the entry point for phone guides that use
+        // the Mac as a build/install host (for example Kneecap). Keep them out
+        // of Mac starter recommendations, but let the reader find the guide
+        // and see its honest phone-only label.
+        !isInstalled && (
+            compatibility.isConfirmedForThisMac
+                || compatibility == .unknown
+                || compatibility == .mobileOnly
+        )
     }
 
     static func recommendationContext(confirmedAppNames: [String]) -> String {

@@ -62,7 +62,7 @@ struct Test8DiscoveryTests {
         #expect(CatalogAppDiscovery.starterSuggestions(fromInventory: inventory).map(\.slug) == ["mac"])
         #expect(CatalogAppDiscovery.discoverableApps(fromInventory: inventory, matchingSearchText: "unknown").map(\.slug) == ["unknown"])
         #expect(CatalogAppDiscovery.discoverableApps(fromInventory: inventory, matchingSearchText: "windows").isEmpty)
-        #expect(CatalogAppDiscovery.discoverableApps(fromInventory: inventory, matchingSearchText: "mobile").isEmpty)
+        #expect(CatalogAppDiscovery.discoverableApps(fromInventory: inventory, matchingSearchText: "mobile").map(\.slug) == ["mobile"])
     }
 
     @Test func discoveryExcludesInstalledAppsButStillOffersUnknownOnes() {
@@ -124,6 +124,45 @@ struct Test8DiscoveryTests {
         #expect(
             CatalogAppDiscovery.discoverableApps(fromInventory: inventory, matchingSearchText: "scroll")
                 .map(\.slug) == ["noscroll"]
+        )
+    }
+
+    @Test func exactKneecapSearchMatchesWhenMacCompatibilityIsEligible() {
+        let inventory = [
+            inventoryEntry(
+                slug: "kneecap", name: "kneecap", isInstalled: false,
+                installStateIsUnknown: true, macCompatibility: .unknown
+            ),
+        ]
+
+        // The public catalog uses this exact slug and name. An unknown Mac
+        // route remains searchable, so an empty result is not caused by case
+        // or slug normalization.
+        #expect(
+            CatalogAppDiscovery.discoverableApps(
+                fromInventory: inventory, matchingSearchText: "Kneecap"
+            ).map(\.slug) == ["kneecap"]
+        )
+    }
+
+    @Test func mobileOnlyKneecapRemainsFindableInDeliberateSearch() {
+        let inventory = [
+            inventoryEntry(
+                slug: "kneecap", name: "kneecap", isInstalled: false,
+                installStateIsUnknown: true, macCompatibility: .mobileOnly
+            ),
+        ]
+
+        // The current published guide describes a Mac build target for iOS,
+        // not a Mac app. Deliberate search may still find the guide, while the
+        // starter list continues to exclude it as a Mac recommendation.
+        #expect(
+            CatalogAppDiscovery.discoverableApps(
+                fromInventory: inventory, matchingSearchText: "Kneecap"
+            ).map(\.slug) == ["kneecap"]
+        )
+        #expect(
+            CatalogAppDiscovery.starterSuggestions(fromInventory: inventory).isEmpty
         )
     }
 

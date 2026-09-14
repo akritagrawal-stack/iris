@@ -152,6 +152,7 @@ enum OnDemandEditInterruptedRunRecovery {
     static func recoverNow(recordPath: String = defaultRecordPath, now: Date = Date(),
         gitRunner: (([String], String) -> GitResult)? = nil) -> Outcome {
         guard let record = recordOnDisk(recordPath: recordPath) else { return .nothingToRecover }
+        let usesInjectedRunner = gitRunner != nil
         let git = gitRunner ?? { runGit($0, in: $1) }
         if record.requiresReviewBeforeRecovery == true {
             return .leftAlone(clonePath: record.clonePath,
@@ -159,8 +160,13 @@ enum OnDemandEditInterruptedRunRecovery {
                 pathsIrisEdited: record.pathsIrisEdited)
         }
 #if IRIS_TEST_BUILD
+        // A supplied runner is a test-only seam for a disposable repository.
+        // Runtime callers never supply one, so their recovery remains bound to
+        // the registered Iris Test project before any filesystem action.
         guard IrisTestEnvironment.isEnabled,
-              IrisTestProjectRegistry.permitsEdit(slug: record.appSlug, clonePath: record.clonePath),
+              (usesInjectedRunner || IrisTestProjectRegistry.permitsEdit(
+                slug: record.appSlug, clonePath: record.clonePath
+              )),
               record.pathsIrisEdited.allSatisfy({ path in
                   !path.hasPrefix("/") && !path.split(separator: "/").contains("..")
               }) else {
@@ -204,7 +210,12 @@ enum OnDemandEditInterruptedRunRecovery {
         let pathsThatAreNotIriss = dirtyEntries.map(\.path).filter { !pathsIrisEdited.contains(normalized($0)) }
         guard pathsThatAreNotIriss.isEmpty else {
             let reason = "the clone also has changes Iris did not make (\(pathsThatAreNotIriss.prefix(3).joined(separator: ", "))\(pathsThatAreNotIriss.count > 3 ? ", …" : ""))"
-            appendToTheRunLog(record, line: "recovery: Iris went away before this run finished\(waitingClause(record)). Its unfinished edits were NOT reverted because \(reason).", now: now)
+            appendToTheRunLog(
+                record,
+                line: "recovery: Iris went away before this run finished\(waitingClause(record)). Its unfinished edits were NOT reverted because \(reason).",
+                now: now,
+                allowsUnregisteredFixture: usesInjectedRunner
+            )
             return .leftAlone(clonePath: record.clonePath, reason: reason, pathsIrisEdited: record.pathsIrisEdited)
         }
 
@@ -221,13 +232,23 @@ enum OnDemandEditInterruptedRunRecovery {
         let finalStatus = git(["status", "--porcelain", "--untracked-files=all"], record.clonePath)
         guard revertedPaths.count == dirtyEntries.count, finalStatus.exitCode == 0,
               finalStatus.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            appendToTheRunLog(record, line: "recovery: restoration was incomplete or clean source could not be confirmed. Recovery details were retained.", now: now)
+            appendToTheRunLog(
+                record,
+                line: "recovery: restoration was incomplete or clean source could not be confirmed. Recovery details were retained.",
+                now: now,
+                allowsUnregisteredFixture: usesInjectedRunner
+            )
             return .leftAlone(clonePath: record.clonePath,
                 reason: "Restoration was incomplete or clean source could not be confirmed. Recovery details were retained.",
                 pathsIrisEdited: record.pathsIrisEdited)
         }
         forget(recordPath: recordPath)
-        appendToTheRunLog(record, line: "recovery: Iris went away before this run finished\(waitingClause(record)). Its unfinished edits to \(revertedPaths.joined(separator: ", ")) were reverted; the clone is clean again.", now: now)
+        appendToTheRunLog(
+            record,
+            line: "recovery: Iris went away before this run finished\(waitingClause(record)). Its unfinished edits to \(revertedPaths.joined(separator: ", ")) were reverted; the clone is clean again.",
+            now: now,
+            allowsUnregisteredFixture: usesInjectedRunner
+        )
         return .revertedIrisOwnEdits(clonePath: record.clonePath, paths: revertedPaths)
     }
 
@@ -334,12 +355,21 @@ enum OnDemandEditInterruptedRunRecovery {
         return normalizedPath
     }
 
-    private static func appendToTheRunLog(_ record: OnDemandEditInFlightRecord, line: String, now: Date) {
+    private static func appendToTheRunLog(
+        _ record: OnDemandEditInFlightRecord,
+        line: String,
+        now: Date,
+        allowsUnregisteredFixture: Bool = false
+    ) {
 #if IRIS_TEST_BUILD
         guard IrisTestEnvironment.isEnabled,
-              IrisTestProjectRegistry.permitsEdit(slug: record.appSlug, clonePath: record.clonePath),
+              (allowsUnregisteredFixture || IrisTestProjectRegistry.permitsEdit(
+                slug: record.appSlug, clonePath: record.clonePath
+              )),
               let path = record.runLogPath,
-              IrisTestProjectRegistry.contains(path, within: IrisTestEnvironment.logsDirectory) else { return }
+              (allowsUnregisteredFixture || IrisTestProjectRegistry.contains(
+                path, within: IrisTestEnvironment.logsDirectory
+              )) else { return }
 #endif
         guard let runLogPath = record.runLogPath,
               let handle = FileHandle(forWritingAtPath: runLogPath) else { return }

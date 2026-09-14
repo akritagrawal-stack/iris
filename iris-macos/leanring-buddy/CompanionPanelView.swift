@@ -1069,7 +1069,14 @@ struct CompanionPanelView: View {
                 .foregroundColor(DS.Colors.amber)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        if accountService.needsSavedLoginAuthorization || accountService.sessionPersistenceMessage != nil {
+        // A Keychain denial is also represented by the user-facing saved-login
+        // message. Keep the recovery action visible if that message arrives
+        // before the published authorization flag reaches this view.
+        let savedLoginIsUnreadable = accountService.signInFailureMessage?
+            .localizedCaseInsensitiveContains("saved login") == true
+        if accountService.needsSavedLoginAuthorization
+            || accountService.sessionPersistenceMessage != nil
+            || savedLoginIsUnreadable {
             Button(accountService.savedSessionRetryLabel) {
                 isRetryingSavedSession = true
                 Task { @MainActor in

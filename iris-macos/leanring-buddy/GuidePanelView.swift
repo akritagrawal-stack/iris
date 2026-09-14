@@ -842,7 +842,7 @@ struct GuidePanelView: View {
                         || blocked.localizedCaseInsensitiveContains("source folder")
                         || guideSessionController.guideHasPinnedSourceIdentity {
                         Button("Choose source folder") { chooseSourceFolder() }
-                            .irisPrimaryPill(isFullWidth: false, isCompact: true)
+                            .buttonStyle(.borderedProminent)
                     }
                 }
                 if let primaryAction = guideSessionController.primaryActionForTheCurrentStep {

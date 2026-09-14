@@ -26,6 +26,10 @@ struct SavedVersionLifecycleChecks {
         let editCommit: String
     }
 
+    private final class EventLog {
+        var values: [String] = []
+    }
+
     @MainActor
     static func main() async {
         do {
@@ -327,6 +331,76 @@ struct SavedVersionLifecycleChecks {
         }
         try require(repairedReceipt.phase == .restored,
                     "receipt-repair retry did not publish the restored phase")
+
+        // A restored payload alone is not authority to repair metadata: the
+        // registered path and the exact durable recovery record must still
+        // bind this retry to the original Undo transaction.
+        let changedPathFixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: changedPathFixture.root) }
+        let changedPathEvents = EventLog()
+        let changedPath = try makeReceiptRepairCoordinator(
+            changedPathFixture, events: changedPathEvents
+        )
+        try require(changedPath.undoSavedAppVersion(changedPathFixture.receipt),
+                    "changed-path receipt-repair fixture was not selected")
+        try await wait(until: { changedPath.undoFailureMessage != nil })
+        changedPath.installedApplicationPathForApp = { _ in
+            changedPathFixture.root.appendingPathComponent("moved/Notes.app").path
+        }
+        changedPath.undoDeliveredChange()
+        try require(changedPathEvents.values == ["quit", "restore"],
+                    "changed registered path reached relaunch/source recovery: \(changedPathEvents.values)")
+        guard case .valid(let changedPathReceipt) = changedPathFixture.store.load(changedPathFixture.receipt.identifier) else {
+            throw CheckFailure(message: "changed-path fixture lost its receipt")
+        }
+        try require(changedPathReceipt.phase == .installed,
+                    "changed registered path blessed the restored receipt")
+
+        let missingRecoveryFixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: missingRecoveryFixture.root) }
+        let missingRecoveryEvents = EventLog()
+        let missingRecovery = try makeReceiptRepairCoordinator(
+            missingRecoveryFixture, events: missingRecoveryEvents
+        )
+        try require(missingRecovery.undoSavedAppVersion(missingRecoveryFixture.receipt),
+                    "missing-recovery receipt-repair fixture was not selected")
+        try await wait(until: { missingRecovery.undoFailureMessage != nil })
+        guard case .pending(let recoveryRecord) = missingRecoveryFixture.recoveryStore.load() else {
+            throw CheckFailure(message: "missing-recovery fixture never saved its durable record")
+        }
+        try missingRecoveryFixture.recoveryStore.clearAfterCompletion(identifier: recoveryRecord.identifier)
+        missingRecovery.undoDeliveredChange()
+        try require(missingRecoveryEvents.values == ["quit", "restore"],
+                    "missing durable recovery reached relaunch/source recovery: \(missingRecoveryEvents.values)")
+        guard case .valid(let missingRecoveryReceipt) = missingRecoveryFixture.store.load(missingRecoveryFixture.receipt.identifier) else {
+            throw CheckFailure(message: "missing-recovery fixture lost its receipt")
+        }
+        try require(missingRecoveryReceipt.phase == .installed,
+                    "missing durable recovery blessed the restored receipt")
+    }
+
+    @MainActor
+    private static func makeReceiptRepairCoordinator(
+        _ fixture: Fixture, events: EventLog
+    ) throws -> OnDemandEditCoordinator {
+        let coordinator = try makeCoordinator(fixture)
+        coordinator.terminateEditedAppBeforeUndo = { _, _ in
+            events.values.append("quit")
+            return .readyForDelivery(priorApplicationPath: nil)
+        }
+        coordinator.restoreInstalledAppFromBackup = { installedPath, backupPath in
+            events.values.append("restore")
+            do {
+                try FileManager.default.removeItem(atPath: installedPath)
+                try FileManager.default.copyItem(atPath: backupPath, toPath: installedPath)
+                return true
+            } catch { return false }
+        }
+        coordinator.launchRestoredAppAfterUndo = { _, _ in
+            events.values.append("reopen")
+            return .relaunchedFreshBuild
+        }
+        return coordinator
     }
 
     @MainActor

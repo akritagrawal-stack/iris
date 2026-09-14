@@ -4236,9 +4236,39 @@ final class OnDemandEditCoordinator: ObservableObject {
     /// proves that the old bundle is in place. It must not copy the backup a
     /// second time. Once the metadata is repaired, the normal checkpointed
     /// recovery resumes at relaunch.
+    private func hasCurrentRepairIdentity(
+        _ receipt: AppDeliveryReceipt,
+        recoveryRecord: DeliveredEditUndoRecoveryRecord
+    ) -> Bool {
+        guard receipt.hasCompleteUndoMetadata,
+              let source = receipt.sourceIdentity,
+              recoveryRecord.deliveryReceiptIdentifier == receipt.identifier,
+              recoveryRecord.appSlug == source.appSlug,
+              recoveryRecord.appName == source.appName,
+              recoveryRecord.installedPath == receipt.installedPath,
+              recoveryRecord.backupPath == receipt.backupPath,
+              recoveryRecord.clonePath == source.clonePath,
+              recoveryRecord.branchName == source.branchName,
+              recoveryRecord.originalCommit == source.baseCommit,
+              recoveryRecord.originalRef == source.baseRef,
+              case .pending(recoveryRecord) = deliveredUndoRecoveryStore.load(),
+              let registeredPath = installedApplicationPathForApp?(source.appSlug),
+              URL(fileURLWithPath: registeredPath).standardizedFileURL.path == receipt.installedPath else {
+            return false
+        }
+        return true
+    }
+
+    private func failAlreadyRestoredReceiptRepair() {
+        undoIsInProgress = false
+        undoFailureMessage = "The saved Undo recovery information changed before Iris could confirm the restored app. Iris left the app and source alone."
+        statusLine = undoFailureMessage
+        phase = .done
+    }
+
     private func repairReceiptForAlreadyRestoredFiles(_ receipt: AppDeliveryReceipt) {
         guard let liveUndoRecoveryRecord,
-              liveUndoRecoveryRecord.deliveryReceiptIdentifier == receipt.identifier,
+              hasCurrentRepairIdentity(receipt, recoveryRecord: liveUndoRecoveryRecord),
               undoRecovery.completed.isEmpty,
               !undoIsInProgress else { return }
 
@@ -4255,6 +4285,10 @@ final class OnDemandEditCoordinator: ObservableObject {
             guard self.flowGeneration == flowGenerationAtStart,
                   self.undoGeneration == repairGeneration,
                   self.undoIsInProgress else { return }
+            guard self.hasCurrentRepairIdentity(receipt, recoveryRecord: liveUndoRecoveryRecord) else {
+                self.failAlreadyRestoredReceiptRepair()
+                return
+            }
 
             let payloadFailure = await self.persistedReceiptPayloadUndoFailure(
                 receipt, restored: true
@@ -4262,6 +4296,10 @@ final class OnDemandEditCoordinator: ObservableObject {
             guard self.flowGeneration == flowGenerationAtStart,
                   self.undoGeneration == repairGeneration,
                   self.undoIsInProgress else { return }
+            guard self.hasCurrentRepairIdentity(receipt, recoveryRecord: liveUndoRecoveryRecord) else {
+                self.failAlreadyRestoredReceiptRepair()
+                return
+            }
 
             // The receipt may still be installed because the earlier restore
             // returned after the app swap but before its metadata publication.
@@ -4277,7 +4315,8 @@ final class OnDemandEditCoordinator: ObservableObject {
             do {
                 guard case .valid(let current) = self.appDeliveryReceiptStore.load(receipt.identifier),
                       current.identity == receipt.identity,
-                      current.phase == .installed else {
+                      current.phase == .installed,
+                      self.hasCurrentRepairIdentity(receipt, recoveryRecord: liveUndoRecoveryRecord) else {
                     throw AppDeliveryReceiptStore.StoreError.identityMismatch
                 }
                 _ = try self.appDeliveryReceiptStore.transition(current, to: .restored)
@@ -4320,7 +4359,8 @@ final class OnDemandEditCoordinator: ObservableObject {
             }
             if receipt.phase == .installed {
                 if reconcileRestoredReceipt,
-                   liveUndoRecoveryRecord?.deliveryReceiptIdentifier == receipt.identifier,
+                   let recoveryRecord = liveUndoRecoveryRecord,
+                   hasCurrentRepairIdentity(receipt, recoveryRecord: recoveryRecord),
                    undoRecovery.completed.isEmpty {
                     repairReceiptForAlreadyRestoredFiles(receipt)
                     return

@@ -225,6 +225,13 @@ were retained for diagnosis. The next bounded action is to reconcile the fixture
 current UI contract with the oracle, then rerun the same round-trip and atomic-failure
 cases without generating a second implementation.
 
+The target fixture now exposes both controls and valid/invalid import feedback;
+the oracle advanced through all import and rejection cases. The current failure is
+an assertion after the journey: the exported destination snapshot contains five
+notes/folders where the contract expects six, indicating that an existing seeded
+record is being lost during the transfer sequence. This is now a data-preservation
+failure to fix, rather than a missing-control or test-setup failure.
+
 ## Current Iris model-route policy, September 14
 
 New planner and implementation work uses Luna by default. GPT-5.5 is available

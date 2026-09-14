@@ -1,4 +1,4 @@
-import { createCatalogClient, createStorageCache, DEVICES } from "./manifest.js";
+import { createCatalogClient, createDevicePreferenceStore, createStorageCache, DEVICES } from "./manifest.js";
 
 const deviceLabels = { iphone: "iPhone", android: "Android", computer: "Computer" };
 const state = { device: "iphone", result: null };
@@ -10,7 +10,10 @@ const error = $("error");
 const errorCopy = $("error-copy");
 const manifestNote = $("manifest-note");
 const cache = typeof localStorage === "undefined" ? undefined : createStorageCache(localStorage);
+const devicePreference = typeof localStorage === "undefined" ? undefined : createDevicePreferenceStore(localStorage);
 const client = createCatalogClient({ cache });
+const savedDevice = devicePreference?.read();
+if (savedDevice) state.device = savedDevice;
 
 function setStatus(message) { status.textContent = message; }
 
@@ -25,6 +28,12 @@ function textElement(tag, text, className) {
   element.textContent = text;
   if (className) element.className = className;
   return element;
+}
+
+function syncDeviceButtons() {
+  for (const candidate of document.querySelectorAll("[data-device]")) {
+    candidate.setAttribute("aria-pressed", String(candidate.dataset.device === state.device));
+  }
 }
 
 function renderRoute(app) {
@@ -146,11 +155,14 @@ async function loadCatalog({ force = false } = {}) {
 for (const button of document.querySelectorAll("[data-device]")) {
   button.addEventListener("click", () => {
     state.device = button.dataset.device;
-    for (const candidate of document.querySelectorAll("[data-device]")) candidate.setAttribute("aria-pressed", String(candidate === button));
+    devicePreference?.write(state.device);
+    syncDeviceButtons();
     if (state.result) render();
     showCatalogStatus();
   });
 }
+
+syncDeviceButtons();
 $("refresh").addEventListener("click", () => loadCatalog({ force: true }));
 $("retry").addEventListener("click", () => loadCatalog({ force: true }));
 window.addEventListener("online", () => { setStatus("Connection restored. Refresh to verify the catalog."); });

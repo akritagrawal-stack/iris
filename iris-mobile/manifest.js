@@ -10,6 +10,7 @@ export const MAX_TEXT_LENGTH = 240;
 export const MAX_TITLE_LENGTH = 80;
 export const MAX_URL_LENGTH = 2_048;
 export const CACHE_KEY = "iris-mobile.catalog.v1";
+export const DEVICE_PREFERENCE_KEY = "iris-mobile.device.v1";
 export const CACHE_MAX_BYTES = 64 * 1024;
 export const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 export const SERVER_CACHE_MAX_AGE_MS = 5 * 60 * 1_000;
@@ -27,6 +28,33 @@ export const ROUTE_KINDS = Object.freeze([
   "mac-assisted",
   "unavailable",
 ]);
+
+/**
+ * Keeps the reader's device choice across a browser restart without making
+ * that choice part of the network manifest. A stale or forged value is
+ * ignored, and storage failures never block catalog discovery.
+ */
+export function createDevicePreferenceStore(storage, key = DEVICE_PREFERENCE_KEY) {
+  return {
+    read() {
+      try {
+        const value = storage?.getItem(key);
+        return DEVICES.includes(value) ? value : null;
+      } catch {
+        return null;
+      }
+    },
+    write(device) {
+      if (!DEVICES.includes(device) || !storage || typeof storage.setItem !== "function") return false;
+      try {
+        storage.setItem(key, device);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
 
 const ROUTE_HOSTS = Object.freeze({
   web: new Set(["publikhq.com", "www.publikhq.com"]),

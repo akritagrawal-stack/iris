@@ -6,6 +6,7 @@ import {
   MAX_MANIFEST_BYTES,
   ManifestError,
   createCatalogClient,
+  createDevicePreferenceStore,
   createMemoryCache,
   mapCatalogResponse,
   parseCatalogText,
@@ -37,6 +38,30 @@ function validManifest(overrides = {}) {
     }],
   };
 }
+
+test("persists only a supported device choice and ignores bad storage", () => {
+  const values = new Map();
+  const storage = {
+    getItem(key) { return values.get(key) ?? null; },
+    setItem(key, value) { values.set(key, value); },
+  };
+  const preferences = createDevicePreferenceStore(storage);
+  assert.equal(preferences.read(), null);
+  assert.equal(preferences.write("iphone"), true);
+  assert.equal(preferences.read(), "iphone");
+  assert.equal(preferences.write("phone"), false);
+  values.set("iris-mobile.device.v1", "phone");
+  assert.equal(preferences.read(), null);
+
+  const brokenStorage = {
+    getItem() { throw new Error("storage unavailable"); },
+    setItem() { throw new Error("storage unavailable"); },
+  };
+  const broken = createDevicePreferenceStore(brokenStorage);
+  assert.equal(broken.read(), null);
+  assert.equal(broken.write("android"), false);
+  assert.equal(createDevicePreferenceStore(undefined).write("iphone"), false);
+});
 
 function rawCatalog(overrides = {}) {
   return {

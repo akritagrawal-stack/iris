@@ -144,3 +144,13 @@ truthfully disabled because this Test profile reports Codex app editing as
 connected but has no connected typed-question or screen-help provider. The
 question was cleared without sending or changing user data. This is native UI
 and mode-separation evidence; it is not a successful contextual model response.
+
+## Current usability regression run, September 14
+
+`swift test --package-path iris-macos/tools/usability-tests` passed **136 tests
+in 17 suites**. This includes spatial target invalidation after app/window
+changes, coordinate bounds and movement, retention/history bounds, relaunch and
+Undo recovery failure paths, keychain permission boundaries, catalog cache
+bounds, and chat reset/reopen behavior. These are source/package regressions;
+they do not replace the missing live model, full delivery lifecycle, or
+physical-iPhone acceptance evidence.

@@ -41,6 +41,7 @@ enum IrisTestFixtureSandbox {
             throw Error.scratchDirectoryUnavailable
         }
 
+        let commandTools = MaintainSandbox.discoveredTestCommandTools()
         return MaintainSandbox.testProcessPolicy(
             scratchDirectoryPath: canonicalScratchPath,
             // The fixture may run the same git/node/pnpm/cargo commands as Iris
@@ -51,7 +52,8 @@ enum IrisTestFixtureSandbox {
                 "/System", "/usr", "/bin", "/sbin", "/etc", "/private/etc",
                 "/private/var/select", "/private/var/db", "/opt/homebrew",
                 "/usr/local", "/Library/Developer", "/Applications/Xcode.app", "/dev",
-            ],
+            ] + commandTools.readOnlyPaths,
+            additionalCommandBinPaths: commandTools.binPaths,
             repositoryIsRegistered: { candidate in
                 candidate == canonicalClonePath
             }

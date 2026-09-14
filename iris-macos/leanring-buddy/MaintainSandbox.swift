@@ -22,6 +22,10 @@ nonisolated enum MaintainSandbox {
     struct TestProcessPolicy: Sendable {
         let scratchDirectoryPath: String
         let additionalReadOnlyPaths: [String]
+        /// Explicit, canonical command-bin directories for the isolated Test
+        /// runtime. They are discovered from known local developer-tool
+        /// layouts rather than inherited from the caller's PATH.
+        let additionalCommandBinPaths: [String]
         /// Direct Rust toolchain bins are selected without consulting the
         /// reader's Cargo/Rustup configuration. They are kept separately so
         /// the child environment can use the real binaries rather than the
@@ -32,13 +36,22 @@ nonisolated enum MaintainSandbox {
         init(
             scratchDirectoryPath: String,
             additionalReadOnlyPaths: [String] = [],
+            additionalCommandBinPaths: [String] = [],
             repositoryIsRegistered: @escaping @Sendable (String) -> Bool
         ) {
             self.scratchDirectoryPath = scratchDirectoryPath
             let directRustBins = MaintainSandbox.discoveredRustToolchainBinPaths()
             self.rustToolchainBinPaths = directRustBins
+            self.additionalCommandBinPaths = MaintainSandbox.uniquePaths(
+                additionalCommandBinPaths.compactMap {
+                    guard let canonical = MaintainSandbox.canonicalExistingDirectory($0), canonical == $0 else {
+                        return nil
+                    }
+                    return canonical
+                }
+            )
             self.additionalReadOnlyPaths = MaintainSandbox.uniquePaths(
-                additionalReadOnlyPaths + directRustBins.map {
+                additionalReadOnlyPaths + self.additionalCommandBinPaths + directRustBins.map {
                     URL(fileURLWithPath: $0).deletingLastPathComponent().path
                 }
             )
@@ -66,6 +79,7 @@ nonisolated enum MaintainSandbox {
               let scratchDirectoryPath = prepareTestScratchDirectory() else {
             return .unavailable
         }
+        let discoveredCommandTools = discoveredTestCommandTools()
         let toolchainPaths = [
             "/System",
             "/usr",
@@ -80,10 +94,11 @@ nonisolated enum MaintainSandbox {
             "/Library/Developer",
             "/Applications/Xcode.app",
             "/dev",
-        ]
+        ] + discoveredCommandTools.readOnlyPaths
         return .test(TestProcessPolicy(
             scratchDirectoryPath: scratchDirectoryPath,
             additionalReadOnlyPaths: toolchainPaths,
+            additionalCommandBinPaths: discoveredCommandTools.binPaths,
             repositoryIsRegistered: { candidate in
                 guard IrisTestEnvironment.isEnabled,
                       let canonical = canonicalExistingDirectory(candidate),
@@ -107,13 +122,57 @@ nonisolated enum MaintainSandbox {
     static func testProcessPolicy(
         scratchDirectoryPath: String,
         additionalReadOnlyPaths: [String] = [],
+        additionalCommandBinPaths: [String] = [],
         repositoryIsRegistered: @escaping @Sendable (String) -> Bool
     ) -> ProcessPolicy {
         .test(TestProcessPolicy(
             scratchDirectoryPath: scratchDirectoryPath,
             additionalReadOnlyPaths: additionalReadOnlyPaths,
+            additionalCommandBinPaths: additionalCommandBinPaths,
             repositoryIsRegistered: repositoryIsRegistered
         ))
+    }
+
+    /// Test runs start with a scrubbed child environment, so Finder/Xcode never
+    /// leaks a reader's shell PATH or credentials into model-authored commands.
+    /// These are the only non-system command locations admitted: canonical,
+    /// direct executables inside pnpm's global store and a versioned local Node
+    /// installation. The paths are available only to the `Iris Test` sandbox.
+    static func discoveredTestCommandTools(homeDirectory: String = NSHomeDirectory()) -> (
+        binPaths: [String], readOnlyPaths: [String]
+    ) {
+        guard let canonicalHome = canonicalExistingDirectory(homeDirectory), canonicalHome == homeDirectory else {
+            return ([], [])
+        }
+        var bins: [String] = []
+        var readRoots: [String] = []
+
+        let pnpmRoot = canonicalHome + "/Library/pnpm"
+        let pnpmBin = pnpmRoot + "/bin"
+        if canonicalExistingDirectory(pnpmRoot) == pnpmRoot,
+           canonicalExistingDirectory(pnpmBin) == pnpmBin,
+           isDescendant(pnpmBin, of: pnpmRoot),
+           isExecutableDirectFile(atPath: pnpmBin + "/pnpm") {
+            bins.append(pnpmBin)
+            readRoots.append(pnpmRoot)
+        }
+
+        let nodeShare = canonicalHome + "/.local/share"
+        if canonicalExistingDirectory(nodeShare) == nodeShare,
+           let entries = try? FileManager.default.contentsOfDirectory(atPath: nodeShare) {
+            for entry in entries.sorted(by: >) where entry.hasPrefix("node-v") {
+                let root = nodeShare + "/" + entry
+                let bin = root + "/bin"
+                guard canonicalExistingDirectory(root) == root,
+                      canonicalExistingDirectory(bin) == bin,
+                      isDescendant(root, of: nodeShare),
+                      isExecutableDirectFile(atPath: bin + "/node") else { continue }
+                bins.append(bin)
+                readRoots.append(root)
+                break
+            }
+        }
+        return (uniquePaths(bins), uniquePaths(readRoots))
     }
 
     /// The kernel-canonical path, via realpath(3). Seatbelt enforces on the
@@ -443,7 +502,10 @@ nonisolated enum MaintainSandbox {
         func child(_ name: String) -> String { (scratch as NSString).appendingPathComponent(name) }
         let systemPath = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
         let directRustPath = policy.rustToolchainBinPaths.joined(separator: ":")
-        let commandPath = directRustPath.isEmpty ? systemPath : directRustPath + ":" + systemPath
+        let explicitCommandPath = policy.additionalCommandBinPaths.joined(separator: ":")
+        let commandPath = [directRustPath, explicitCommandPath, systemPath]
+            .filter { !$0.isEmpty }
+            .joined(separator: ":")
         var environment = [
             "PATH": commandPath,
             "HOME": scratch,

@@ -3742,6 +3742,7 @@ final class OnDemandEditCoordinator: ObservableObject {
             return
         }
 
+        let deliveryPreflightReason = deliveryPreflightReasonForCurrentApp()
         guard relaunchIsAvailableForApp?(slug) == true,
               let package = packageEditedAppFromClone,
               terminateAndRelaunchEditedApp != nil || splitDeliveryRelaunchIsAvailable else {
@@ -3751,7 +3752,7 @@ final class OnDemandEditCoordinator: ObservableObject {
             )
             editRunner.finishApplied()
             releaseLockIfHeld()
-            statusLine = "Applied on branch \(branchName). Your installed \(appName) still runs the OLD code — Iris can't rebuild this kind of app yet, so rebuild it from the clone yourself to pick the change up."
+            statusLine = "Applied on branch \(branchName). Your installed \(appName) still runs the OLD code. Iris did not replace it: \(deliveryPreflightReason). The source change remains safe on the branch."
             phase = .done
             return
         }
@@ -6107,6 +6108,26 @@ final class OnDemandEditCoordinator: ObservableObject {
 
     private func provenanceClonePath(forAppSlug appSlug: String) -> String? {
         installProvenanceStore.provenance(forAppSlug: appSlug)?.clonePath
+    }
+
+    /// Explain why the delivery preflight declined to offer a rebuild. The
+    /// resolver is shared with `AppRelaunchService`, so a detected Xcode build
+    /// cannot turn into a vague post-edit failure or an invented scheme.
+    private func deliveryPreflightReasonForCurrentApp() -> String {
+        guard let clonePath = resolvedClonePath,
+              let stack = activeAppStack else {
+            return "Iris could not confirm this app's source clone and relaunch route"
+        }
+
+        switch AppRelaunchService.packagingEligibility(
+            forStack: stack,
+            clonePath: clonePath
+        ) {
+        case .packageable:
+            return "Iris could not confirm a verified macOS bundle identifier or relaunch route"
+        case .unavailable(let reason):
+            return reason
+        }
     }
 
     /// Never edit Iris's own repository. Refuses when the running app bundle (or

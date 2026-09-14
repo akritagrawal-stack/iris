@@ -85,6 +85,19 @@ enum AppRelaunchTerminationResult: Sendable, Equatable {
     case ineligible(reason: String)
 }
 
+/// The side-effect-free packaging decision used before Iris offers or starts a
+/// version delivery. A build recipe is not enough: delivery needs a command
+/// that is known to produce a launchable macOS bundle.
+enum AppRelaunchPackagingEligibility: Sendable, Equatable {
+    case packageable(command: String)
+    case unavailable(reason: String)
+
+    var isPackageable: Bool {
+        if case .packageable = self { return true }
+        return false
+    }
+}
+
 @MainActor
 final class AppRelaunchService {
 
@@ -262,8 +275,55 @@ final class AppRelaunchService {
     static func canPackageFreshMacArtifact(
         stack: BreakAppStack, clonePath: String
     ) -> Bool {
-        stackCanProduceARelaunchableMacArtifact(stack)
-            && packageCommand(forStack: stack, clonePath: clonePath) != nil
+        packagingEligibility(forStack: stack, clonePath: clonePath).isPackageable
+    }
+
+    /// Resolve delivery eligibility from the live clone, not from the catalog
+    /// stack alone. This deliberately keeps Swift/Xcode fail-closed: the
+    /// detector can prove that an Xcode project has a build recipe, but its
+    /// `<scheme>` placeholder is not a packaging declaration Iris may execute.
+    /// The exact reason is returned so a saved edit does not end in a generic
+    /// "Iris cannot rebuild" message after the user has already approved it.
+    static func packagingEligibility(
+        forStack stack: BreakAppStack, clonePath: String
+    ) -> AppRelaunchPackagingEligibility {
+        let resolvedStack = packagingStack(clonePath: clonePath, fallback: stack)
+
+        switch resolvedStack {
+        case .tauri, .electron:
+            guard let command = packageCommand(forStack: resolvedStack, clonePath: clonePath) else {
+                return .unavailable(
+                    reason: "this app does not declare a macOS packaging step Iris recognizes"
+                )
+            }
+            return .packageable(command: command)
+
+        case .nextjs:
+            return .unavailable(
+                reason: "this clone is a Next.js web app, so it has no macOS app bundle for Iris to relaunch"
+            )
+
+        case .swiftMacOS:
+            let recipe = RepoRecipeService.deriveRecipe(repoRootPath: clonePath)
+            if recipe.ecosystemIdentifier == RepoRecipeSwiftAppleDetector.xcodeEcosystemIdentifier {
+                return .unavailable(
+                    reason: "this Xcode project has a build recipe, but does not declare a concrete macOS packaging step Iris recognizes; Iris will not guess its scheme or deliver this update"
+                )
+            }
+            if recipe.ecosystemIdentifier == RepoRecipeSwiftAppleDetector.swiftPackageManagerEcosystemIdentifier {
+                return .unavailable(
+                    reason: "this Swift package has a build recipe, but does not declare a macOS application packaging step Iris recognizes; Iris did not deliver this update"
+                )
+            }
+            return .unavailable(
+                reason: "this Swift/Apple clone does not declare a macOS packaging step Iris recognizes"
+            )
+
+        case .other:
+            return .unavailable(
+                reason: "this clone does not declare a macOS packaging step Iris recognizes"
+            )
+        }
     }
 
     // MARK: - Step 1: package a fresh, launchable artifact FROM the clone
@@ -281,21 +341,20 @@ final class AppRelaunchService {
         // A saved edit may carry stale catalog metadata. Use the actual clone
         // for both packaging and artifact discovery, not just the command.
         let appStack = Self.packagingStack(clonePath: clonePath, fallback: appStack)
-        guard Self.stackCanProduceARelaunchableMacArtifact(appStack) else {
-            return .stackHasNoRelaunchableArtifact(
-                reason: "this kind of app has no rebuildable macOS copy for Iris to relaunch"
-            )
-        }
         guard let runner = try? MaintainShellRunner(repoRootPath: clonePath) else {
             return .ineligible(reason: "the clone path is not usable for a rebuild")
         }
 
-        // Resolve the code-authored package command for this stack against this
-        // repo. An Electron repo with no recognized macOS packaging script has
-        // no honest command to run, so it refuses here rather than guess.
-        guard let basePackageCommand = Self.packageCommand(forStack: appStack, clonePath: clonePath) else {
+        // Resolve the same side-effect-free eligibility decision used by the
+        // delivery preflight. Nothing has been terminated, and a missing or
+        // unresolved project declaration remains an honest refusal.
+        let eligibility = Self.packagingEligibility(forStack: appStack, clonePath: clonePath)
+        guard case .packageable(let basePackageCommand) = eligibility else {
+            if case .unavailable(let reason) = eligibility {
+                return .stackHasNoRelaunchableArtifact(reason: reason)
+            }
             return .stackHasNoRelaunchableArtifact(
-                reason: "this app doesn't declare a macOS packaging step Iris recognizes"
+                reason: "this clone does not declare a macOS packaging step Iris recognizes"
             )
         }
         let packageCommand: String

@@ -265,4 +265,33 @@ import Testing
             clonePath: clone
         ) == "npx --no-install tauri build")
     }
+
+    @Test("an Xcode build recipe does not authorize delivery without a packaging declaration")
+    func xcodeBuildRecipeRemainsIneligibleForMacDelivery() throws {
+        let clone = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iris-xcode-delivery-\(UUID().uuidString)").path
+        try FileManager.default.createDirectory(
+            atPath: clone.appending("/Sample.xcodeproj"),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(atPath: clone) }
+
+        let recipe = RepoRecipeService.deriveRecipe(repoRootPath: clone)
+        #expect(recipe.ecosystemIdentifier == RepoRecipeSwiftAppleDetector.xcodeEcosystemIdentifier)
+        #expect(recipe.build?.commandLine == "xcodebuild -scheme <scheme> build")
+        #expect(recipe.package == nil)
+
+        let eligibility = AppRelaunchService.packagingEligibility(
+            forStack: .swiftMacOS,
+            clonePath: clone
+        )
+        #expect(eligibility == .unavailable(
+            reason: "this Xcode project has a build recipe, but does not declare a concrete macOS packaging step Iris recognizes; Iris will not guess its scheme or deliver this update"
+        ))
+        #expect(!eligibility.isPackageable)
+        #expect(!AppRelaunchService.canPackageFreshMacArtifact(
+            stack: .swiftMacOS,
+            clonePath: clone
+        ))
+    }
 }

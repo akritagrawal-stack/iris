@@ -252,3 +252,8 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   run with failures (1427 tests, 147 issues); it is not counted as evidence for
   the RC. The broad run was not used to claim a pass. Focused spatial and
   offline-harness suites remain the authoritative automated checks.
+- While the RC was open, computer use clicked the real `Refresh catalog` action
+  in Settings. The live `Last checked` timestamp advanced from 3:35 PM to
+  3:43 PM and the catalog remained usable, providing native evidence for the
+  refresh path and icon/catalog surface. This does not prove every published
+  app has a valid guide or close the phone-device gate.

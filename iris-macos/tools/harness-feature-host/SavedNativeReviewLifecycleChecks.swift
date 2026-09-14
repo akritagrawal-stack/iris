@@ -413,13 +413,19 @@ struct SavedNativeReviewLifecycleChecks {
                     "denying saved recheck changed the held candidate")
         try require(OnDemandEditInterruptedRunRecovery.recordOnDisk() == heldRecord,
                     "denying saved recheck removed or changed the held identity")
-        try require(savedContract.isBound(to: heldCandidate, request: fixture.brief.userRequest),
+        try require(savedContract.isBound(
+            toCandidateDigest: heldCandidate.bindingDigest,
+            request: fixture.brief.userRequest
+        ),
                     "saved contract did not remain bound to the held candidate")
         let tamperedContract = try HarnessSavedFeatureContract(
             state: try savedContract.restoredState(),
             candidateBindingDigest: String(repeating: "0", count: 64)
         )
-        try require(!tamperedContract.isBound(to: heldCandidate, request: fixture.brief.userRequest),
+        try require(!tamperedContract.isBound(
+            toCandidateDigest: heldCandidate.bindingDigest,
+            request: fixture.brief.userRequest
+        ),
                     "tampered contract binding was accepted")
         let malformed = try? JSONDecoder().decode(
             HarnessSavedFeatureContract.self, from: Data("{}".utf8)

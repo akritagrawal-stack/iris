@@ -269,3 +269,11 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   `11/11` and guide regressions passed `72` tests in `5` suites. The integrated
   RC still needs a fresh native movement/tab-switch run after rebuilding with
   this commit.
+- Integrated RC v6 was built through the Xcode GUI, copied to
+  `/Users/Shared/Iris-RC-20260914-v6/Iris Test.app`, re-signed with the local
+  test identity, and passed strict signature verification. On launch, the real
+  app reported that Accessibility and Screen Recording permissions had been
+  revoked and presented its native `Grant`/`Show Iris` controls. This is an
+  explicit environment gate: no TCC reset or permission claim is made, and
+  fresh native spatial acceptance must resume after those permissions are
+  restored through the normal macOS flow.

@@ -1590,7 +1590,7 @@ struct OverlayEyeInputBarView: View {
     @ViewBuilder
     private var composerModelControl: some View {
         if IrisTestEnvironment.isEnabled && anAppIsOpenForEditing && effectiveComposerMode == .edit {
-            Text("Astra Medium plan · Astra Low edit")
+            Text("Luna Max plan · GPT-5.5 edit")
                 .font(DS.Typography.caption)
                 .foregroundColor(DS.Colors.textSecondary)
                 .help("Requested test routes through your Codex login. The provider may not report the resolved model.")

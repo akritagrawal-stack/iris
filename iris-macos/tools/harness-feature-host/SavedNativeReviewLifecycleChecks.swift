@@ -261,7 +261,7 @@ struct SavedNativeReviewLifecycleChecks {
             slug: fixture.project.slug, name: fixture.project.name, stack: .electron
         ), "Coordinator could not select the registered Test fixture")
         try require(coordinator.phase == .describe,
-                    "Coordinator did not enter describe for the registered Test fixture: \(coordinator.phase)")
+                    "Coordinator did not enter describe for the registered Test fixture: \(coordinator.phase); derived build=\(String(describing: RepoRecipeService.deriveRecipe(repoRootPath: fixture.project.clonePath).build?.commandLine)), install=\(String(describing: RepoRecipeService.deriveRecipe(repoRootPath: fixture.project.clonePath).install?.commandLine))")
         coordinator.prepareSavedChangeRecheck()
         let coordinatorCaptureCompleted = await waitUntil {
             !coordinator.isPreparingSavedChangeRecheck && coordinator.isRecheckingSavedChanges
@@ -321,6 +321,7 @@ struct SavedNativeReviewLifecycleChecks {
         try require(coordinatorPerformerCalls == 0,
                     "legacy Coordinator recheck reached the edit performer")
         OnDemandEditInterruptedRunRecovery.remember(heldRecord)
+        print("PASS Coordinator saved-contract entry: valid recheck skipped intake; cancellation and legacy recheck planned afresh")
         }
 
         // The launch/quit recovery path is fail-closed for a review-held

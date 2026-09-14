@@ -2339,11 +2339,17 @@ final class OnDemandEditCoordinator: ObservableObject {
 
         if let workflow = harnessWorkflow {
             do {
-                _ = try workflow.validateExecutionBrief(
-                    workflow.executionBrief ?? try workflow.freezeExecutionBrief(
+                let executionBrief: HarnessExecutionBrief
+                if let currentBrief = workflow.executionBrief {
+                    executionBrief = currentBrief
+                } else {
+                    executionBrief = try workflow.freezeExecutionBrief(
                         forAppSlug: slug,
                         appName: activeAppName
-                    ),
+                    )
+                }
+                _ = try workflow.validateExecutionBrief(
+                    executionBrief,
                     forAppSlug: slug,
                     appName: activeAppName
                 )

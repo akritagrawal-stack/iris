@@ -47,6 +47,47 @@ func runCodexTextOnlyAskChecks() throws {
                 "text-only Ask did not disclose its screen-help limit")
     try require(presentation.settingsLinkLabel == "Connect screen help",
                 "text-only Ask did not offer the relevant next action")
+
+    let contextualAsk = try requireValue(
+        CodexTextOnlyAskContext.render(
+            selectedProjectName: "WhimprFlow",
+            taskSummary: "Paste into the chosen destination without sending it.",
+            taskKind: "feature"
+        ),
+        "selected project context was unexpectedly absent"
+    )
+    try require(contextualAsk.contains("Selected project: WhimprFlow"),
+                "Ask lost the reader-selected project")
+    try require(contextualAsk.contains("Current task summary: Paste into the chosen destination without sending it."),
+                "Ask lost the bounded task summary")
+    try require(contextualAsk.contains("not screen, file, terminal, or machine access"),
+                "Ask context did not state its capability boundary")
+    try require(contextualAsk.contains("permission to edit") && contextualAsk.contains("claim the project is on screen"),
+                "Ask context could be mistaken for editing or screen access")
+    let redactedContext = try requireValue(CodexTextOnlyAskContext.render(
+        selectedProjectName: "PlantGPT",
+        taskSummary: "Compare /Users/example/project and [POINT:12,28:save] before deciding.",
+        taskKind: "bug fix"
+    ), "path-bearing session context was unexpectedly absent")
+    try require(!redactedContext.contains("/Users/") && !redactedContext.contains("[POINT:")
+                && redactedContext.contains("[redacted path]")
+                && redactedContext.contains("[redacted coordinate]"),
+                "Ask context admitted a path or coordinate")
+
+    let prompt = CompanionManager.codexTextOnlyQuestionPrompt(sessionContext: contextualAsk)
+    try require(prompt.contains(contextualAsk),
+                "the Codex Ask prompt did not carry approved session context")
+    try require(prompt.contains("no screenshot") && prompt.contains("no access to the user's files")
+                && prompt.contains("no terminal"),
+                "approved session context weakened the text-only capability boundary")
+    try require(CodexTextOnlyAskContext.render(
+        selectedProjectName: nil, taskSummary: nil, taskKind: nil
+    ) == nil, "empty session state created invented Ask context")
+}
+
+private func requireValue<T>(_ value: T?, _ message: String) throws -> T {
+    guard let value else { throw CheckFailure(message: message) }
+    return value
 }
 
 private struct CheckFailure: Error, LocalizedError {

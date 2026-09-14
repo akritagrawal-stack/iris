@@ -2937,7 +2937,7 @@ final class CompanionManager: ObservableObject {
     /// read-only CLI route used for app edits. It is not a substitute for the
     /// screen-help transport: this explicit contract keeps it from claiming to
     /// see a window, inspect local folders, run commands, or click anything.
-    private static let codexTextOnlyQuestionPrompt = """
+    private static let codexTextOnlyQuestionPromptBase = """
     You are Iris answering a typed general question. You have no screenshot,
     no access to the user's files, no terminal, and no ability to inspect the
     current app or screen. Do not claim otherwise and do not ask the user to
@@ -2945,6 +2945,17 @@ final class CompanionManager: ObservableObject {
     help is required for Iris to inspect them. Answer any general explanation
     you can provide in plain language, briefly and directly.
     """
+
+    /// General Ask may use a small description of work the reader has already
+    /// selected inside Iris. That makes questions such as "what should I check
+    /// next?" useful without silently making Ask an app-edit route or claiming
+    /// that Codex can inspect the selected project's files or current window.
+    static func codexTextOnlyQuestionPrompt(sessionContext: String?) -> String {
+        guard let sessionContext, !sessionContext.isEmpty else {
+            return codexTextOnlyQuestionPromptBase
+        }
+        return codexTextOnlyQuestionPromptBase + "\n\n" + sessionContext
+    }
 
     /// The Codex-only fallback intentionally has no screenshot, client tools,
     /// or local machine context. It lets an account that is already connected
@@ -2960,6 +2971,17 @@ final class CompanionManager: ObservableObject {
             guard self.isCurrentChatResponse(responseIdentifier) else { return }
             self.assistantState = .thinking
             do {
+                let taskKind: String?
+                switch self.onDemandEditCoordinator.classifiedKind {
+                case .bugFix: taskKind = "bug fix"
+                case .feature: taskKind = "feature"
+                case nil: taskKind = nil
+                }
+                let sessionContext = CodexTextOnlyAskContext.render(
+                    selectedProjectName: self.onDemandEditCoordinator.activeAppName,
+                    taskSummary: self.onDemandEditCoordinator.activeRequestText,
+                    taskKind: taskKind
+                )
                 let history = self.conversationHistory.flatMap { entry in
                     [
                         MaintainChatTurn(role: "user", text: entry.userMessage),
@@ -2973,7 +2995,7 @@ final class CompanionManager: ObservableObject {
                     runPhase: .intake
                 )
                 let response = try await provider.respond(
-                    systemPrompt: Self.codexTextOnlyQuestionPrompt,
+                    systemPrompt: Self.codexTextOnlyQuestionPrompt(sessionContext: sessionContext),
                     conversation: history + [MaintainChatTurn(role: "user", text: messageText)],
                     maximumOutputTokens: 900
                 ).trimmingCharacters(in: .whitespacesAndNewlines)

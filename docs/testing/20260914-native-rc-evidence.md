@@ -217,3 +217,10 @@ The overlay does not render the subsequent source-inspection state, so the
 inspection result and isolated-copy choice still need to be observed through
 the guide panel before commands can be run. No command was started and the
 original `/Users/akrit/kneecap` tree remains unchanged.
+### 2026-09-14 native RC follow-up: isolated source setup and install admission
+
+- RC: `/Users/Shared/Iris-RC-20260914/Iris Test.app`; latest executable hash `286e03e3164597a3f5e5d3f1d0eff691189f7800240fb8bb644165973cdfe13d`.
+- Native UI path: opened the Kneecap guide in the signed RC, used the visible `Choose source folder` recovery action, selected `/Users/Shared/Iris-RC-20260914/Kneecap-validated-fc48ba48` through the macOS folder picker, and observed `Inspecting the selected source folder...` followed by `Preparing an isolated copy...`.
+- Preparation succeeded after the owned workspace root fix. A new ready record was written at `/Users/akrit/Library/Application Support/Iris Test/GuideSourceWorkspaces/records/106CBA35-A170-431E-B9E8-9745549C43FB.json`; its staged path is `/Users/akrit/Library/Application Support/Iris Test/GuideSourceWorkspaces/kneecap-106CBA35-A170-431E-B9E8-9745549C43FB`, reviewed commit `fc48ba487a1e0d0cd10b30d6600acd2895ffdbed`, and expected origin `https://github.com/Blueturboguy07/kneecap`.
+- The original checkout remained separate and unchanged at the known dirty-state boundary (`bun.lock` modified plus existing `.DS_Store` files). No source folder was moved or deleted.
+- Reopened guide resumed at step 6 with the validated binding, then the native `Let Iris run it` action changed the overlay to `Installing kneecap 6/15` with `Show terminal` and `Stop`, proving the command was admitted to the isolated workspace. The run then exited the guide surface before terminal transcript capture; command success and downstream device/install completion are still unverified.

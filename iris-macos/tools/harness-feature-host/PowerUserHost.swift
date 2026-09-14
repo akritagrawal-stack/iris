@@ -159,7 +159,7 @@ import AppKit
             maximumDurationNanoseconds: 1_200_000_000_000, webSearchEnabled: false)
         workflow.modelSession.ledgerDidChange = { writeUsage($0) }
         defer { writeUsage(workflow.modelSession.ledger.snapshot) }
-        print("PLANNING: Astra Medium; implementation Astra Low; 12 calls maximum")
+        print("PLANNING: Luna Max; implementation GPT-5.5 bounded edit; 12 calls maximum")
         let summary = FeatureEditRepoMap.summarize(repoRootPath: work.path, tokenBudget: 2200)
         let brief = try await workflow.plan(request: request, repositorySummary: summary)
         try JSONEncoder().encode(brief).write(to: root.appendingPathComponent("artifacts/plan.json"))

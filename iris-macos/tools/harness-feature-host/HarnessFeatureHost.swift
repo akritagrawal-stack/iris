@@ -197,7 +197,7 @@ struct HarnessFeatureHost {
             acceptanceCriteria: [.init(id: "queue", statement: "Jobs wait"), .init(id: "cancel", statement: "Cancel stops work")])
         let briefJSON = String(decoding: try JSONEncoder().encode(brief), as: UTF8.self)
         var reviews = 0
-        let session = try HarnessModelSession(implementationArm: .astraLow,
+        let session = try HarnessModelSession(implementationArm: .lunaMax,
             settings: .init(maxCalls: 10, maxInputBytes: 1_000_000), maximumDurationNanoseconds: 10_000_000_000) { request in
                 if request.phase == .intake { return HarnessModelReply(text: briefJSON) }
                 reviews += 1
@@ -222,7 +222,7 @@ struct HarnessFeatureHost {
         guard provider.behaviorAssessment?.permitsAutomaticDelivery == true else { throw HostError.invalidFixture }
         provider.setHarnessPhase(.repair)
         guard provider.behaviorAssessment == nil else { throw HostError.invalidFixture }
-        let malformedSession = try HarnessModelSession(implementationArm: .astraLow,
+        let malformedSession = try HarnessModelSession(implementationArm: .lunaMax,
             settings: .init(maxCalls: 10, maxInputBytes: 1_000_000), maximumDurationNanoseconds: 10_000_000_000) { request in
                 HarnessModelReply(text: request.phase == .intake ? briefJSON
                     : "COVERED: queue | absent.test.js | missing\nISSUE: A cancellation assertion is swallowed\nVERDICT: DISQUALIFYING")
@@ -296,7 +296,7 @@ struct HarnessFeatureHost {
         let parsed = MaintainFileEditApplier.parseDetailed(fromModelReply: patch)
         guard parsed.requests.count == 1, parsed.rejections.isEmpty else { throw HostError.invalidFixture }
         var requests: [HarnessModelRequest] = []
-        let session = try HarnessModelSession(implementationArm: .astraLow,
+        let session = try HarnessModelSession(implementationArm: .lunaMax,
             settings: .init(maxCalls: 10, maxInputBytes: 1_000_000), maximumDurationNanoseconds: 10_000_000_000) { request in
                 requests.append(request)
                 return HarnessModelReply(text: request.phase == .intake ? briefJSON : patch)

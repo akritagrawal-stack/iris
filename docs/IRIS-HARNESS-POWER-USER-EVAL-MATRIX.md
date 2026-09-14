@@ -53,3 +53,31 @@ Do not aggregate an unknown field into zero. Report median and range for small
 samples, and do not claim a percentile from a single run. The matrix is an
 evaluation harness, not an authorization to broaden app targeting, run guide
 commands, publish changes, or replace an installed app.
+
+## Deterministic intake and freeze fixture
+
+`HarnessPowerUserEvaluationMatrixTests.swift` adds an eight-case package-only
+fixture for the host-owned intake boundary. Each case uses a local planner
+reply and checks the profile, question gate, revision/freeze behavior, and
+provider-call count. It does not contact a model, run an editor, open an app,
+or use computer control.
+
+| Case | Nontechnical request shape | Expected host behavior |
+| --- | --- | --- |
+| D-01 | Clear local Save-label change | `small` + `localControl`; no interview; freeze succeeds after one stub planner call. |
+| D-02 | “Whisper Flow ... paste into the right tab” | `complex` + `crossSurfaceTransfer`; reserve one `destination` choice; freeze waits for the local answer. |
+| D-03 | Explicit Gmail/Docs multi-app workflow | `scoped` + `crossSurfaceTransfer`; retain named destinations without an extra destination question. |
+| D-04 | Requested behavior changes during refinement | Keep the old contract active while scope reconciliation is pending; freeze only after explicit approval. |
+| D-05 | Message send with an external side effect | `highRisk`; require the fixture’s explicit confirmation choice before freeze. |
+| D-06 | Saved candidate after a request/revision change | Reject the wrong candidate digest and invalidate the old frozen snapshot. |
+| D-07 | Request without a bound editable app | `blocked`; make zero provider attempts. |
+| D-08 | Offline mode with missing persistence recipe | `complex`; ask the data-boundary choice and freeze only after it is answered. |
+
+Package verification on 2026-09-13: the matrix passed all 8/8 cases, and the
+complete `IrisHarness` suite passed 135/135 tests in 6 suites. The run used
+only the local fixture transport.
+
+The fixture’s remaining gap is intentional: a deterministic transport cannot
+establish live provider behavior, provider usage/cost, actual Iris UI or
+computer-use interaction, installed-app behavior, or device acceptance. Those
+must remain separate native/live evidence classes.

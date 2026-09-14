@@ -279,3 +279,8 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   explicit environment gate: no TCC reset or permission claim is made, and
   fresh native spatial acceptance must resume after those permissions are
   restored through the normal macOS flow.
+- Post-integration focused rerun: mobile hub `19/19` and source-workspace
+  identity `5/5` passed. A harness-host invocation without its required scratch
+  environment failed fast; rerunning it with an explicit fresh scratch root
+  passed all reported checks, including usage attribution, review reserve,
+  cancellation, command freshness, and accepted-candidate identity checks.

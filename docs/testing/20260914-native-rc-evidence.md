@@ -1,3 +1,7 @@
+### 2026-09-14 native legacy autopilot gate
+
+Computer use on the updated RC reached Kneecap step 5 and tapped “Let Iris run it.” Iris now surfaced the actionable gate “Choose and prepare the reviewed source workspace before Iris runs this older guide.” The prior generic marketplace-disabled response is gone. No command ran and no user folder changed because no validated binding had been selected.
+
 ### 2026-09-14 legacy guide autopilot implementation
 
 The updated RC now permits the isolated Test bundle to run the legacy Kneecap guide only when a matching validated workspace binding exists. The runner rechecks the binding before each legacy command and maps `~/kneecap` references to that staged root. The source compiled and signed successfully; the next native gate is exercising this path after selecting the staged binding.

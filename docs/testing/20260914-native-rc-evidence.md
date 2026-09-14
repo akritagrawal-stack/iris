@@ -84,3 +84,14 @@ pinned source required isolation, and detached staging used the exact
 left unchanged. The live guide remains a proposal and has no served device
 handoff, so this proves source selection and staging only, not iPhone
 installation.
+
+## Signed RC refresh after source-root fix
+
+The named RC was rebuilt from the integrated worktree after `ae44885` with
+`xcodebuild` (`BUILD SUCCEEDED`) and the stable `Iris Local Code Signing`
+identity. Strict verification passed. The current executable SHA-256 is
+`a7f1b364a65f3ee86cfbda235e69f95c8a8c3864f1202e25d9cf10849caa85d8` and is
+also recorded in `/Users/Shared/Iris-RC-20260914/ARTIFACT_SHA256.txt`. Native
+computer use relaunched the refreshed RC, opened Settings, and showed the
+expected active state, catalog, saved versions, and cleanup preview controls.
+The previous RC was retained beside it as a rollback copy.

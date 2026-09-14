@@ -719,8 +719,19 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                 ownedProjectsRoot: URL(fileURLWithPath: binding.stagedPath).deletingLastPathComponent()
             )
             let staged = try await inspectIdentity(stagedRequest)
-            guard staged == binding.staged,
+            // A staged worktree can acquire ignored/generated files between
+            // launches (for example package-manager caches).  Those files do
+            // not change the reviewed Git revision and must not make a valid
+            // binding unusable.  Keep the security boundary on canonical
+            // location, origin, revision, common Git directory, and a clean
+            // tracked checkout; refresh the non-authoritative fingerprint in
+            // the returned binding instead of requiring byte-for-byte
+            // identity with the previous probe.
+            guard staged.canonicalPath == binding.staged.canonicalPath,
+                  staged.origin == binding.staged.origin,
+                  staged.commonGitDirectory == binding.commonGitDirectory,
                   staged.head == binding.expectedCommit,
+                  staged.expectedCommitIsPresent,
                   !staged.isDirty else {
                 throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed("staged workspace identity changed")
             }

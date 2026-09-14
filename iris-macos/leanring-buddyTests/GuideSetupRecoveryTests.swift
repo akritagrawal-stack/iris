@@ -814,6 +814,45 @@ struct GuideSourceWorkspaceServiceTests {
         #expect(reason == "linked worktree identity changed")
     }
 
+    @Test func revalidationRefreshesIgnoredFileFingerprintForAStableCleanWorktree() async throws {
+        let fixture = try Self.fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: fixture.commit,
+            origin: "https://github.com/example/project",
+            commonGitDirectory: fixture.commonGitDirectory.path,
+            linkedGitDirectory: fixture.linkedGitDirectory.path
+        )
+        let service = Self.service(fixture: fixture, executor: executor)
+        let staleStaged = GuideSourceWorkspaceIdentity(
+            canonicalPath: fixture.binding.staged.canonicalPath,
+            origin: fixture.binding.staged.origin,
+            head: fixture.binding.staged.head,
+            expectedCommitIsPresent: true,
+            porcelain: "",
+            commonGitDirectory: fixture.binding.staged.commonGitDirectory,
+            workingTreeFingerprint: "stale-ignored-file-fingerprint"
+        )
+        let binding = GuideSourceWorkspaceBinding(
+            runID: fixture.binding.runID, guideID: fixture.binding.guideID,
+            guideRevision: fixture.binding.guideRevision, projectID: fixture.binding.projectID,
+            original: fixture.binding.original, staged: staleStaged,
+            originalPath: fixture.binding.originalPath, stagedPath: fixture.binding.stagedPath,
+            expectedOrigin: fixture.binding.expectedOrigin, expectedCommit: fixture.binding.expectedCommit,
+            ownershipMarker: fixture.binding.ownershipMarker, commonGitDirectory: fixture.binding.commonGitDirectory,
+            linkedWorktreeGitDirectory: fixture.binding.linkedWorktreeGitDirectory, isIsolated: true
+        )
+        try fixture.store.save(Self.readyRecord(for: binding))
+
+        let result = await service.revalidate(binding)
+        guard case .success(let refreshed) = result else {
+            Issue.record("a clean reviewed worktree should survive ignored-file fingerprint drift: \(result)")
+            return
+        }
+        #expect(refreshed.staged.workingTreeFingerprint != "stale-ignored-file-fingerprint")
+        #expect(refreshed.staged.head == fixture.commit)
+    }
+
     @Test func cancellationStopsTheActiveProbeBeforeTheNextGitCommand() async throws {
         let fixture = try Self.fixture()
         defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }

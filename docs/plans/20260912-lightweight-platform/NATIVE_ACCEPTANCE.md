@@ -391,3 +391,7 @@ routing, review-reserve, freshness, candidate-record, cancellation, and repair
 checkpoint checks passing. This remains headless evidence; it does not convert
 the pending native permission, live screen-positioning, or physical-iPhone
 requirements into accepted results.
+
+The named RC was rebuilt from the current integrated HEAD after this check. Its
+debug dylib SHA-256 is now
+`ca04fa6ad47dcfdb29c3c865583a6c37ef4f6afe5fad21a20bf7e88c858b87ea`.

@@ -175,3 +175,13 @@ once. The regression now asserts the stopped ledger state and terminal reason;
 through the accepted-candidate and repair-window checks; no duplicate-settlement
 failure remains. This records bounded terminal accounting, not provider-side late
 usage from a real network call.
+
+## Current native history observation, September 14
+
+The live Iris Test panel opened History successfully. It exposes a bounded
+Saved conversations area, a separate New chat control, and a visible `Clear
+saved chat history` action. The current fixture contains many repeated legacy
+"what is in this picture" rows plus two NitroAI guidance rows, making the
+storage/retention concern observable in the UI. I did not invoke the destructive
+clear action. This verifies discoverability and separation of new chat/history;
+it does not prove the full versioned app-bundle lifecycle or cleanup deletion.

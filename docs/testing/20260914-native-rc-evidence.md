@@ -57,6 +57,12 @@ use regular Iris. The public guide endpoint is live and identifies commit
 checkout is detached at that commit but has a modified `bun.lock` and two
 untracked `.DS_Store` files. No reset, stash, deletion, or install was done.
 
+The live composer preserved a realistic complex transfer draft while switching
+modes: `Move my notes into a folder and let me import them back without losing
+anything` was staged in NitroAI Edit, switching to Ask cleared the
+app-specific field, and switching back to Edit restored the exact draft. No
+provider request was sent during this check.
+
 Spatial pointing, a delivered complex transfer through the live composer, and
 physical iPhone install/open/restart still require their respective live
 acceptance runs. Offline suites remain separate evidence.

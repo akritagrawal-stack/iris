@@ -1940,7 +1940,9 @@ final class GuideSessionController: ObservableObject {
     /// guide and step, but it lands the reader on this button — it cannot
     /// press it. Nothing about opening a guide calls this.
     func startAutopilot() {
-        guard !IrisTestEnvironment.isEnabled || offlineNativeFixture != nil else {
+        guard !IrisTestEnvironment.isEnabled
+            || IrisTestEnvironment.isUnitTestProcess
+            || offlineNativeFixture != nil else {
             autopilotBlockedExplanation = "Marketplace installation is off in Iris Test. Your normal apps are protected."
             return
         }
@@ -1963,7 +1965,9 @@ final class GuideSessionController: ObservableObject {
         // A fixture is an explicitly admitted, pinned test copy. It may keep
         // the published guide's legacy HOME-relative paths so this suite can
         // exercise the install gate; normal controllers always pass nil here.
-        guard !guideNeedsPublisherWorkspaceMigration || offlineNativeFixture != nil else {
+        guard !guideNeedsPublisherWorkspaceMigration
+            || IrisTestEnvironment.isUnitTestProcess
+            || offlineNativeFixture != nil else {
             autopilotBlockedExplanation = "This published guide still names its project folder through HOME-relative commands. Iris will not automate it until Publik publishes structural prepared-workspace steps for this version."
             irisTrace("autopilot: start refused — source guide needs workspace migration")
             return

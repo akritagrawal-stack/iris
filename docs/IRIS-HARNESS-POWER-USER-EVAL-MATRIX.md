@@ -8,6 +8,10 @@ provider, or a physical device accepted the behavior.
 
 ## Operating contract
 
+- User-journey rows must use a plausible task a person would actually bring to
+  Iris, with a concrete app, state, or desired outcome. Toy prompts such as
+  arithmetic questions only exercise text entry and are excluded from
+  acceptance evidence.
 - Fixture rows use `HarnessModelSession` with local replies. They make no
   provider calls, do not read credentials, and do not start an edit.
 - An ordinary option answer has no refinement call. A free-text answer may use

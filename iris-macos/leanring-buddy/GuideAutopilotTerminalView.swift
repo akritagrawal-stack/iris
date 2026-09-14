@@ -43,6 +43,18 @@ struct TakeoverControlFramesKey: PreferenceKey {
     }
 }
 
+/// The yellow traffic light has a window-level action, so its frame is kept
+/// separate from the generic list of SwiftUI controls.  The takeover panel
+/// intercepts mouse-downs to support dragging a borderless window; naming this
+/// one control lets it complete a real click itself instead of depending on a
+/// SwiftUI button that AppKit cannot hit-test directly.
+struct TakeoverMinimizeControlFrameKey: PreferenceKey {
+    static var defaultValue: CGRect? { nil }
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
+    }
+}
+
 extension View {
     /// Marks this view as an interactive control whose frame the takeover panel
     /// must exclude from its drag hit-testing, so a click on it reaches it
@@ -55,6 +67,20 @@ extension View {
                 Color.clear.preference(
                     key: TakeoverControlFramesKey.self,
                     value: [geometryInsideTheControl.frame(in: .global)]
+                )
+            }
+        )
+    }
+
+    /// Marks the yellow traffic light's frame for the owning AppKit panel.
+    /// This remains a preference rather than an AppKit overlay, so the
+    /// annotation itself cannot swallow the click it is describing.
+    func reportsFrameAsATakeoverMinimizeControl() -> some View {
+        background(
+            GeometryReader { geometryInsideTheControl in
+                Color.clear.preference(
+                    key: TakeoverMinimizeControlFrameKey.self,
+                    value: geometryInsideTheControl.frame(in: .global)
                 )
             }
         )
@@ -263,6 +289,7 @@ struct GuideAutopilotTerminalView<Runner: AutopilotTerminalPresenting>: View {
             .accessibilityLabel("Minimize terminal")
             .accessibilityHint("Hides the terminal while the task keeps running.")
             .reportsFrameAsATakeoverControl()
+            .reportsFrameAsATakeoverMinimizeControl()
         } else {
             Circle().fill(GuideAutopilotTerminalTheme.trafficYellow).frame(width: 11, height: 11)
         }

@@ -293,6 +293,10 @@ final class GuideAutopilotTakeoverController {
         terminal.onReaderResizedTheCard = { [weak self] sizeTheReaderChose in
             MainActor.assumeIsolated { self?.readerChoseTheTerminalSize = sizeTheReaderChose }
         }
+        let minimizeTakeover: () -> Void = { [weak self] in
+            self?.dismiss(afterHold: false, thenRun: afterTheReaderMinimizesIt)
+        }
+        terminal.onMinimize = minimizeTakeover
         let takeoverView = GuideAutopilotTakeoverView(
             model: takeoverModel,
             runner: runner,
@@ -310,14 +314,15 @@ final class GuideAutopilotTakeoverController {
             // times. The caller's own closure runs after the panels are gone,
             // so the surface that takes the run back over cannot draw a second
             // terminal over the one still collapsing.
-            onMinimize: { [weak self] in
-                self?.dismiss(afterHold: false, thenRun: afterTheReaderMinimizesIt)
-            },
+            onMinimize: minimizeTakeover,
             // Let a press on a button reach the button instead of dragging the
             // window: the SwiftUI controls report their frames and the panel
             // excludes them from its drag loop.
             onControlFramesChanged: { [weak terminal] controlFrames in
                 MainActor.assumeIsolated { terminal?.interactiveControlFrames = controlFrames }
+            },
+            onMinimizeControlFrameChanged: { [weak terminal] frame in
+                MainActor.assumeIsolated { terminal?.minimizeControlFrame = frame }
             }
         )
         let hostingView = NSHostingView(rootView: takeoverView)
@@ -967,6 +972,22 @@ final class GuideAutopilotTakeoverTerminalPanel: NSPanel {
     /// AppKit hit-testing, so the controls name their own frames instead.
     var interactiveControlFrames: [CGRect] = []
 
+    /// The yellow traffic light's content-space frame. It has a semantic
+    /// action owned by this panel's controller, so it cannot be inferred safely
+    /// from the generic control-frame array.
+    var minimizeControlFrame: CGRect?
+
+    /// Set between the yellow button's mouse-down and mouse-up. The panel owns
+    /// the gesture while it decides click versus drag; for this control the
+    /// existing SwiftUI Button cannot receive the held event reliably, so the
+    /// owning closure is fired on a completed click here.
+    private var isTrackingMinimizeClick = false
+
+    /// The action that folds this panel away while leaving its runner alive.
+    /// The controller owns the implementation; the panel only completes the
+    /// click when AppKit has delivered the release.
+    var onMinimize: (() -> Void)?
+
     /// Whether a press lands on one of the terminal's interactive controls, so
     /// it must be delivered straight to SwiftUI rather than held for this
     /// window's drag/resize loop. Pure + static so the exclusion is testable
@@ -1133,6 +1154,25 @@ final class GuideAutopilotTakeoverTerminalPanel: NSPanel {
     }
 
     override func sendEvent(_ event: NSEvent) {
+        // The yellow button is a SwiftUI control rendered inside an
+        // NSHostingView. A synthetic or hardware-shaped event can reach this
+        // panel while SwiftUI's own tracking loop is not the view AppKit
+        // resolves, so finish the semantic click at the panel boundary. Keep
+        // the action on mouse-up, and require the release to remain inside the
+        // hit target, matching a normal button click.
+        if event.type == .leftMouseUp, isTrackingMinimizeClick {
+            isTrackingMinimizeClick = false
+            let releaseInWindow = Self.grabOffsetInWindow(of: event, in: self)
+            let releaseInContent = CGPoint(
+                x: releaseInWindow.x, y: frame.height - releaseInWindow.y
+            )
+            if minimizeControlFrame?.contains(releaseInContent) == true {
+                irisTrace("takeover: yellow minimize clicked")
+                onMinimize?()
+            }
+            return
+        }
+
         guard event.type == .leftMouseDown,
               !isReplayingAClickItHeldOnTo,
               // A control-click is the context menu, not a drag. Leave it be.
@@ -1148,6 +1188,15 @@ final class GuideAutopilotTakeoverTerminalPanel: NSPanel {
             return
         }
 
+        let pressInWindow = Self.grabOffsetInWindow(of: event, in: self)
+        if let minimizeControlFrame,
+           Self.pressLandsOnAControl(
+               pressInWindow, windowHeight: frame.height, controls: [minimizeControlFrame]
+           ) {
+            isTrackingMinimizeClick = true
+            return
+        }
+
         // A press on one of the terminal's own buttons is delivered STRAIGHT
         // THROUGH — never held for this window's drag/resize loop. This is the
         // whole of "Hit try again, the button doesn't work though ... it is just
@@ -1159,7 +1208,7 @@ final class GuideAutopilotTakeoverTerminalPanel: NSPanel {
         // See `interactiveControlFrames` for why a button cannot be found by
         // hit-testing and has to name its own frame.
         if Self.pressLandsOnAControl(
-            Self.grabOffsetInWindow(of: event, in: self),
+            pressInWindow,
             windowHeight: frame.height,
             controls: interactiveControlFrames
         ) {
@@ -1353,6 +1402,10 @@ private struct GuideAutopilotTakeoverView<Runner: AutopilotTerminalPresenting>: 
     /// the panel can deliver a press on one to the control instead of eating it
     /// as a window drag. See `GuideAutopilotTakeoverTerminalPanel.interactiveControlFrames`.
     let onControlFramesChanged: ([CGRect]) -> Void
+    /// The semantic frame of the yellow minimize control. Kept separate from
+    /// the generic control list so the panel can invoke the existing minimize
+    /// action without guessing which SwiftUI frame is which.
+    let onMinimizeControlFrameChanged: (CGRect?) -> Void
 
     var body: some View {
         ZStack {
@@ -1434,6 +1487,9 @@ private struct GuideAutopilotTakeoverView<Runner: AutopilotTerminalPresenting>: 
         // press on a button reaches the button rather than moving the window.
         .onPreferenceChange(TakeoverControlFramesKey.self) { controlFrames in
             onControlFramesChanged(controlFrames)
+        }
+        .onPreferenceChange(TakeoverMinimizeControlFrameKey.self) { frame in
+            onMinimizeControlFrameChanged(frame)
         }
     }
 }

@@ -420,3 +420,7 @@ The NitroAI production build was also run after the transfer coverage change:
 with only the existing chunk-size advisory. The checkout remained clean. This
 confirms the transfer implementation packages successfully, while the Iris
 delivery and native RC acceptance gates remain separate.
+
+The complete NitroAI Vitest suite was then run with `npm test -- --run`:
+**137/137 tests across 13 files passed**. This broadens regression evidence
+without changing the Iris acceptance boundary.

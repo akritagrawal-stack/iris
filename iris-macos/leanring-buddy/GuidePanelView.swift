@@ -890,9 +890,13 @@ struct GuidePanelView: View {
         expectedCurrentStepId: String?
     ) -> some View {
         Button(action: {
-            guideSessionController.performPrimaryAction(expectedCurrentStepId: expectedCurrentStepId)
+            if guideSessionController.shouldShowSourceWorkspaceRecovery {
+                chooseSourceFolder()
+            } else {
+                guideSessionController.performPrimaryAction(expectedCurrentStepId: expectedCurrentStepId)
+            }
         }) {
-            Text(primaryAction.buttonLabel)
+            Text(guideSessionController.shouldShowSourceWorkspaceRecovery ? "Choose source folder" : primaryAction.buttonLabel)
         }
         .irisPrimaryPill()
         .disabled(!primaryAction.isPressable)

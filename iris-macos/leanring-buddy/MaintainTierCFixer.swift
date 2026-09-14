@@ -481,6 +481,23 @@ final class MaintainTierCFixer {
     /// stalls, which is the real "spinning" signal.
     static let noProgressStepThreshold = 5
 
+    /// Complex Test feature runs must investigate enough to localize a change,
+    /// but they must not spend an unbounded prefix rereading repository setup
+    /// and fixture files. The existing no-progress detector deliberately waits
+    /// until the first edit, so this separate bound closes the pre-edit gap.
+    static let preEditInvestigationStepThreshold = 3
+
+    /// The one steer emitted after the bounded pre-edit investigation window.
+    /// It keeps the provider's choice honest: emit a source edit, or explain
+    /// why the request is blocked. No provider success is inferred here.
+    static let preEditConvergenceNudgeMessage = """
+    Iris has supplied the bounded repository and fixture evidence available for
+    this run. Make the smallest source edit that advances the requested feature
+    now using a ```write or ```edit block, or reply BLOCKED: <why> if the source
+    does not contain the requested behavior. Do not spend another step rereading
+    unchanged setup or repository files.
+    """
+
     /// What the loop says to a stalled model BEFORE giving up. A real dogfood
     /// run (Aug 22 2026) died at step 21 because the agent spent its last five
     /// steps READING — checking its own finished work — and the detector read
@@ -1288,6 +1305,12 @@ final class MaintainTierCFixer {
             if case .onDemand(_, .bugFix) = task { return true }
             return false
         }()
+        let shouldBoundPreEditInvestigation: Bool = {
+            if case .onDemand(_, .feature) = task { return true }
+            return false
+        }()
+        var preEditInvestigationStepCount = 0
+        var hasNudgedBeforeFirstEdit = false
 
         func appendEarlyBuildCheckpointObservation(
             _ observation: String,
@@ -1808,9 +1831,37 @@ final class MaintainTierCFixer {
                 if let changedPaths, !changedPaths.isEmpty {
                     commandsSinceLastSourceChange.removeAll()
                     theModelHasEditedTheTreeAtLeastOnce = true
+                    preEditInvestigationStepCount = 0
                     consecutiveNoProgressStepCount = 0
                     modelOwnedPaths.formUnion(changedPaths)
                     progressHandler?(.editedFiles(paths: changedPaths, stepNumber: step))
+                }
+                if shouldBoundPreEditInvestigation,
+                   changedPaths?.isEmpty != false,
+                   !theModelHasEditedTheTreeAtLeastOnce {
+                    preEditInvestigationStepCount += 1
+                    if preEditInvestigationStepCount >= Self.preEditInvestigationStepThreshold {
+                        if hasNudgedBeforeFirstEdit {
+                            if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
+                            _ = try? await runner.run(
+                                "git checkout -- . && git clean -fd --quiet", deadline: 120
+                            )
+                            irisTrace("maintain: tier-c stopping before edit after bounded pre-edit investigation")
+                            return .couldNotFix(
+                                reason: "the provider did not produce a source edit after bounded investigation"
+                            )
+                        }
+                        hasNudgedBeforeFirstEdit = true
+                        preEditInvestigationStepCount = 0
+                        if let lastTurn = conversation.last, lastTurn.role == "user" {
+                            conversation[conversation.count - 1] = MaintainChatTurn(
+                                role: "user",
+                                text: lastTurn.text + "\n\n" + Self.preEditConvergenceNudgeMessage
+                            )
+                        }
+                        irisTrace("maintain: tier-c pre-edit convergence nudge after \(Self.preEditInvestigationStepThreshold) unchanged investigation steps")
+                        progressHandler?(.nudgedTowardConvergence(stepNumber: step))
+                    }
                 }
                 if changedPaths?.isEmpty != false,
                    theModelHasEditedTheTreeAtLeastOnce,

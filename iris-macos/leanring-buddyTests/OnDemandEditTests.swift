@@ -1846,6 +1846,104 @@ struct OnDemandEditEngineTests {
         }
     }
 
+    /// Reproduces the complex-feature failure before the first edit: the
+    /// provider keeps rereading setup and transfer fixtures until Iris gives a
+    /// bounded steer, then emits the source edit the request needs.
+    final class PreEditRereadingProvider: MaintainModelProviding, HarnessExecutionObserving {
+        let displayName = "pre-edit-rereader"
+        let identifier = "test-provider-pre-edit-rereader"
+        let isAvailable = true
+        private let respondsToNudge: Bool
+        private(set) var callCount = 0
+        private var emittedEdit = false
+        private let readOnlyCommands = [
+            "ls",
+            "cat README.md",
+            "find . -maxdepth 2 -type f -print",
+            "cat app.txt",
+            "cat health.txt",
+            "head app.txt",
+        ]
+
+        init(respondsToNudge: Bool) { self.respondsToNudge = respondsToNudge }
+
+        func respond(
+            systemPrompt: String, conversation: [MaintainChatTurn], maximumOutputTokens: Int
+        ) async throws -> String {
+            defer { callCount += 1 }
+            if respondsToNudge,
+               !emittedEdit,
+               conversation.contains(where: {
+                   $0.role == "user" && $0.text.contains(
+                       MaintainTierCFixer.preEditConvergenceNudgeMessage
+                   )
+               }) {
+                emittedEdit = true
+                return "Implementing the transfer surface now.\n```bash\nprintf 'TRANSFER READY\\n' > app.txt\n```"
+            }
+            if emittedEdit { return "The transfer surface is implemented.\nDONE" }
+            let command = readOnlyCommands[min(callCount, readOnlyCommands.count - 1)]
+            return "Checking the transfer setup.\n```bash\n\(command)\n```"
+        }
+
+        func observeEngineProgress(_ event: MaintainTierCProgressEvent) {}
+    }
+
+    /// A real harness provider must either converge after the bounded steer or
+    /// stop before verification. It must never spend an open-ended prefix on
+    /// distinct repository reads.
+    @Test func complexFeatureRereadsAreSteeredIntoAnEdit() async throws {
+        guard sandboxIsAvailable else { return }
+        let repo = try Self.makeBuggyRepo()
+        defer { Self.removeRepo(repo) }
+
+        let provider = PreEditRereadingProvider(respondsToNudge: true)
+        let fixer = MaintainTierCFixer(provider: provider)
+        var observedEvents: [MaintainTierCProgressEvent] = []
+        let result = await fixer.attemptOnDemandEdit(
+            clonePath: repo, appSlug: "nitroai", appStack: .nextjs,
+            changeId: "4444444444444444dddddddddddddddd",
+            request: "add NitroAI notes and folders transfer controls", kind: .feature,
+            progressHandler: { observedEvents.append($0) },
+            verificationCommandsOverride: Self.fastCommands()
+        )
+
+        guard case .appliedAndRebuilt = result else {
+            Issue.record("expected bounded pre-edit steer to reach verification, got \(result)")
+            return
+        }
+        #expect(provider.callCount == MaintainTierCFixer.preEditInvestigationStepThreshold + 1)
+        #expect(observedEvents.contains { event in
+            if case .nudgedTowardConvergence = event { return true }
+            return false
+        })
+        #expect(Self.fileContents(repo, "app.txt") == "TRANSFER READY")
+    }
+
+    @Test func complexFeatureRereadsStopHonestlyWhenSteerIsIgnored() async throws {
+        guard sandboxIsAvailable else { return }
+        let repo = try Self.makeBuggyRepo()
+        defer { Self.removeRepo(repo) }
+
+        let provider = PreEditRereadingProvider(respondsToNudge: false)
+        let fixer = MaintainTierCFixer(provider: provider)
+        let result = await fixer.attemptOnDemandEdit(
+            clonePath: repo, appSlug: "nitroai", appStack: .nextjs,
+            changeId: "5555555555555555eeeeeeeeeeeeeeee",
+            request: "add NitroAI notes and folders transfer controls", kind: .feature,
+            verificationCommandsOverride: Self.fastCommands()
+        )
+
+        guard case .couldNotComplete(let reason) = result else {
+            Issue.record("expected bounded pre-edit stop, got \(result)")
+            return
+        }
+        #expect(reason == "the provider did not produce a source edit after bounded investigation")
+        #expect(provider.callCount == MaintainTierCFixer.preEditInvestigationStepThreshold * 2)
+        #expect(Self.fileContents(repo, "app.txt") == "BROKEN")
+        #expect(FileManager.default.fileExists(atPath: repo + "/.git"))
+    }
+
     /// The Aug 22 dogfood failure, replayed and fixed: an agent that finished
     /// its edit and then only READ for five steps used to be killed and
     /// reverted ("couldn't converge"). Now the loop nudges it — finish or make

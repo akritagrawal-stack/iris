@@ -267,6 +267,30 @@ import Testing
         #expect(!configSummary.contains("dynamicFiles"))
     }
 
+    @Test func nativeReviewSummaryDoesNotHideAnExclusionPastTheManifestLimit() throws {
+        let positiveEntries = Array(repeating: "\"electron/**\"", count: 32).joined(separator: ", ")
+        let repoRootPath = try Self.makeFixtureRepo(files: [
+            "package.json": """
+            {
+              "main": "electron/main.mjs",
+              "scripts": { "dist:mac": "electron-builder --mac" },
+              "dependencies": { "electron": "43.1.1" },
+              "build": { "files": [(positiveEntries), "!electron/iris-test-preload.cjs"] }
+            }
+            """,
+            "electron/main.mjs": "export {}\n",
+            "electron/iris-test-preload.cjs": "module.exports = {}\n",
+        ])
+        defer { Self.removeFixtureRepo(repoRootPath) }
+
+        let summary = try #require(RepoRecipeElectronShippingEvidence.nativeReviewSummary(
+            repoRootPath: repoRootPath,
+            changedPaths: ["electron/iris-test-preload.cjs"]
+        ))
+        #expect(summary.contains("packaged inclusion as unproven"))
+        #expect(!summary.contains("allowlist covering electron/iris-test-preload.cjs"))
+    }
+
     @Test func incidentalElectronToolingDoesNotDisplaceARealTauriRecipe() throws {
         // Electron is present as a dependency, but there is no root Electron
         // entrypoint or packaging declaration. The Tauri config is therefore

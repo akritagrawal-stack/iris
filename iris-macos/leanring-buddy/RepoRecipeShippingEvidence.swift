@@ -284,7 +284,10 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
         return buildConfiguration.keys.contains(where: builderConfigurationKeys.contains)
     }
 
-    private static func manifestFilesPatterns(_ packageJSON: [String: Any]) -> [String] {
+    /// `nil` means the declared array cannot safely be used as affirmative
+    /// evidence. Do not compact or truncate malformed entries: doing so could
+    /// hide a later exclusion or unsupported rule behind an earlier prefix.
+    private static func manifestFilesPatterns(_ packageJSON: [String: Any]) -> [String]? {
         guard let buildConfiguration = packageJSON["build"] as? [String: Any] else { return [] }
         let values: [Any]
         if let array = buildConfiguration["files"] as? [Any] {
@@ -294,12 +297,15 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
         } else {
             return []
         }
-        return values.compactMap { value in
+        guard values.count <= maximumManifestFilePatternCount else { return nil }
+        var patterns: [String] = []
+        for value in values {
             guard let string = value as? String,
                   string.utf8.count <= 256,
                   !containsPromptUnsafeScalars(string) else { return nil }
-            return string
-        }.prefix(maximumManifestFilePatternCount).map { $0 }
+            patterns.append(string)
+        }
+        return patterns
     }
 
     /// Only an inline JSON `build.files` declaration, with no competing config
@@ -312,8 +318,8 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
         configurationPaths: [String]
     ) -> [String] {
         guard configurationPaths.isEmpty else { return [] }
-        let patterns = manifestFilesPatterns(packageJSON)
-        guard !patterns.isEmpty,
+        guard let patterns = manifestFilesPatterns(packageJSON),
+              !patterns.isEmpty,
               !patterns.contains(where: { $0.hasPrefix("!") }) else { return [] }
         return changedPaths.filter { path in
             patterns.contains { manifestPattern($0, covers: path) }

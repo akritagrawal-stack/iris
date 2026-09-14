@@ -202,4 +202,58 @@ struct IrisTestRunUsageTests {
         #expect((decoded["inputBytes"] as? NSNumber)?.uint64Value == 42)
         #expect(decoded["inputTokens"] is NSNull)
     }
+
+    @Test("snapshot keeps route, lifecycle evidence, and hard budget dimensions separate")
+    func snapshotKeepsRouteLifecycleAndBudgetDimensions() throws {
+        var ledger = HarnessRunLedger(
+            settings: try HarnessRunLedgerSettings(maxCalls: 2, maxInputBytes: 500),
+            startedAt: 0
+        )
+        let reservation = try ledger.reserve(task: .edit, inputBytes: 125, at: 1)
+        try ledger.settle(
+            reservation,
+            outcome: .succeeded,
+            usage: HarnessMeasuredUsage(
+                inputTokens: 20,
+                cachedInputTokens: 4,
+                outputTokens: 15,
+                reasoningOutputTokens: 3
+            ),
+            at: 2
+        )
+        let attribution = try HarnessRunOutcomeAttribution(
+            runID: "usage-attribution-test",
+            candidateID: "candidate-1",
+            requestedRoute: HarnessImplementationArm.astraLow.route,
+            providerConfirmedModel: "gpt-6-astra-2026-09-14",
+            elapsedNanoseconds: 2_000_000,
+            verification: .passed,
+            delivery: .passed,
+            relaunch: .passed,
+            undo: .passed,
+            uiAcceptance: .accepted
+        )
+
+        let document = IrisTestRunUsage.snapshotDocument(
+            runID: "usage-attribution-test",
+            startedAt: Date(timeIntervalSince1970: 0),
+            snapshot: ledger.snapshot,
+            calls: ledger.snapshot.settledCalls.map { IrisTestRunUsage.callDocument(for: $0) },
+            implementationArm: .astraLow,
+            outcomeAttribution: attribution
+        )
+        #expect(document["requestedModel"] as? String == "gpt-6-astra")
+        #expect(document["requestedEffort"] as? String == "low")
+        #expect(document["providerConfirmedModel"] as? String == "gpt-6-astra-2026-09-14")
+        #expect(document["uiAccepted"] as? Bool == true)
+        #expect(document["productOutcome"] as? String == "acceptedFullLifecycle")
+        #expect(document["maxCalls"] as? UInt64 == 2)
+        #expect(document["maxInputBytes"] as? UInt64 == 500)
+        #expect(document["remainingCalls"] as? UInt64 == 1)
+        #expect(document["remainingInputBytes"] as? UInt64 == 375)
+        #expect(document["inputTokens"] as? UInt64 == 20)
+        #expect(document["cachedInputTokens"] as? UInt64 == 4)
+        #expect(document["outputTokens"] as? UInt64 == 15)
+        #expect(document["reasoningOutputTokens"] as? UInt64 == 3)
+    }
 }

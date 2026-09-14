@@ -315,3 +315,10 @@ integrated RC. The `GuidePositionLiveTests` target completed its non-live contra
 check; the real model-backed position test stayed skipped because
 `IRIS_POSITION_LIVE=1` is not enabled. This preserves the distinction between
 local guidance logic and live screen/model acceptance.
+
+## Native RC observation, September 14
+
+Computer-use observation of the named RC confirmed the app launches and exposes
+its menu-bar/eye surface. The same launch reported Accessibility and Screen
+Recording as unavailable, and no live guide panel or target interaction could be
+verified. This is a native launch observation only, not spatial acceptance.

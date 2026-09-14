@@ -810,7 +810,8 @@ final class OnDemandEditCoordinator: ObservableObject {
     var machineCheckTheSymptom: ((
         _ complaint: String,
         _ before: OnDemandEditRuntimeEvidence?,
-        _ after: OnDemandEditRuntimeEvidence?
+        _ after: OnDemandEditRuntimeEvidence?,
+        _ codexAttemptObserver: CodexProcessAttemptObserver?
     ) async -> MachineSymptomRecheck?)?
 
     /// Backs the committed branch up to the reader's OWN fork — fork-only, never
@@ -1382,11 +1383,15 @@ final class OnDemandEditCoordinator: ObservableObject {
         return usage
     }
 
-    private func normalCodexAttemptObserver(
-        for usage: CodexRunUsageAccounting
+    /// One observer is shared by normal edit, repair, review, and the
+    /// post-delivery symptom check. It counts every physical process attempt;
+    /// the caller only decides whether its snapshot still owns the current flow.
+    static func normalCodexUsageObserver(
+        for usage: CodexRunUsageAccounting,
+        didChange: @escaping @MainActor () -> Void = {}
     ) -> CodexProcessAttemptObserver {
         CodexProcessAttemptObserver(
-            beforeAttempt: { [weak self, usage] context in
+            beforeAttempt: { context in
                 try await MainActor.run {
                     try usage.admit(
                         attemptID: context.attemptID,
@@ -1395,12 +1400,10 @@ final class OnDemandEditCoordinator: ObservableObject {
                         task: context.task,
                         submittedInputBytes: context.submittedInputBytes
                     )
-                    if self?.normalCodexUsage === usage {
-                        self?.normalCodexRunSnapshot = usage.snapshot
-                    }
+                    didChange()
                 }
             },
-            afterAttempt: { [weak self, usage] result in
+            afterAttempt: { result in
                 await MainActor.run {
                     let outcome: HarnessCallOutcome
                     switch result.outcome {
@@ -1425,24 +1428,39 @@ final class OnDemandEditCoordinator: ObservableObject {
                         outcome: outcome,
                         usage: measuredUsage
                     )
-                    if self?.normalCodexUsage === usage {
-                        self?.normalCodexRunSnapshot = usage.snapshot
-                    }
+                    didChange()
                 }
             }
         )
     }
 
+    private func normalCodexAttemptObserver(
+        for usage: CodexRunUsageAccounting
+    ) -> CodexProcessAttemptObserver {
+        Self.normalCodexUsageObserver(for: usage) { [weak self, usage] in
+            guard self?.normalCodexUsage === usage else { return }
+            self?.normalCodexRunSnapshot = usage.snapshot
+        }
+    }
+
     private func finishNormalCodexUsageIfCurrent(
-        _ usage: CodexRunUsageAccounting?, reason: HarnessRunStopReason
+        _ usage: CodexRunUsageAccounting?,
+        reason: HarnessRunStopReason,
+        terminalDetail: String? = nil
     ) {
         guard let usage else { return }
         let didFinish = usage.finish(reason: reason)
         guard normalCodexUsage === usage else { return }
         normalCodexRunSnapshot = usage.snapshot
         if didFinish, usage.snapshot.admittedCallCount > 0 {
-            runLog?.record(usage.summary)
+            runLog?.record(usage.summary + (terminalDetail.map { "; " + $0 } ?? ""))
         }
+    }
+
+    private func finishNormalCodexUsageAfterDelivery(_ detail: String) {
+        finishNormalCodexUsageIfCurrent(
+            normalCodexUsage, reason: .completed, terminalDetail: detail
+        )
     }
 
     private func recordNormalCodexUsageCheckpointIfCurrent() {
@@ -1460,9 +1478,12 @@ final class OnDemandEditCoordinator: ObservableObject {
     /// — so the prompt is told there is nothing to compare against and leans
     /// harder on CANNOT-TELL, which is the honest default here anyway.
     static let defaultMachineCheckTheSymptom: (
-        String, OnDemandEditRuntimeEvidence?, OnDemandEditRuntimeEvidence?
-    ) async -> MachineSymptomRecheck? = { complaint, before, after in
-        guard let provider = MaintainModelProviderResolver.firstAvailable() else { return nil }
+        String, OnDemandEditRuntimeEvidence?, OnDemandEditRuntimeEvidence?, CodexProcessAttemptObserver?
+    ) async -> MachineSymptomRecheck? = { complaint, before, after, codexAttemptObserver in
+        guard let provider = MaintainModelProviderResolver.firstAvailable(
+            codexAttemptObserver: codexAttemptObserver,
+            codexRunPhase: .recheck
+        ) else { return nil }
         let material = OnDemandEditSymptomRechecker.reviewMaterial(
             complaint: complaint,
             logTextBefore: before?.runtimeLogText,
@@ -2505,6 +2526,9 @@ final class OnDemandEditCoordinator: ObservableObject {
                 workflow,
                 reason: Self.harnessStopReason(for: result, readerStopped: readerAskedToStopTheRun)
             )
+        } else if case .appliedAndRebuilt = result {
+            // Keep the ordinary run open through the physical post-delivery
+            // symptom check. Its observer settles the same reservations.
         } else {
             finishNormalCodexUsageIfCurrent(
                 normalUsage,
@@ -3309,6 +3333,9 @@ final class OnDemandEditCoordinator: ObservableObject {
             statusLine = message
             editRunner.note(message)
             editRunner.finishApplied()
+            finishNormalCodexUsageAfterDelivery(
+                "delivery: candidate identity changed before installation; behavior unconfirmed"
+            )
             runLog?.finish(outcome: "saved; candidate identity changed during packaging; not installed")
             runLog = nil
             savedDeliveryMayBeRetried = false
@@ -3327,6 +3354,9 @@ final class OnDemandEditCoordinator: ObservableObject {
         guard candidateIsCurrent() else { finishChangedCandidate(); return }
         guard let identity, sourceStillMatches else {
             statusLine = "Your source change is saved, but Iris could not confirm the exact clean version to build. Your installed app was left alone."
+            finishNormalCodexUsageAfterDelivery(
+                "delivery: source identity could not be confirmed; behavior unconfirmed"
+            )
             releaseLockIfHeld()
             phase = .done
             return
@@ -3344,6 +3374,9 @@ final class OnDemandEditCoordinator: ObservableObject {
             appliedAt: Date()
         )) } catch {
             statusLine = "Your source change is saved, but Iris could not save its version record. No app was replaced. Check available storage and try again."
+            finishNormalCodexUsageAfterDelivery(
+                "delivery: version record was not saved; behavior unconfirmed"
+            )
             savedDeliveryMayBeRetried = true
             releaseLockIfHeld()
             phase = .done
@@ -3354,6 +3387,9 @@ final class OnDemandEditCoordinator: ObservableObject {
               let package = packageEditedAppFromClone,
               terminateAndRelaunchEditedApp != nil || splitDeliveryRelaunchIsAvailable else {
             runLog?.record("delivery: no supported packaging and relaunch route; code saved only")
+            finishNormalCodexUsageAfterDelivery(
+                "delivery: no supported packaging and relaunch route; behavior unconfirmed"
+            )
             editRunner.finishApplied()
             releaseLockIfHeld()
             statusLine = "Applied on branch \(branchName). Your installed \(appName) still runs the OLD code — Iris can't rebuild this kind of app yet, so rebuild it from the clone yourself to pick the change up."
@@ -3650,7 +3686,14 @@ final class OnDemandEditCoordinator: ObservableObject {
         symptomRecheckSummary = nil
         statusLine = "\(appName) is running with the change. Give it a moment, then tell Iris whether it's actually fixed."
         editRunner.note("Relaunched \(appName) with the change. Looking again in a moment…")
-        Task { [weak self] in
+        let normalUsage = normalCodexUsage
+        Task { [weak self, normalUsage] in
+            var terminalDetail = "post-delivery symptom check: not run; delivery and behavior confirmation are separate"
+            defer {
+                self?.finishNormalCodexUsageIfCurrent(
+                    normalUsage, reason: .completed, terminalDetail: terminalDetail
+                )
+            }
             try? await Task.sleep(nanoseconds: 15_000_000_000)
             guard let self, self.flowGeneration == generation,
                   self.phase == .awaitingSymptomConfirmation, let slug = self.activeAppSlug else { return }
@@ -3702,10 +3745,17 @@ final class OnDemandEditCoordinator: ObservableObject {
             guard self.harnessWorkflow == nil,
                   let machineCheck = self.machineCheckTheSymptom,
                   let complaint = self.scrubbedRequest,
-                  self.phase == .awaitingSymptomConfirmation else { return }
+                  self.phase == .awaitingSymptomConfirmation else {
+                terminalDetail = "post-delivery symptom check: unavailable; delivery and behavior confirmation are separate"
+                return
+            }
+            let observer = normalUsage.map { self.normalCodexAttemptObserver(for: $0) }
             let recheck = await machineCheck(
-                complaint, self.runtimeEvidenceBeforeTheRun, evidenceAfter
+                complaint, self.runtimeEvidenceBeforeTheRun, evidenceAfter, observer
             )
+            terminalDetail = recheck.map {
+                "post-delivery symptom check: \($0.verdict.rawValue); delivery and behavior confirmation are separate"
+            } ?? "post-delivery symptom check: no verdict; delivery and behavior confirmation are separate"
             guard self.flowGeneration == generation, let recheck,
                   self.phase == .awaitingSymptomConfirmation,
                   self.readerHasAnsweredTheSymptomQuestion == false else { return }
@@ -4794,6 +4844,9 @@ final class OnDemandEditCoordinator: ObservableObject {
             detail = reason
         }
         runLog?.record("packaging did not produce a runnable app: \(detail)")
+        finishNormalCodexUsageAfterDelivery(
+            "delivery: packaging did not produce a runnable app; behavior unconfirmed"
+        )
         if case .packagingFailed = packaging { savedDeliveryMayBeRetried = savedDeliveryIdentity != nil }
         statusLine = "Update not applied. Your current \(appName) was left unchanged. The source change is saved on branch \(branchName). Packaging needs attention: \(detail). Restarting the current app will not apply this change."
         releaseLockIfHeld()
@@ -4829,17 +4882,26 @@ final class OnDemandEditCoordinator: ObservableObject {
             phase = .awaitingForceQuitConsent
         case .launchFailedPriorAppRestored(let reason):
             runLog?.record("relaunch: not completed (\(reason)); behavior unconfirmed")
+            finishNormalCodexUsageAfterDelivery(
+                "delivery: relaunch failed and prior app was restored; behavior unconfirmed"
+            )
             statusLine = "Iris couldn't open the updated app (\(reason)). Your previous app is running. The source change remains on branch \(branchName), but restarting the old app will not apply it."
             releaseLockIfHeld()
             packagedArtifactPath = nil
             phase = .done
         case .launchFailedPriorAppNotRestored(let reason):
             runLog?.record("relaunch: previous app was not confirmed (\(reason)); recovery retained")
+            finishNormalCodexUsageAfterDelivery(
+                "delivery: relaunch failed and prior app was not confirmed; behavior unconfirmed"
+            )
             statusLine = "Iris couldn't finish the relaunch (\(reason)). The previous app was not confirmed running; its recovery information was retained. Your change remains on branch \(branchName)."
             releaseLockIfHeld()
             phase = .done
         case .ineligible(let reason):
             runLog?.record("relaunch: unavailable (\(reason)); behavior unconfirmed")
+            finishNormalCodexUsageAfterDelivery(
+                "delivery: relaunch unavailable; behavior unconfirmed"
+            )
             statusLine = "Iris couldn't relaunch \(appName) (\(reason)). Your change is safe on branch \(branchName)."
             releaseLockIfHeld()
             packagedArtifactPath = nil

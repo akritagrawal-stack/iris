@@ -164,6 +164,7 @@ struct HarnessFeatureHost {
 
     @MainActor private static func checkOutputBudget() async throws {
         try await runUsageAttributionChecks()
+        try await runNormalCodexRecheckChecks()
         let complete = (1...120).map { "line \($0): " + String(repeating: "x", count: 50) }.joined(separator: "\n")
         guard MaintainTierCFixer.outputForModel(complete) != complete,
               MaintainTierCFixer.outputForModel(complete, maximumCharacters: 12_000) == complete,

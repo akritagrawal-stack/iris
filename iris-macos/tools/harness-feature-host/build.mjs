@@ -38,6 +38,7 @@ const result = spawnSync('xcrun', ['swiftc', '-parse-as-library', ...flags, '-I'
   '-lIrisHarnessNative', '-Xlinker', '-rpath', '-Xlinker', destination,
   'iris-macos/tools/harness-feature-host/HarnessFeatureHost.swift',
   'iris-macos/tools/harness-feature-host/UsageAttributionChecks.swift',
+  'iris-macos/tools/harness-feature-host/NormalCodexRecheckChecks.swift',
   'iris-macos/tools/harness-feature-host/HarnessReviewReserveChecks.swift',
   'iris-macos/tools/harness-feature-host/VerificationDiagnosticChecks.swift',
   'iris-macos/tools/harness-feature-host/RepairTestCheckpointChecks.swift',

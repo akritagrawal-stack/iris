@@ -25,8 +25,8 @@ import Testing
     _ = try await flow.implementationReply(systemPrompt: "editor protocol", conversation: conversation, maximumOutputTokens: 100)
     #expect(captured.last?.systemPrompt.contains("Keep my existing information") == true)
     #expect(captured.last?.systemPrompt.contains("Existing values survive a duplicate import") == true)
-    #expect(captured.first?.route == .planner)
-    #expect(captured.last?.route == HarnessImplementationArm.astraLow.route)
+    #expect(captured.first?.route == HarnessImplementationArm.lunaMax.route)
+    #expect(captured.last?.route == HarnessImplementationArm.lunaMax.route)
     #expect(flow.state?.unresolvedAcceptanceCriteria.count == 1)
 }
 

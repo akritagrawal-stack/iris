@@ -163,7 +163,7 @@ import Testing
         }
     _ = try await session.respond(phase: .intake, systemPrompt: "plan", conversation: [], maximumOutputTokens: 300)
     _ = try await session.respond(phase: .edit, systemPrompt: "build", conversation: [], maximumOutputTokens: 4000)
-    #expect(requests.map(\.route) == [.planner, HarnessImplementationArm.astraLow.route])
+    #expect(requests.map(\.route) == [HarnessImplementationArm.lunaMax.route, HarnessImplementationArm.lunaMax.route])
     #expect(session.ledger.snapshot.admittedCallCount == 2)
     #expect(session.ledger.snapshot.measuredInputTokens == 24)
     await #expect(throws: (any Error).self) {

@@ -84,6 +84,7 @@ final class IrisTestRunUsage {
         func value<T>(_ value: T?) -> Any { value.map { $0 as Any } ?? NSNull() }
         let allCallsSettled = snapshot.inFlightCallCount == 0
         let requestedRoute = outcomeAttribution?.requestedRoute ?? implementationArm?.route
+        let requestedPlanner = HarnessRoutingPolicy.decision(for: .intake).modelRoute
         let ledgerState: String
         switch snapshot.status {
         case .running: ledgerState = "running"
@@ -94,7 +95,7 @@ final class IrisTestRunUsage {
             "appBundleIdentifier": IrisTestEnvironment.testBundleIdentifier,
             "startedAt": ISO8601DateFormatter().string(from: startedAt),
             "elapsedSeconds": Date().timeIntervalSince(startedAt),
-            "requestedPlanner": HarnessModelRoute.planner.description,
+            "requestedPlanner": requestedPlanner?.description ?? "Local executor",
             "requestedEditor": requestedRoute.map { $0.description as Any } ?? NSNull(),
             "requestedModel": requestedRoute.map { $0.model as Any } ?? NSNull(),
             "requestedEffort": requestedRoute.map { $0.effort as Any } ?? NSNull(),

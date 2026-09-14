@@ -90,7 +90,7 @@ func freeTextAnswersStaySynchronousUntilExplicitRefinement() async throws {
     let refined = try await workflow.refineBrief(repositoryEvidence: "The browser exposes stable tab IDs.")
 
     #expect(captured.count == 2)
-    #expect(captured[1].route == .planner)
+    #expect(captured[1].route == HarnessImplementationArm.lunaMax.route)
     #expect(captured[1].conversation[0].text.contains(request))
     #expect(captured[1].conversation[0].text.contains("Find the tab whose title contains my Iris bug report"))
     #expect(captured[1].conversation[0].text.contains("The browser exposes stable tab IDs."))

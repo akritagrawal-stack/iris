@@ -14,7 +14,7 @@ enum HarnessCodexAdapter {
         case serializedInputTooLarge
     }
 
-    static func makeWorkflow(arm: HarnessImplementationArm = .astraLow,
+    static func makeWorkflow(arm: HarnessImplementationArm = .lunaMax,
                              settings: HarnessRunLedgerSettings,
                              maximumDurationNanoseconds: UInt64,
                              webSearchEnabled: Bool = true,

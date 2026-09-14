@@ -63,7 +63,7 @@ func vagueTransferRequestKeepsChoicesAtTheProductBoundary() async throws {
     #expect(planned.userRequest == request)
     #expect(workflow.unansweredQuestionIDs == Set(["transfer-scope", "duplicates"]))
     #expect(captured.count == 1)
-    #expect(captured[0].route == .planner)
+    #expect(captured[0].route == HarnessImplementationArm.lunaMax.route)
     #expect(captured[0].conversation[0].text.contains(request))
     #expect(captured[0].conversation[0].text.contains("No transfer protocol is specified."))
     #expect(captured[0].systemPrompt.contains("Plan a software change for a nontechnical user"))

@@ -3,13 +3,21 @@ import CryptoKit
 
 /// Fixed requested roles for the first experiment. This is not automatic routing.
 nonisolated enum HarnessImplementationArm: String, Codable, CaseIterable, Sendable {
+    /// Retained only to decode and compare the completed Astra experiment.
+    /// New harness work is normalized to Luna before a provider request.
     case astraLow
     case lunaXHigh
+    case lunaMax
+    case gpt55Medium
+    case terraHigh
 
     var route: HarnessModelRoute {
         switch self {
         case .astraLow: return HarnessModelRoute(model: "gpt-6-astra", effort: "low")
         case .lunaXHigh: return HarnessModelRoute(model: "gpt-5.6-luna", effort: "xhigh")
+        case .lunaMax: return HarnessModelRoute(model: "gpt-5.6-luna", effort: "max")
+        case .gpt55Medium: return HarnessModelRoute(model: "gpt-5.5", effort: "medium")
+        case .terraHigh: return HarnessModelRoute(model: "gpt-5.6-terra", effort: "high")
         }
     }
 }
@@ -77,27 +85,31 @@ nonisolated enum HarnessRoutingPolicy {
 
     static func decision(
         for phase: HarnessRunTaskKind,
-        implementationArm: HarnessImplementationArm = .astraLow
+        implementationArm: HarnessImplementationArm = .lunaMax
     ) -> HarnessRouteDecision {
+        // Astra remains decodable for the completed comparison, but automatic
+        // routing must never select it for a new Iris request.
+        let executionArm: HarnessImplementationArm = implementationArm == .astraLow
+            ? .lunaMax : implementationArm
         switch phase {
         case .intake:
             return HarnessRouteDecision(
                 routeClass: .planning,
-                modelRoute: .planner,
+                modelRoute: HarnessImplementationArm.lunaMax.route,
                 maximumOutputTokens: 2_400,
                 maximumInputBytes: 256 * 1024
             )
         case .edit, .repair:
             return HarnessRouteDecision(
                 routeClass: .complexImplementation,
-                modelRoute: implementationArm.route,
+                modelRoute: executionArm.route,
                 maximumOutputTokens: 4_000,
                 maximumInputBytes: 1_800_000
             )
         case .review, .recheck:
             return HarnessRouteDecision(
                 routeClass: .boundedExtraction,
-                modelRoute: HarnessImplementationArm.astraLow.route,
+                modelRoute: HarnessImplementationArm.lunaMax.route,
                 maximumOutputTokens: 1_200,
                 maximumInputBytes: 512 * 1024
             )

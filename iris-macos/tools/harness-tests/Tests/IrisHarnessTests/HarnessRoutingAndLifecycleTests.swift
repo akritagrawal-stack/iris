@@ -25,7 +25,7 @@ func everyModelPhaseHasAnExplicitRouteClass(_ phase: HarnessRunTaskKind) {
         for: .edit, implementationArm: .lunaXHigh
     )
     #expect(extraction.routeClass == .boundedExtraction)
-    #expect(extraction.modelRoute == HarnessImplementationArm.astraLow.route)
+    #expect(extraction.modelRoute == HarnessImplementationArm.lunaMax.route)
     #expect(implementation.routeClass == .complexImplementation)
     #expect(implementation.modelRoute == HarnessImplementationArm.lunaXHigh.route)
     #expect(extraction.maximumOutputTokens < implementation.maximumOutputTokens)

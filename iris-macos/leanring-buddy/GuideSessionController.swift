@@ -322,6 +322,68 @@ enum GuideSourceWorkspaceSetupState: Equatable, Sendable {
     case failed(String)
 }
 
+/// A deliberately narrow admission for an Iris Test-native fixture. Production
+/// always uses the default `nil` context and retains its marketplace refusal.
+/// The fixture names one guide pin and one disposable workspace root; it cannot
+/// become a general Test-mode marketplace or shell permission.
+nonisolated struct GuideOfflineNativeFixture: @unchecked Sendable {
+    let guideID: String
+    let guideRevision: Int
+    let expectedOrigin: GuideSourceWorkspaceOrigin
+    let expectedCommit: String
+    let workspaceRoot: URL
+
+    init?(
+        guideID: String,
+        guideRevision: Int,
+        expectedOrigin: GuideSourceWorkspaceOrigin,
+        expectedCommit: String,
+        workspaceRoot: URL
+    ) {
+        let root = workspaceRoot.standardizedFileURL
+        let cacheDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches", isDirectory: true)
+            .standardizedFileURL
+        guard IrisTestEnvironment.isEnabled,
+              !guideID.isEmpty,
+              guideRevision >= 1,
+              GitInspectionService.isValidCommitIdentifier(expectedCommit),
+              root.path.hasPrefix(cacheDirectory.path + "/iris-native-guide-fixture-"),
+              root.deletingLastPathComponent() == cacheDirectory,
+              root.path == root.resolvingSymlinksInPath().standardizedFileURL.path,
+              FileManager.default.fileExists(atPath: root.path) else {
+            return nil
+        }
+        self.guideID = guideID
+        self.guideRevision = guideRevision
+        self.expectedOrigin = expectedOrigin
+        self.expectedCommit = expectedCommit
+        self.workspaceRoot = root
+    }
+
+    func accepts(_ guide: IrisGuide) -> Bool {
+        guide.appSlug == guideID
+            && guide.version == guideRevision
+            && guide.sourceCommit == expectedCommit
+            && GuideSourceWorkspaceOrigin.parse(
+                "https://github.com/\(guide.sourceOwner)/\(guide.sourceRepo)"
+            ) == expectedOrigin
+    }
+
+    func accepts(_ binding: GuideSourceWorkspaceBinding) -> Bool {
+        binding.guideID == guideID
+            && binding.guideRevision == guideRevision
+            && binding.projectID == guideID
+            && binding.expectedOrigin == expectedOrigin
+            && binding.expectedCommit == expectedCommit
+            && binding.isIsolated
+            && GuideSourceWorkspacePath.isContained(
+                URL(fileURLWithPath: binding.stagedPath, isDirectory: true),
+                within: workspaceRoot
+            )
+    }
+}
+
 /// How the controller asks whether a tool is installed. It is a closure rather
 /// than a direct call to `ToolVersionService` so a test can answer "node is
 /// missing" without a machine that actually lacks Node, and so no test ever
@@ -937,6 +999,9 @@ final class GuideSessionController: ObservableObject {
 
     private let guideService: GuideService
     private let sourceWorkspaceService: GuideSourceWorkspaceService
+    /// Non-nil only in a direct native test construction. The normal app never
+    /// supplies this and Iris Test continues to refuse marketplace guides.
+    private let offlineNativeFixture: GuideOfflineNativeFixture?
     private var sourceWorkspaceRequest: GuideSourceWorkspaceRequest?
     private var sourceWorkspaceInspection: GuideSourceWorkspaceInspection?
     /// Invalidates source setup completions that belonged to a cancelled,
@@ -988,9 +1053,11 @@ final class GuideSessionController: ObservableObject {
             try await ToolVersionService.checkToolVersion(tool: toolName)
         },
         makeAutopilotRunner: (@MainActor (GuideAutopilotGuideContext) -> GuideAutopilotRunner)? = nil,
-        sourceWorkspaceService: GuideSourceWorkspaceService? = nil
+        sourceWorkspaceService: GuideSourceWorkspaceService? = nil,
+        offlineNativeFixture: GuideOfflineNativeFixture? = nil
     ) {
         self.guideService = guideService
+        self.offlineNativeFixture = offlineNativeFixture
         self.platformThisAppRunsOn = platformThisAppRunsOn
         self.watchLoop = watchLoop ?? WatchLoop()
         self.checkToolVersion = checkToolVersion
@@ -1099,7 +1166,7 @@ final class GuideSessionController: ObservableObject {
         branchKeyFromDeepLink: String?,
         stepIndexFromDeepLink: Int?
     ) async {
-        if IrisTestEnvironment.isEnabled {
+        if IrisTestEnvironment.isEnabled, offlineNativeFixture == nil {
             loadState = .guideCouldNotBeLoaded(slug: slug,
                 userFacingMessage: "Iris Test is for editing separate test copies. Use regular Iris for marketplace installations.")
             // The refusal still needs a visible card when opened from Settings.
@@ -1147,6 +1214,13 @@ final class GuideSessionController: ObservableObject {
         }
 
         guard guideSessionGeneration == generationForThisOpen else { return }
+        if let offlineNativeFixture, !offlineNativeFixture.accepts(fetchedGuide) {
+            loadState = .guideCouldNotBeLoaded(
+                slug: slug,
+                userFacingMessage: "This Iris Test fixture does not match the guide's pinned source."
+            )
+            return
+        }
 
         // The version here is the guide's own, not the link's: they are equal by
         // the time `fetchGuide` returns (it 409s otherwise), and using the real
@@ -1864,7 +1938,7 @@ final class GuideSessionController: ObservableObject {
     /// guide and step, but it lands the reader on this button — it cannot
     /// press it. Nothing about opening a guide calls this.
     func startAutopilot() {
-        guard !IrisTestEnvironment.isEnabled else {
+        guard !IrisTestEnvironment.isEnabled || offlineNativeFixture != nil else {
             autopilotBlockedExplanation = "Marketplace installation is off in Iris Test. Your normal apps are protected."
             return
         }
@@ -1911,6 +1985,13 @@ final class GuideSessionController: ObservableObject {
             autopilotBlockedExplanation = "Iris can't start an install right now. Restart Iris and try again."
             irisTrace("autopilot: start refused — no runner factory wired")
             return
+        }
+        if let offlineNativeFixture {
+            guard let binding = selectedWorkspaceBinding,
+                  offlineNativeFixture.accepts(binding) else {
+                autopilotBlockedExplanation = "This Iris Test fixture has no validated prepared workspace."
+                return
+            }
         }
         // One-time "Let Iris take control of your Mac?" consent, then remembered
         // across every future install. A vetted publik guide runs hands-off; the

@@ -48,11 +48,11 @@ struct GuideSessionTests {
     }
 
     @Test func controllerPreparesAndReusesTheSelectedStructuralSourceWorkspace() async throws {
-        let base = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
-            .appendingPathComponent("iris-source-flow-\(UUID().uuidString)", isDirectory: true)
+        let base = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/iris-native-guide-fixture-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: base) }
         let source = base.appendingPathComponent("source", isDirectory: true)
-        let owned = base.appendingPathComponent("owned", isDirectory: true)
+        let owned = base
         let common = base.appendingPathComponent("common.git", isDirectory: true)
         let linked = common.appendingPathComponent("worktrees/staged", isDirectory: true)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
@@ -77,6 +77,16 @@ struct GuideSessionTests {
             store: GuideSourceWorkspaceStore(directory: owned.appendingPathComponent("records", isDirectory: true)),
             destinationIsOwned: { $0.standardizedFileURL.path == owned.standardizedFileURL.path }
         )
+        let fixtureOrigin = try #require(
+            GuideSourceWorkspaceOrigin.parse("https://github.com/example/prepared-source-contract")
+        )
+        let offlineFixture = GuideOfflineNativeFixture(
+            guideID: "prepared-source-contract", guideRevision: 6,
+            expectedOrigin: fixtureOrigin, expectedCommit: commit, workspaceRoot: owned
+        )
+        if IrisTestEnvironment.isEnabled {
+            _ = try #require(offlineFixture)
+        }
         let shell = GuideAutopilotRunnerTests.FakeShellSession(
             outcomes: [.succeeded(workingDirectory: "/private/tmp")]
         )
@@ -96,7 +106,8 @@ struct GuideSessionTests {
                     pacing: .instant
                 )
             },
-            sourceWorkspaceService: service
+            sourceWorkspaceService: service,
+            offlineNativeFixture: offlineFixture
         )
         controller.autonomyGrant = AutopilotAutonomyGrant(userDefaults: defaults)
         controller.confirmAutonomousControl = { true }
@@ -563,6 +574,33 @@ struct GuideSessionTests {
         #expect(GuideSessionController.allowlistedToolNames(
             inVersionProbeCommand: "adb version\nxcodebuild -version"
         ) == ["adb", "xcodebuild"])
+    }
+
+    // MARK: - Iris Test offline fixture admission
+
+    @Test func offlineNativeFixtureRequiresTheExactTestIdentityAndOwnedCacheRoot() throws {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/iris-native-guide-fixture-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let origin = try #require(GuideSourceWorkspaceOrigin.parse("https://github.com/example/prepared-source-contract"))
+        let fixture = GuideOfflineNativeFixture(
+            guideID: "prepared-source-contract", guideRevision: 1,
+            expectedOrigin: origin,
+            expectedCommit: "0123456789abcdef0123456789abcdef01234567",
+            workspaceRoot: root
+        )
+        if IrisTestEnvironment.isEnabled {
+            #expect(fixture != nil)
+        } else {
+            #expect(fixture == nil)
+        }
+        #expect(GuideOfflineNativeFixture(
+            guideID: "prepared-source-contract", guideRevision: 1,
+            expectedOrigin: origin,
+            expectedCommit: "0123456789abcdef0123456789abcdef01234567",
+            workspaceRoot: root.deletingLastPathComponent()
+        ) == nil)
     }
 
     // MARK: - Test fixtures

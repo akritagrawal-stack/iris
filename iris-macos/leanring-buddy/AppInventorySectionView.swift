@@ -48,16 +48,18 @@ nonisolated enum CatalogAppDiscovery {
     /// on this Mac — narrowed to what matches the search text and sorted
     /// alphabetically for display.
     ///
-    /// An app whose install state is `unknown` (publik has no bundle id for it,
-    /// so Iris genuinely cannot tell whether it is installed) is still offered:
-    /// the worst case is opening the publik page for something the reader
-    /// already has, which is harmless, and hiding it would make a searchable app
-    /// un-findable for no reason.
+    /// Unknown platform support may appear in a deliberate search, labeled as
+    /// unconfirmed. It never becomes a starter recommendation. Installation
+    /// detection remains separate from platform compatibility.
     static func discoverableApps(
         fromInventory inventoryEntries: [CatalogAppInventoryEntry],
         matchingSearchText searchText: String
     ) -> [CatalogAppInventoryEntry] {
-        let notAlreadyInstalled = inventoryEntries.filter { !$0.isInstalled }
+        let notAlreadyInstalled = inventoryEntries.filter {
+            CatalogMacDiscoveryPolicy.mayShowInDeliberateSearch(
+                isInstalled: $0.isInstalled, compatibility: $0.macCompatibility
+            )
+        }
         let matching = appsMatching(searchText, within: notAlreadyInstalled)
         return matching.sorted { leftEntry, rightEntry in
             leftEntry.name.localizedCaseInsensitiveCompare(rightEntry.name) == .orderedAscending
@@ -72,7 +74,11 @@ nonisolated enum CatalogAppDiscovery {
         fromInventory inventoryEntries: [CatalogAppInventoryEntry],
         limit: Int = numberOfStarterSuggestions
     ) -> [CatalogAppInventoryEntry] {
-        let notAlreadyInstalled = inventoryEntries.filter { !$0.isInstalled }
+        let notAlreadyInstalled = inventoryEntries.filter {
+            CatalogMacDiscoveryPolicy.maySuggest(
+                isInstalled: $0.isInstalled, compatibility: $0.macCompatibility
+            )
+        }
         let ordered = notAlreadyInstalled.sorted { leftEntry, rightEntry in
             let leftHasARelease = leftEntry.latestReleaseTag != nil
             let rightHasARelease = rightEntry.latestReleaseTag != nil

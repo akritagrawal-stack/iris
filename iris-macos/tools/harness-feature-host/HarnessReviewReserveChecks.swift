@@ -189,7 +189,7 @@ func runHarnessReviewReserveChecks() async throws {
                 return HarnessModelReply(text: editReply)
             }
         }
-        let workflow = HarnessFeatureWorkflow(modelSession: session)
+        let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
         _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "src/feature.js")
         let provider = HarnessWorkflowMaintainProvider(workflow: workflow)
         let fixer = MaintainTierCFixer(provider: provider)
@@ -251,7 +251,7 @@ func runHarnessReviewReserveChecks() async throws {
                 return HarnessModelReply(text: "DONE")
             }
         }
-        let workflow = HarnessFeatureWorkflow(modelSession: session)
+        let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
         _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "src/feature.js")
         let baseProvider = HarnessWorkflowMaintainProvider(workflow: workflow)
         let provider: MaintainModelProviding = nativeReviewReserve

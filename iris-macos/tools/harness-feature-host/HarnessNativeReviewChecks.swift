@@ -519,7 +519,7 @@ struct HarnessNativeReviewChecks {
                 return HarnessModelReply(text: request.phase == .intake ? encoded
                     : "COVERED: persist | electron/persistence.test.mjs | restores notes after restart\nVERDICT: CLEAN")
             }
-        let workflow = HarnessFeatureWorkflow(modelSession: session)
+        let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
         _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "inert test fixture")
         let provider = HarnessWorkflowMaintainProvider(workflow: workflow)
         provider.configureReviewStages(nativeChecksRequired: false)
@@ -569,7 +569,7 @@ struct HarnessNativeReviewChecks {
                     manualRequests.append(request)
                     return HarnessModelReply(text: request.phase == .intake ? encoded : reply)
                 }
-            let manualWorkflow = HarnessFeatureWorkflow(modelSession: manualSession)
+            let manualWorkflow = HarnessFeatureWorkflow(modelSession: manualSession, targetAppIsBound: true)
             _ = try await manualWorkflow.plan(request: brief.userRequest, repositorySummary: "inert no-suite fixture")
             let manualProvider = HarnessWorkflowMaintainProvider(workflow: manualWorkflow)
             manualProvider.setHarnessPhase(.review)

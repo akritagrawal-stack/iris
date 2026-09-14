@@ -112,7 +112,7 @@ struct SavedNativeReviewLifecycleChecks {
                 throw CheckFailure(message: "first run entered unexpected model phase \(request.phase)")
             }
         }
-        let firstWorkflow = HarnessFeatureWorkflow(modelSession: firstSession)
+        let firstWorkflow = HarnessFeatureWorkflow(modelSession: firstSession, targetAppIsBound: true)
         _ = try await firstWorkflow.plan(
             request: fixture.brief.userRequest,
             repositorySummary: "src/feature.js and a separately declared native test in a disposable fixture"
@@ -250,7 +250,7 @@ struct SavedNativeReviewLifecycleChecks {
                     }
                     throw CheckFailure(message: "ordinary Coordinator retry reached intake as expected")
                 }
-                let workflow = HarnessFeatureWorkflow(modelSession: session)
+                let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
                 coordinatorWorkflow = workflow
                 return workflow
             },
@@ -360,7 +360,7 @@ struct SavedNativeReviewLifecycleChecks {
                 throw CheckFailure(message: "saved recheck entered maker phase \(request.phase)")
             }
         }
-        let recheckWorkflow = HarnessFeatureWorkflow(modelSession: recheckSession)
+        let recheckWorkflow = HarnessFeatureWorkflow(modelSession: recheckSession, targetAppIsBound: true)
         guard let savedContract = heldRecord.savedFeatureContract else {
             throw CheckFailure(message: "retained candidate did not persist its feature contract")
         }

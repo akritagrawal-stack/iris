@@ -305,7 +305,7 @@ struct UnadmittedRepairChecks {
             )
         }
         session.ledgerDidChange = { _ in }
-        let workflow = HarnessFeatureWorkflow(modelSession: session)
+        let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
         let brief = try await workflow.plan(
             request: "Change the fixture value and prove the behavior with a focused test.",
             repositorySummary: "src/feature.js and tests/feature.test.js are the complete fixture"

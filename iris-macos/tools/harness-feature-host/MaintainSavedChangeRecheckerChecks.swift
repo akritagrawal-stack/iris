@@ -179,7 +179,7 @@ struct MaintainSavedChangeRecheckerChecks {
                 // rechecker must never enter either maker phase.
                 return HarnessModelReply(text: reply)
             }
-            let workflow = HarnessFeatureWorkflow(modelSession: session)
+            let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
             _ = try await workflow.plan(
                 request: brief.userRequest,
                 repositorySummary: "src/feature.js and package.json in a disposable fixture"

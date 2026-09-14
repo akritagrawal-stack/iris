@@ -271,7 +271,7 @@ func runReviewFindingRepairChecks() async throws {
             return HarnessModelReply(text: "DONE")
         }
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "src/feature.js, src/feature.test.js")
     let provider = HarnessWorkflowMaintainProvider(workflow: workflow)
     let result = await MaintainTierCFixer(provider: provider).attemptOnDemandEdit(
@@ -587,7 +587,7 @@ func runCancellationAfterProviderReplyChecks() async throws {
             return HarnessModelReply(text: "DONE")
         }
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     _ = try await workflow.plan(request: brief.userRequest,
                                 repositorySummary: "src/feature.js")
     let provider = HarnessWorkflowMaintainProvider(workflow: workflow)

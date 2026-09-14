@@ -204,7 +204,7 @@ struct HarnessFeatureHost {
                 let cancellation = reviews == 1 ? "" : "COVERED: cancel | test/jobs.test.js | cancel stops\n"
                 return HarnessModelReply(text: "COVERED: queue | test/jobs.test.js | jobs wait\n" + cancellation + "VERDICT: CLEAN")
             }
-        let workflow = HarnessFeatureWorkflow(modelSession: session)
+        let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
         _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "inert fixture")
         let provider = HarnessWorkflowMaintainProvider(workflow: workflow)
         provider.setHarnessPhase(.review)
@@ -227,7 +227,7 @@ struct HarnessFeatureHost {
                 HarnessModelReply(text: request.phase == .intake ? briefJSON
                     : "COVERED: queue | absent.test.js | missing\nISSUE: A cancellation assertion is swallowed\nVERDICT: DISQUALIFYING")
             }
-        let malformedWorkflow = HarnessFeatureWorkflow(modelSession: malformedSession)
+        let malformedWorkflow = HarnessFeatureWorkflow(modelSession: malformedSession, targetAppIsBound: true)
         _ = try await malformedWorkflow.plan(request: brief.userRequest, repositorySummary: "inert fixture")
         let malformedProvider = HarnessWorkflowMaintainProvider(workflow: malformedWorkflow)
         malformedProvider.setHarnessPhase(.review)
@@ -301,7 +301,7 @@ struct HarnessFeatureHost {
                 requests.append(request)
                 return HarnessModelReply(text: request.phase == .intake ? briefJSON : patch)
             }
-        let workflow = HarnessFeatureWorkflow(modelSession: session)
+        let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
         _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "inert fixture")
         let provider = HarnessWorkflowMaintainProvider(workflow: workflow)
         var conversation = [MaintainChatTurn(role: "user", text: "Do not press Send.")]

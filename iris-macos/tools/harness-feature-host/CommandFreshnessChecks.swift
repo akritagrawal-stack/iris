@@ -150,7 +150,7 @@ private func runCommandFreshnessEditScenario() async throws {
             throw CommandFreshnessCheckError.failed("the freshness fixture unexpectedly entered a repair or recheck phase")
         }
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     _ = try await workflow.plan(
         request: brief.userRequest,
         repositorySummary: "src/feature.js"
@@ -278,7 +278,7 @@ private func runCommandFreshnessInvestigationScenario() async throws {
             throw CommandFreshnessCheckError.failed("the history fixture unexpectedly entered repair or recheck")
         }
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     _ = try await workflow.plan(
         request: brief.userRequest,
         repositorySummary: "src/feature.js"

@@ -139,7 +139,7 @@ private func runRepairTestCheckpointScenario(_ scenario: String) async throws {
             return HarnessModelReply(text: "DONE")
         }
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "src/feature.js tests/feature.test.js")
     let provider = HarnessWorkflowMaintainProvider(workflow: workflow)
     var events: [MaintainTierCProgressEvent] = []

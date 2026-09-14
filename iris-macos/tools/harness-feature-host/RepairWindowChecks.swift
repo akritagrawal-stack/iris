@@ -168,7 +168,7 @@ private func runReplayableEditReserveChecks() async throws {
             }
             return HarnessModelReply(text: "OK")
         }
-        let workflow = HarnessFeatureWorkflow(modelSession: session)
+        let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
         _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "inert fixture")
         let provider = HarnessWorkflowMaintainProvider(workflow: workflow)
         provider.configureReviewStages(nativeChecksRequired: true)
@@ -349,7 +349,7 @@ private func runReplayableEditFixerHookCheck() async throws {
         }
         return HarnessModelReply(text: "VERDICT: CLEAN")
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     _ = try await workflow.plan(
         request: brief.userRequest,
         repositorySummary: "src/feature.js"
@@ -444,7 +444,7 @@ private func runRepairWindowBudgetChecks() async throws {
             text: request.phase == .review ? "VERDICT: CLEAN" : "OK"
         )
     }
-    let trial20Workflow = HarnessFeatureWorkflow(modelSession: trial20Session)
+    let trial20Workflow = HarnessFeatureWorkflow(modelSession: trial20Session, targetAppIsBound: true)
     _ = try await trial20Workflow.plan(
         request: trial20Brief.userRequest,
         repositorySummary: "src/feature.js"
@@ -550,7 +550,7 @@ private func runRepairWindowBudgetChecks() async throws {
         smallInputRequests.append(request)
         return HarnessModelReply(text: request.phase == .intake ? trial20BriefJSON : "OK")
     }
-    let smallInputWorkflow = HarnessFeatureWorkflow(modelSession: smallInputSession)
+    let smallInputWorkflow = HarnessFeatureWorkflow(modelSession: smallInputSession, targetAppIsBound: true)
     _ = try await smallInputWorkflow.plan(
         request: trial20Brief.userRequest,
         repositorySummary: "src/feature.js"
@@ -591,7 +591,7 @@ private func runRepairWindowBudgetChecks() async throws {
         HarnessModelReply(text: "OK")
     }
     let nativeProvider = HarnessWorkflowMaintainProvider(
-        workflow: HarnessFeatureWorkflow(modelSession: nativeSession)
+        workflow: HarnessFeatureWorkflow(modelSession: nativeSession, targetAppIsBound: true)
     )
     nativeProvider.configureReviewStages(nativeChecksRequired: true)
     try repairWindowRequire(nativeProvider.reviewInputBudget.stageCount == 2,
@@ -641,7 +641,7 @@ private func runRepairWindowBudgetChecks() async throws {
         HarnessModelReply(text: "OK")
     }
     let postVerificationProvider = HarnessWorkflowMaintainProvider(
-        workflow: HarnessFeatureWorkflow(modelSession: postVerificationSession)
+        workflow: HarnessFeatureWorkflow(modelSession: postVerificationSession, targetAppIsBound: true)
     )
     postVerificationProvider.configureReviewStages(nativeChecksRequired: true)
     postVerificationProvider.beginVerification()
@@ -671,7 +671,7 @@ private func runRepairWindowBudgetChecks() async throws {
         HarnessModelReply(text: "OK")
     }
     let tinyProvider = HarnessWorkflowMaintainProvider(
-        workflow: HarnessFeatureWorkflow(modelSession: tinySession)
+        workflow: HarnessFeatureWorkflow(modelSession: tinySession, targetAppIsBound: true)
     )
     tinyProvider.configureReviewStages(nativeChecksRequired: true)
     try repairWindowRequire(tinyProvider.reviewInputBudget.stageCount == 2,
@@ -699,7 +699,7 @@ private func runRepairWindowBudgetChecks() async throws {
         HarnessModelReply(text: "transport must not run")
     }
     let byteProvider = HarnessWorkflowMaintainProvider(
-        workflow: HarnessFeatureWorkflow(modelSession: byteSession)
+        workflow: HarnessFeatureWorkflow(modelSession: byteSession, targetAppIsBound: true)
     )
     byteProvider.configureReviewStages(nativeChecksRequired: true)
     try repairWindowRequire(byteProvider.shouldYieldEditingToVerification,
@@ -870,7 +870,7 @@ private func runRepairWindowScenario(
             return HarnessModelReply(text: "DONE")
         }
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     _ = try await workflow.plan(
         request: brief.userRequest,
         repositorySummary: "src/feature.js tests/feature.test.js"

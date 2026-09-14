@@ -888,7 +888,7 @@ final class MaintainTierCFixer {
             return .notEligible(reason: "the sandbox is unavailable on this machine")
         }
         guard let runner = try? MaintainShellRunner(
-            repoRootPath: clonePath, explicitPolicy: processPolicy
+            repoRootPath: clonePath, processPolicy: processPolicy
         ) else {
             return .notEligible(reason: "the clone path is not usable")
         }

@@ -149,7 +149,8 @@ struct GuidePanelView: View {
                     } else {
                         if guideSessionController.guideOffersSourceWorkspaceSetup
                             || guideSessionController.guideNeedsPublisherWorkspaceMigration
-                            || guideSessionController.guideHasPinnedSourceIdentity {
+                            || guideSessionController.guideHasPinnedSourceIdentity
+                            || guideSessionController.autopilotBlockedExplanation?.localizedCaseInsensitiveContains("source") == true {
                             sourceWorkspaceSetupCard
                         }
                         if let setupRecoveryState = guideSessionController.setupRecoveryState {

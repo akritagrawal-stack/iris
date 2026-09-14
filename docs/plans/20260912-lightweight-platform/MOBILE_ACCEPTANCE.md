@@ -56,3 +56,10 @@ and refuses a non-clean or wrong-origin folder. This is useful source and UX
 evidence, but it confirms that the actual iPhone install journey remains
 unverified and that multiple local Kneecap folders need Iris workspace selection
 rather than blind path reuse.
+
+## Device inventory check, September 14
+
+`xcrun xctrace list devices` currently reports only `MacBook Pro (5)` and no
+connected iPhone. Consequently signed install, device trust, launch, offline or
+restart behavior cannot be run in this environment yet. This is an external
+device dependency, not a failed source or browser test.

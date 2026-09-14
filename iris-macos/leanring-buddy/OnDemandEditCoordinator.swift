@@ -683,6 +683,15 @@ final class OnDemandEditCoordinator: ObservableObject {
     private var unverifiedTestCandidateIsAvailable = false
     private var unverifiedTestCandidateRegistryProject: IrisTestProjectRegistry.Project?
     private var pendingUnverifiedTestDeliveryProject: IrisTestProjectRegistry.Project?
+    /// These IDs are created only by the corresponding real verification
+    /// progress events. They are references to the run's observed facts, not
+    /// caller-supplied UUIDs or a substitute for the evidence itself.
+    private var acceptedCandidateVerificationEvidenceID: UUID?
+    private var acceptedCandidateReviewEvidenceID: UUID?
+    /// The exact diff revision that passed the independent L6 review and was
+    /// subsequently delivered. It is carried to the reader's symptom answer;
+    /// a branch result without this review state cannot become accepted.
+    private var acceptedCandidateReviewRevision: String?
     var allowsWrittenClarification: Bool { harnessWorkflow != nil }
     var proposedHarnessDefaults: [String] {
         harnessWorkflow?.state?.brief.modelAssumptions.map(\.statement) ?? []
@@ -753,6 +762,23 @@ final class OnDemandEditCoordinator: ObservableObject {
             return false
         }
         return true
+    }
+
+    /// A saved accepted candidate must carry a complete positive verification
+    /// result. Unknown stages remain unknown: a green build without the
+    /// declared suite, or a partial native run, cannot be promoted by a
+    /// later UI answer.
+    nonisolated static func verificationReceiptPassesAcceptedCandidate(
+        _ receipt: EditVerificationReceipt?
+    ) -> Bool {
+        guard let receipt,
+              receipt.anyCheckRan,
+              receipt.failureStage == nil,
+              receipt.buildPassed == true else { return false }
+        if receipt.nativeTestsRequired {
+            return receipt.confinedTestsPassed == true && receipt.nativeTestsPassed == true
+        }
+        return receipt.testsPassed == true
     }
 
     /// The pooled "what others also wanted" prefills for an app. Injected so
@@ -2221,6 +2247,9 @@ final class OnDemandEditCoordinator: ObservableObject {
         currentModelRoute = nil
         verificationReceipt = nil
         earnedVerification = nil
+        acceptedCandidateVerificationEvidenceID = nil
+        acceptedCandidateReviewEvidenceID = nil
+        acceptedCandidateReviewRevision = nil
         adversarialReviewIssues = []
         deliveryProgress = EditDeliveryProgress()
         readerAskedToStopTheRun = false
@@ -2689,6 +2718,22 @@ final class OnDemandEditCoordinator: ObservableObject {
                 phase = .done
                 return
             }
+            // Carry only the exact successful Test workflow into the later
+            // reader-confirmed acceptance seam. This is deliberately stricter
+            // than the delivery gate: an accepted candidate needs the complete
+            // L6 ladder, a positive verifier receipt, and the same reviewed
+            // revision that authorized this delivery.
+            if workflow != nil,
+               let assessment = runAssessment,
+               assessment.permitsAutomaticDelivery(forRevision: currentRevision),
+               earnedVerification?.rung == .independentlyReviewed,
+               Self.verificationReceiptPassesAcceptedCandidate(verificationReceipt),
+               acceptedCandidateVerificationEvidenceID != nil,
+               acceptedCandidateReviewEvidenceID != nil {
+                acceptedCandidateReviewRevision = currentRevision
+            } else {
+                acceptedCandidateReviewRevision = nil
+            }
             // FULLY AUTOMATIC delivery (founder decision, Aug 22 2026): no
             // keep/relaunch taps — record, rebuild, relaunch, then ask the
             // only question that matters (is the symptom gone?), with undo.
@@ -2905,6 +2950,10 @@ final class OnDemandEditCoordinator: ObservableObject {
             runLog?.record("model route: \(description)")
         case .verificationCompleted(let receipt):
             verificationReceipt = receipt
+            // This is the only point where the verification reference is
+            // minted. It is retained in memory until (and unless) the reader
+            // confirms the installed result as Fixed.
+            acceptedCandidateVerificationEvidenceID = UUID()
             runLog?.record("verification receipt: \(receipt.summary)")
             if let stage = receipt.failureStage {
                 runLog?.record("verification failure stage: \(stage)")
@@ -3025,6 +3074,12 @@ final class OnDemandEditCoordinator: ObservableObject {
 
         case .verificationLadderEarned(let rung, let evidenceLog):
             earnedVerification = (rung: rung, evidenceLog: evidenceLog)
+            if rung == .independentlyReviewed {
+                // The L6 progress event comes from the separate-context
+                // reviewer. A UUID alone is not evidence; the record is only
+                // persisted later with the exact run and source checks.
+                acceptedCandidateReviewEvidenceID = UUID()
+            }
             runLog?.record("verification ladder: \(rung.humanReadableLabel)")
 
         case .structuredFileEditRejected(let reason):
@@ -3830,6 +3885,106 @@ final class OnDemandEditCoordinator: ObservableObject {
         }
     }
 
+    /// Persist the smallest reusable candidate record, but only after the
+    /// reader confirms the result of an actually installed Test delivery.
+    /// Every input below is taken from the current run/receipt/registry; no
+    /// caller-supplied UUID or model prose can manufacture acceptance.
+    private func persistAcceptedCandidateAfterReaderFixed() {
+        guard IrisTestEnvironment.isEnabled,
+              deliveryProgress.installedCopyReplaced,
+              deliveryProgress.relaunched,
+              earnedVerification?.rung == .independentlyReviewed,
+              Self.verificationReceiptPassesAcceptedCandidate(verificationReceipt),
+              let reviewRevision = acceptedCandidateReviewRevision,
+              let verificationEvidenceID = acceptedCandidateVerificationEvidenceID,
+              let reviewEvidenceID = acceptedCandidateReviewEvidenceID,
+              let receiptIdentifier = deliveredReceiptIdentifier,
+              case .valid(let receipt) = appDeliveryReceiptStore.load(receiptIdentifier),
+              receipt.phase == .installed,
+              let sourceIdentity = receipt.sourceIdentity,
+              let slug = activeAppSlug,
+              let project = IrisTestProjectRegistry.project(slug: slug),
+              IrisTestProjectRegistry.project(slug: slug) == project,
+              receipt.installedPath == project.applicationPath,
+              receipt.sourceArtifactPath == project.buildArtifactPath,
+              receipt.bundleIdentifier == project.bundleIdentifier,
+              let replacementIdentity = receipt.replacementBundleIdentity,
+              replacementIdentity.bundleIdentifier == project.bundleIdentifier,
+              let artifactDigest = replacementIdentity.contentDigest,
+              let artifactIdentity = AppDeliveryReceipt.bundleIdentity(atPath: project.buildArtifactPath),
+              artifactIdentity == replacementIdentity,
+              let assessment = harnessBehaviorAssessment,
+              assessment.permitsAutomaticDelivery(forRevision: reviewRevision) else {
+            return
+        }
+
+        let acceptedRunID = UUID()
+        guard let candidate = try? AcceptedCandidateRecord(
+            projectSlug: project.slug,
+            bundleIdentifier: project.bundleIdentifier,
+            registeredProjectPath: project.clonePath,
+            registeredApplicationPath: project.applicationPath,
+            artifactPath: project.buildArtifactPath,
+            sourceIdentity: sourceIdentity,
+            artifactDigest: artifactDigest,
+            verificationEvidenceID: verificationEvidenceID,
+            reviewEvidenceID: reviewEvidenceID,
+            uiAcceptedRunID: acceptedRunID,
+            uiAcceptedReceiptID: receiptIdentifier
+        ),
+        candidate.failureAgainst(project: project, receipt: receipt) == nil,
+        candidate.artifactDigestMatchesFilesystem(),
+        let verificationEvidence = try? AcceptedCandidateEvidenceRecord(
+            evidenceID: verificationEvidenceID,
+            candidateID: candidate.candidateID,
+            kind: .verification,
+            sourceIdentity: sourceIdentity,
+            artifactDigest: artifactDigest,
+            result: .passed
+        ),
+        let reviewEvidence = try? AcceptedCandidateEvidenceRecord(
+            evidenceID: reviewEvidenceID,
+            candidateID: candidate.candidateID,
+            kind: .review,
+            sourceIdentity: sourceIdentity,
+            artifactDigest: artifactDigest,
+            result: .passed
+        ),
+        let liveEvidence = try? AcceptedCandidateEvidenceRecord(
+            evidenceID: acceptedRunID,
+            candidateID: candidate.candidateID,
+            kind: .uiAcceptance,
+            sourceIdentity: sourceIdentity,
+            artifactDigest: artifactDigest,
+            result: .passed,
+            receiptIdentifier: receiptIdentifier,
+            runIdentifier: acceptedRunID,
+            observedBundleIdentity: replacementIdentity
+        ) else {
+            runLog?.record("accepted candidate not persisted: acceptance facts were incomplete")
+            return
+        }
+
+        do {
+            try appDeliveryReceiptStore.saveAcceptedCandidate(candidate)
+            try appDeliveryReceiptStore.saveAcceptedCandidateEvidence(verificationEvidence)
+            try appDeliveryReceiptStore.saveAcceptedCandidateEvidence(reviewEvidence)
+            try appDeliveryReceiptStore.saveAcceptedCandidateEvidence(liveEvidence)
+            guard case .valid = appDeliveryReceiptStore.revalidateAcceptedCandidateUsingPersistedEvidence(
+                candidate.candidateID, project: project
+            ) else {
+                throw AppDeliveryReceiptStore.StoreError.identityMismatch
+            }
+            runLog?.record("accepted candidate persisted after reader Fixed; L6 review, installed receipt and live evidence revalidated")
+        } catch {
+            // A partial write is intentionally left inert: restart/recheck
+            // requires every referenced evidence record and refuses missing or
+            // mismatched facts. Do not turn this storage failure into a claim
+            // that the candidate is reusable.
+            runLog?.record("accepted candidate not reusable: \(String(describing: error))")
+        }
+    }
+
     /// The reader's verdict on their own complaint. Persisted where the next
     /// run (and a human reading the branch) can see it: the commit trailer,
     /// and the per-app memory record. "Still broken" unlocks a retry that
@@ -3868,6 +4023,7 @@ final class OnDemandEditCoordinator: ObservableObject {
         // and push to publik db"). The reader saying it works is the strongest
         // form of "it works" there is.
         if verdict == .fixed {
+            persistAcceptedCandidateAfterReaderFixed()
             actOnAWorkingEdit(because: .readerSaidFixed)
         }
     }
@@ -6077,6 +6233,9 @@ final class OnDemandEditCoordinator: ObservableObject {
         currentModelRoute = nil
         verificationReceipt = nil
         earnedVerification = nil
+        acceptedCandidateVerificationEvidenceID = nil
+        acceptedCandidateReviewEvidenceID = nil
+        acceptedCandidateReviewRevision = nil
         adversarialReviewIssues = []
         deliveryProgress = EditDeliveryProgress()
         OnDemandEditInterruptedRunRecovery.forgetUnlessReviewIsRequired()

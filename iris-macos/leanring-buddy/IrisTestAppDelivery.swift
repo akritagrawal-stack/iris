@@ -52,11 +52,16 @@ enum IrisTestAppDelivery {
         return await Task.detached(priority: .userInitiated) {
             // Recheck after the executor hop, before any recovery write or swap.
             guard IrisTestProjectRegistry.project(slug: project.slug) == project,
+                  await SavedEditDeliveryIdentity(
+                    clonePath: sourceIdentity.clonePath,
+                    branchName: sourceIdentity.branchName,
+                    commit: sourceIdentity.commit
+                  ).stillMatchesSource(),
                   permitsInstall(project: project, artifactPath: artifactPath,
                                  projectsDirectory: IrisTestProjectRegistry.projectsDirectory),
                   NSRunningApplication.runningApplications(withBundleIdentifier: project.bundleIdentifier).isEmpty else {
                 return AppRelaunchService.InstalledDeliveryResult.deliveryFailed(
-                    reason: "The test app changed or started again before delivery. No files were replaced.")
+                    reason: "The test app or its saved source changed before delivery. No files were replaced.")
             }
             return AppRelaunchService.replaceBundleWithRecoveryReceipt(
                 bundleIdentifier: project.bundleIdentifier, installedPath: project.applicationPath,

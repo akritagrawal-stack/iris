@@ -73,7 +73,7 @@ func freeTextAnswersStaySynchronousUntilExplicitRefinement() async throws {
         captured.append(input)
         return HarnessModelReply(text: replies.removeFirst())
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "browser tabs and editable fields")
     try workflow.recordFreeTextAnswer(
@@ -156,7 +156,7 @@ func refinementCannotSilentlyReplaceReaderOutcomeWhenCriteriaAreUnchanged() asyn
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: replies.removeFirst()) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "notes list")
     let refined = try await workflow.refineBrief(repositorySummary: "notes list")
@@ -194,7 +194,7 @@ func unknownAndPartialFreeTextAnswersRemainPending() async throws {
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: briefJSON) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "browser tabs")
     for answer in [
@@ -240,7 +240,7 @@ func echoedRefinementDoesNotResolveUnknownFreeText() async throws {
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: replies.removeFirst()) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "browser tabs")
     try workflow.recordFreeTextAnswer(questionID: "destination", answer: "I don't know")
@@ -288,7 +288,7 @@ func explicitResolutionAllowsFreeTextToPassWithoutAnotherCall() async throws {
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: replies.removeFirst()) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "browser tabs")
     try workflow.recordFreeTextAnswer(
@@ -329,7 +329,7 @@ func selectedOptionRemainsASynchronousLocalFastPath() async throws {
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: briefJSON) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "browser tabs")
     try workflow.recordAnswer(
@@ -390,7 +390,7 @@ func unresolvedQuestionIDCanBeRephrasedWithoutLosingFreeText() async throws {
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: replies.removeFirst()) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "browser tabs")
     let answer = "I am not sure which tab is intended"
@@ -430,7 +430,7 @@ func changedAnswerStartsNewRevisionAndInvalidatesCurrentEvidence() async throws 
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: briefJSON) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "browser tabs")
     try workflow.recordAnswer(
@@ -496,7 +496,7 @@ func invalidResolutionIDsAreRejected() async throws {
             maximumDurationNanoseconds: 1_000_000_000,
             now: { 100 }
         ) { _ in HarnessModelReply(text: replies.removeFirst()) }
-        let workflow = HarnessFeatureWorkflow(modelSession: session)
+        let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
         _ = try await workflow.plan(request: request, repositorySummary: "browser tabs")
         if recordFreeText {
@@ -550,7 +550,7 @@ func scopeResolutionDoesNotClearPendingQuestionBeforeApproval() async throws {
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: replies.removeFirst()) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "browser tabs")
     try workflow.recordFreeTextAnswer(questionID: "destination", answer: "The tab with my notes")
@@ -610,7 +610,7 @@ func threeAnsweredQuestionsCanReceiveTwoNewBatchesWithinTheHistoricalBound() asy
         callCount += 1
         return HarnessModelReply(text: replies.removeFirst())
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "records repository")
     for index in 1...3 {
@@ -676,7 +676,7 @@ func refinementStagesRemovedCriteriaUntilTheReaderApproves() async throws {
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: replies.removeFirst()) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "importer and database adapter")
     try workflow.recordAnswer(questionID: "duplicates", optionID: "keep", answer: "Keep the existing record")
@@ -755,7 +755,7 @@ func refinementStagesChangedCriteriaAndApprovalInvalidatesOldEvidence() async th
         callCount += 1
         return HarnessModelReply(text: replies.removeFirst())
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "records screen")
     let oldRevision = try #require(workflow.state?.activeRevisionID)
@@ -831,7 +831,7 @@ func scopeProposalIncludesExplicitNonGoalDelta() async throws {
         callCount += 1
         return HarnessModelReply(text: replies.removeFirst())
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "report editor")
     _ = try await workflow.refineBrief(repositorySummary: "The report editor has a publish button.")
@@ -885,7 +885,7 @@ func rejectingScopeProposalKeepsTheOldPlanAndMakesNoApprovalCall() async throws 
         callCount += 1
         return HarnessModelReply(text: replies.removeFirst())
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "list screen")
     _ = try await workflow.refineBrief(repositorySummary: "list screen")
@@ -947,7 +947,7 @@ func malformedScopeResponseDoesNotCreateOrCommitAProposal() async throws {
         callCount += 1
         return HarnessModelReply(text: replies.removeFirst())
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "list screen")
     let before = try #require(workflow.state)
@@ -1004,7 +1004,7 @@ func proposalIDCannotBeReusedAfterStartingANewPlan() async throws {
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: replies.removeFirst()) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: firstRequest, repositorySummary: "list screen")
     _ = try await workflow.refineBrief(repositorySummary: "list screen")
@@ -1057,7 +1057,7 @@ func cancelledScopeRefinementCannotPublishAProposal() async throws {
         }
         return HarnessModelReply(text: callCount == 1 ? initialJSON : changedJSON)
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "list screen")
     let before = try #require(workflow.state)
@@ -1096,7 +1096,7 @@ func clarificationFollowUpHasTwoBoundedFollowUps() async throws {
         callCount += 1
         return HarnessModelReply(text: encodedBrief)
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "settings store")
     _ = try await workflow.refineBrief(repositorySummary: "settings store")
@@ -1136,7 +1136,7 @@ func refinementStartsANewRevisionAndLeavesOldEvidenceNonCurrent() async throws {
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: replies.removeFirst()) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "records screen")
     let oldRevision = try #require(workflow.state?.activeRevisionID)
@@ -1207,7 +1207,7 @@ func anAnswerRecordedDuringRefinementMakesTheReplyStale() async throws {
         }
         return HarnessModelReply(text: callCount == 1 ? initialJSON : replyJSON)
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "notes database")
     let refinementTask = Task { try await workflow.refineBrief(repositorySummary: "notes database") }
@@ -1250,7 +1250,7 @@ func contradictoryOptionTextCannotBeRecordedUnderAnotherOptionID() async throws 
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: json) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "notes repository")
     let before = try #require(workflow.state)
@@ -1300,7 +1300,7 @@ func duplicateAnswerStillInvalidatesAStaleRefinementReply() async throws {
         }
         return HarnessModelReply(text: json)
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "notes repository")
     try workflow.recordAnswer(
@@ -1352,7 +1352,7 @@ func addedAcceptanceCriteriaWaitForAnExplicitScopeDecision() async throws {
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: replies.removeFirst()) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "selection view")
     _ = try await workflow.refineBrief(repositorySummary: "selection view")

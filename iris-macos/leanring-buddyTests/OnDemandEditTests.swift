@@ -1303,7 +1303,10 @@ struct OnDemandEditHarnessPlanningTests {
             maximumDurationNanoseconds: 5_000_000_000,
             transport: transport
         )
-        return HarnessFeatureWorkflow(modelSession: session)
+        // These focused workflow fixtures model the coordinator after the
+        // reader selected an app. Keep that host fact explicit now that an
+        // unbound target is a no-model-call admission failure.
+        return HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     }
 
     private static func delayedTransport(

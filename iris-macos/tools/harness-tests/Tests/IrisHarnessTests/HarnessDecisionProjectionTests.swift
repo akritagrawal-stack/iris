@@ -133,7 +133,7 @@ func workflowExposesOnlyCurrentChoicesWithoutAnotherModelCall() async throws {
         calls += 1
         return HarnessModelReply(text: reply)
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "local notes")
     #expect(workflow.selectedDecisionSummaries.isEmpty)

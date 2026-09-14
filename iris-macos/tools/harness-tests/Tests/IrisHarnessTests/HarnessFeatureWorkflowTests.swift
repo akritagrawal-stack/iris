@@ -17,7 +17,7 @@ import Testing
             captured.append(input)
             return HarnessModelReply(text: input.phase == .intake ? json : "candidate change")
         }
-    let flow = HarnessFeatureWorkflow(modelSession: session)
+    let flow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     _ = try await flow.plan(request: request, repositorySummary: "importer and database adapter")
     #expect(throws: HarnessFeatureWorkflow.WorkflowError.self) { try flow.implementationContext() }
     try flow.recordAnswer(questionID: "duplicates", optionID: "keep", answer: "Keep my existing information")
@@ -34,13 +34,35 @@ import Testing
     let session = try HarnessModelSession(implementationArm: .astraLow,
         settings: HarnessRunLedgerSettings(maxCalls: 3, maxInputBytes: 10_000),
         maximumDurationNanoseconds: 1_000_000_000, now: { 100 }) { _ in HarnessModelReply(text: "not a plan") }
-    let flow = HarnessFeatureWorkflow(modelSession: session)
+    let flow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     await #expect(throws: (any Error).self) {
         _ = try await flow.plan(request: "Search offline", repositorySummary: "search module")
     }
     #expect(flow.state == nil)
     #expect(throws: HarnessFeatureWorkflow.WorkflowError.self) { try flow.implementationContext() }
     #expect(session.ledger.snapshot.admittedCallCount == 1)
+}
+
+@Test @MainActor func blockedIntakeNeverCallsThePlanner() async throws {
+    var transportCalls = 0
+    let session = try HarnessModelSession(implementationArm: .astraLow,
+        settings: HarnessRunLedgerSettings(maxCalls: 3, maxInputBytes: 10_000),
+        maximumDurationNanoseconds: 1_000_000_000, now: { 100 }) { _ in
+            transportCalls += 1
+            return HarnessModelReply(text: "this reply must never be used")
+        }
+    let flow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: false)
+
+    await #expect(throws: HarnessFeatureWorkflow.WorkflowError.blockedIntake) {
+        _ = try await flow.plan(
+            request: "make the Save button text larger",
+            repositorySummary: "SaveButton.swift"
+        )
+    }
+    #expect(flow.state == nil)
+    #expect(flow.intakeProfile?.complexity == .blocked)
+    #expect(session.ledger.snapshot.admittedCallCount == 0)
+    #expect(transportCalls == 0)
 }
 
 @Test @MainActor func tooManyQuestionsCannotReachTheEditScreen() async throws {
@@ -60,7 +82,7 @@ import Testing
     let session = try HarnessModelSession(implementationArm: .astraLow,
         settings: HarnessRunLedgerSettings(maxCalls: 2, maxInputBytes: 20_000),
         maximumDurationNanoseconds: 1_000_000_000) { _ in HarnessModelReply(text: text) }
-    let flow = HarnessFeatureWorkflow(modelSession: session)
+    let flow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     await #expect(throws: (any Error).self) {
         _ = try await flow.plan(request: "Improve search", repositorySummary: "search module")
     }
@@ -81,7 +103,7 @@ import Testing
                 acceptanceCriteria: [.init(id: "check", statement: "Requested behavior works")])
             return HarnessModelReply(text: String(decoding: try JSONEncoder().encode(brief), as: UTF8.self))
         }
-    let flow = HarnessFeatureWorkflow(modelSession: session)
+    let flow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
     let old = Task { try await flow.plan(request: "Older request", repositorySummary: "module") }
     while firstReply == nil { await Task.yield() }
     _ = try await flow.plan(request: "Latest request", repositorySummary: "module")

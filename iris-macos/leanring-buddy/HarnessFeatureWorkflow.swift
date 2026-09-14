@@ -233,6 +233,7 @@ final class HarnessFeatureWorkflow {
         case scopeReconciliationPending
         case scopeReconciliationNotFound
         case stalePlan
+        case blockedIntake
 
         var errorDescription: String? {
             switch self {
@@ -249,6 +250,7 @@ final class HarnessFeatureWorkflow {
             case .scopeReconciliationPending: return "Iris is waiting for your approval of the proposed scope change. No edit has started."
             case .scopeReconciliationNotFound: return "That scope proposal is no longer current. Nothing was changed."
             case .stalePlan: return "This plan was replaced by a newer request or decision."
+            case .blockedIntake: return "Choose an app and describe a request before Iris plans anything. No model call or edit has started."
             }
         }
     }
@@ -339,7 +341,6 @@ final class HarnessFeatureWorkflow {
         freeTextQuestionsAwaitingResolution = []
         pendingResolvedQuestionIDs = []
         clarificationRoundCount = 0
-        let generation = beginPlanningGeneration()
         // Reserve any code-detectable product-choice slots before the model
         // plans. This keeps the planner from spending the entire bounded
         // question budget on optional details and then silently losing the
@@ -352,6 +353,17 @@ final class HarnessFeatureWorkflow {
             targetAppIsBound: targetAppIsBound,
             reservedTopics: requiredProductChoiceTopics
         )
+        // A missing app binding, blank request, or oversized repository summary
+        // is a host-owned admission failure. Do not spend a planner call asking
+        // the model to recover information Iris can establish deterministically.
+        // Invalidate any earlier asynchronous reply before returning so it cannot
+        // publish a plan after this rejected attempt.
+        intakeProfile = profile
+        guard profile.plannerRequired else {
+            invalidatePendingPlanning()
+            throw WorkflowError.blockedIntake
+        }
+        let generation = beginPlanningGeneration()
         let input: [String: Any] = [
             "userRequest": request,
             "repositoryObservations": repositorySummary,

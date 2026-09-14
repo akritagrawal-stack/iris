@@ -53,7 +53,7 @@ func vagueTransferRequestKeepsChoicesAtTheProductBoundary() async throws {
         captured.append(input)
         return HarnessModelReply(text: reply)
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     let planned = try await workflow.plan(
         request: request,
@@ -147,7 +147,7 @@ func vaguePasteRequestAsksAboutDestinationBehaviorWithoutAPIJargon() async throw
         captured.append(input)
         return HarnessModelReply(text: reply)
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(
         request: request,
@@ -200,7 +200,7 @@ func plannerAddsOneDestinationChoiceWhenANontechnicalRequestLeavesTheTabImplicit
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: reply) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     let planned = try await workflow.plan(
         request: request,
@@ -247,7 +247,7 @@ func plannerInputReservesOnlyHostDetectedProductChoiceSlots() async throws {
         captured.append(input)
         return HarnessModelReply(text: try encodedBrief(brief))
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "browser tabs")
 
@@ -281,7 +281,7 @@ func clearLocalPlanCarriesNoReservedProductChoiceSlots() async throws {
         captured.append(input)
         return HarnessModelReply(text: try encodedBrief(brief))
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: "SaveButton.swift owns the label")
 
@@ -321,7 +321,7 @@ func plannerDestinationQuestionIsNotDuplicatedWhenItUsesNoviceLanguage() async t
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: try encodedBrief(brief)) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     let planned = try await workflow.plan(
         request: request,
@@ -381,7 +381,7 @@ func destinationQuestionDisplacesOnlyTheLastPlannerQuestionAtTheLimit() async th
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: try encodedBrief(brief)) }
-    let planned = try await HarnessFeatureWorkflow(modelSession: session).plan(
+    let planned = try await HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true).plan(
         request: request, repositorySummary: ""
     )
     #expect(planned.targetedQuestions.map(\.id) == ["first", "second", "destination-selection"])
@@ -409,7 +409,7 @@ func clearLocalFixDoesNotRequireAnIntakeInterview() async throws {
         captured.append(input)
         return HarnessModelReply(text: reply)
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(
         request: request,
@@ -448,7 +448,7 @@ func implementationQuestionsAreRejectedEvenWhenAFixtureProvidesThem() async thro
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: reply) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     await #expect(throws: HarnessFeatureWorkflow.WorkflowError.implementationQuestion) {
         _ = try await workflow.plan(
@@ -483,7 +483,7 @@ func implementationOnlyAcceptanceChecksAreRejectedBeforeTheyBecomeAUserContract(
         maximumDurationNanoseconds: 1_000_000_000,
         now: { 100 }
     ) { _ in HarnessModelReply(text: reply) }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     await #expect(throws: HarnessFeatureWorkflow.WorkflowError.nonUserFacingAcceptanceCriteria) {
         _ = try await workflow.plan(
@@ -517,7 +517,7 @@ func repositoryOutputCannotAuthorizeCredentialsOrPublishing() async throws {
         captured.append(input)
         return HarnessModelReply(text: input.phase == .intake ? reply : "ready")
     }
-    let workflow = HarnessFeatureWorkflow(modelSession: session)
+    let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
 
     _ = try await workflow.plan(request: request, repositorySummary: injectedRepositoryOutput)
     let context = try workflow.implementationContext()

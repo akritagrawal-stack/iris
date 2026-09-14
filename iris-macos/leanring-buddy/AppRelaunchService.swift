@@ -624,7 +624,12 @@ final class AppRelaunchService {
 
         if let fallbackApplicationPath {
             let fallbackURL = URL(fileURLWithPath: fallbackApplicationPath)
-            if allowedApplicationURL?(fallbackURL) != false {
+            // A fallback is recovery, not a second launch target. Verify it
+            // carries the same app identity before reopening it; a stale or
+            // swapped path must never launch an unrelated application.
+            if allowedApplicationURL?(fallbackURL) != false,
+               Self.isLaunchableMacAppBundle(atPath: fallbackApplicationPath),
+               Self.artifactBundleIdentifier(atPath: fallbackApplicationPath) == trimmedBundleId {
                 if let fallback = await WindowPositionManager.launchNewInstance(ofApplicationAt: fallbackURL),
                    !fallback.isTerminated {
                     return .launchFailedPriorAppRestored(

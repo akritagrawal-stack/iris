@@ -42,6 +42,11 @@ The current receipt-owned cleanup scope contains newer `edit-delivery-backups`
 records; older `installation-backup-*` bundles are outside that receipt-owned
 scope and remain untouched.
 
+The Test app support directory currently measures about 3.5 GB: roughly 2.5 GB
+of copied project dependencies, 713 MB of delivery backups, and 258 MB of
+command scratch. The cleanup control only owns receipt-backed app bundles; it
+does not silently delete project dependencies or scratch data.
+
 Spatial pointing, a delivered complex transfer through the live composer, and
 physical iPhone install/open/restart still require their respective live
 acceptance runs. Offline suites remain separate evidence.

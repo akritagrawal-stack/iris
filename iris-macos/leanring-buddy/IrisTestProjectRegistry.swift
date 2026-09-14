@@ -248,29 +248,11 @@ nonisolated enum IrisTestProjectRegistry {
         /// reported “No apps match.”
         private let publishedCatalog = PublikCatalogAppDirectory()
 
-        /// A narrow, named discovery fixture. It gives the native Test target
-        /// one phone-only catalog entry even when its read-only public catalog
-        /// request is unavailable, so an acceptance run can verify that Iris
-        /// finds it only on deliberate search and never recommends it as a
-        /// Mac app. This is discovery data only: it is not a staged project,
-        /// cannot be selected for editing, and does not grant install rights.
-        private static let phoneOnlyDiscoveryFixture = CatalogAppDescriptor(
-            slug: "kneecap",
-            name: "kneecap",
-            macBundleId: nil,
-            latestReleaseTag: nil,
-            guideSlug: "kneecap",
-            macCompatibility: .mobileOnly
-        )
-
         func catalogApps() async throws -> [CatalogAppDescriptor] {
             // Preserve staged projects even if the read-only catalog is
             // temporarily unavailable; the Test target must not lose its
             // isolated edit/recovery fixtures because of a network outage.
-            var published = (try? await publishedCatalog.catalogApps()) ?? []
-            if !published.contains(where: { $0.slug == Self.phoneOnlyDiscoveryFixture.slug }) {
-                published.append(Self.phoneOnlyDiscoveryFixture)
-            }
+            let published = (try? await publishedCatalog.catalogApps()) ?? []
             let stagedProjects = projects()
             var merged = published
 

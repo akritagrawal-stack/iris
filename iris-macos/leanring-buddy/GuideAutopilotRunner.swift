@@ -920,9 +920,15 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         guard let rawCommand = step.command else { return .succeeded }
         var command = rawCommand
         var resolvedWorkingDirectory = resolvedWorkspaceDirectory
-        if resolvedWorkingDirectory == nil,
-           let legacyWorkingDirectory = step.workingDirectory,
-           let directory = await resolveLegacyPreparedWorkspaceDirectory(legacyWorkingDirectory) {
+        if let directory = resolvedWorkingDirectory {
+            // Older guides can carry both a reviewed workspace binding and
+            // legacy `~/project` references in their command text. Once the
+            // binding is admitted, every such reference must follow the same
+            // isolated worktree; otherwise a command can silently inspect or
+            // mutate the user's unrelated checkout.
+            command = rewriteLegacyWorkspaceReferences(in: command, root: directory)
+        } else if let legacyWorkingDirectory = step.workingDirectory,
+                  let directory = await resolveLegacyPreparedWorkspaceDirectory(legacyWorkingDirectory) {
             resolvedWorkingDirectory = directory
             command = rewriteLegacyWorkspaceReferences(in: command, root: directory)
         }
@@ -1738,8 +1744,9 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             transcript.append(.explanation(text: Self.systemFolderDiagnosis(folder)))
             return .folderRefused
         }
+        let quotedFolder = Self.shellQuoted(folder)
         guard Self.isAPlainFolder(folder),
-              let approved = GuideAutopilotRiskAssessment.approve("cd \(folder)") else {
+              let approved = GuideAutopilotRiskAssessment.approve("cd \(quotedFolder)") else {
             transcript.append(.explanation(text: Self.wrongFolderDiagnosis(folder)))
             return .folderRefused
         }
@@ -1787,6 +1794,14 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
     /// A `cd` is instant; anything longer means the shell is wedged, and
     /// waiting the full command deadline for one would just hide that.
     private static let folderMoveDeadline: TimeInterval = 30
+
+    private static func shellQuoted(_ path: String) -> String {
+        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-~")
+        if path.unicodeScalars.allSatisfy({ safe.contains($0) }) {
+            return path
+        }
+        return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 
     // MARK: - Surfacing
 

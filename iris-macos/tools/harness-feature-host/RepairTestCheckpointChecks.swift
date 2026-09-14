@@ -170,7 +170,6 @@ private func runRepairTestCheckpointScenario(_ scenario: String) async throws {
     let conversationText = requests.flatMap { $0.conversation.map(\.text) }.joined(separator: "\n")
     let sawEarlyBuild = conversationText.contains("EARLY BUILD CHECKPOINT")
     let sawEarlyTest = conversationText.contains("EARLY TEST CHECKPOINT")
-
 #if CHECKPOINT_EXPECT_OLD
     try require(!sawEarlyTest, "pre-fix fixture unexpectedly received an early suite checkpoint")
     try require(repairRequests.count >= 3, "pre-fix fixture did not reach the final repair failure")

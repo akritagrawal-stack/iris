@@ -26,7 +26,7 @@ app.setPath("sessionData", sessionData);
 
 let currentStage = "module-start";
 const stageTrace = [];
-let openProfileServer;
+let startServer;
 
 class UnsupportedUI extends Error {
   kind = "unsupported";
@@ -124,20 +124,12 @@ async function ensureDashboard() {
     (location.pathname === "/" && document.querySelector("h1")?.textContent?.trim() === "Dashboard"), null);
   const onboarding = await page(() => location.pathname === "/onboarding");
   if (onboarding) {
-    await page((label) => {
-      const button = [...document.querySelectorAll("button")].find((el) =>
-        el.textContent?.replace(/\s+/g, " ").trim().includes(label),
-      );
-      if (!button) throw new Error(`Missing onboarding control: ${label}`);
-      button.click();
-    }, "Codex CLI");
-    await page((label) => {
-      const button = [...document.querySelectorAll("button")].find((el) =>
-        el.textContent?.replace(/\s+/g, " ").trim() === label,
-      );
-      if (!button) throw new Error(`Missing onboarding control: ${label}`);
-      button.click();
-    }, "Get started");
+    // The current app asks for an explicit engine. Use a deliberately fake
+    // cloud key so this transfer journey exercises only IndexedDB and the
+    // visible import/export controls; no provider request is made.
+    await clickButton("Bring your own key", 0, true);
+    await setField('input[type="password"]', "sk-fixture-transfer");
+    await clickButton("Get started");
   }
   await waitPath("/");
   await waitFor(() => document.querySelector("h1")?.textContent?.trim() === "Dashboard", null);
@@ -538,11 +530,16 @@ async function run() {
   if (app.getPath("userData") !== userData || app.getPath("sessionData") !== sessionData) {
     throw new Error("Electron did not retain the private fixture profile paths.");
   }
-  ({ openProfileServer } = await import(
-    pathToFileURL(path.join(TARGET, "electron/persistence.mjs")).href,
+  ({ startServer } = await import(
+    pathToFileURL(path.join(TARGET, "server/httpServer.mjs")).href,
   ));
   markStage("profile-server");
-  info = await openProfileServer({ userData, sessionData, distDir: DIST });
+  info = await startServer({
+    distDir: DIST,
+    binDir: path.join(userData, "bin"),
+    host: "127.0.0.1",
+    port: 0,
+  });
   markStage("browser-window");
   window = new BrowserWindow({
     show: false,

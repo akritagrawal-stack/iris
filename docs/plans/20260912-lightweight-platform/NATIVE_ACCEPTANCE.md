@@ -256,9 +256,9 @@ journey can pass.
 The stable-origin change is now implemented in NitroAI's Electron shell and the
 isolated oracle, using a deterministic profile-derived port. The oracle no longer
 loses the destination record and advances through relaunch, collision, duplicate,
-malformed, dangling-reference, and atomic-abort checks. The remaining red result
-is duplicate-title card reopening after restart; the data snapshot is intact, but
-the frozen visible readback cannot reliably select the second matching card.
+malformed, dangling-reference, and atomic-abort checks. The prior duplicate-title
+readback failure was addressed with stable note-card targets and a dashboard load
+gate.
 
 ## Current Iris model-route policy, September 14
 
@@ -267,3 +267,14 @@ for bounded coding and Terra is review-only. Astra remains in the source only as
 decodable historical comparison metadata and fixtures; the current composer label
 now shows `Luna Max plan · GPT-5.5 edit`. Fresh harness and usability runs passed
 159 and 136 tests respectively after this policy was applied.
+
+
+## NitroAI transfer oracle passed, September 14
+
+The frozen Electron transfer oracle now passes 2/2 tests. It covers readiness,
+full export/import round-trip, relaunch persistence, duplicate-title readback,
+folder identity collisions, malformed and unsupported-format rejection, dangling
+references, atomic abort, onward reimport, and changed-content conflict retention.
+NitroAI typecheck, 134 tests across 13 files, and the production build also pass.
+This is isolated transfer evidence; native Iris model-mediated feature and device
+acceptance remain separate gates.

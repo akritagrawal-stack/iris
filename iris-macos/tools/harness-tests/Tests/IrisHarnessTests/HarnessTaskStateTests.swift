@@ -196,6 +196,47 @@ func projectionExcludesEvidenceFromAnOlderRevisionAfterCorrection() throws {
     #expect(projection.unresolvedAcceptanceCriteria.map(\.id) == ["imports-works", "user-decision-" + Data("imports-choice".utf8).base64EncodedString()])
 }
 
+@Test
+func savedContractBindsOnlyTheExactRequestAndCandidateDigest() throws {
+    let state = try makeState(domain: "imports")
+    let digest = String(repeating: "a", count: 64)
+    let contract = try HarnessSavedFeatureContract(
+        state: state,
+        candidateBindingDigest: digest
+    )
+
+    #expect(contract.isBound(toCandidateDigest: digest, request: state.brief.userRequest))
+    #expect(!contract.isBound(toCandidateDigest: String(repeating: "b", count: 64), request: state.brief.userRequest))
+    #expect(!contract.isBound(toCandidateDigest: digest, request: "different request"))
+}
+
+@Test
+func clarificationPolicyKeepsQuestionsProductFocusedAndDoesNotRepeatABoundApp() throws {
+    let destination = HarnessTargetedQuestion(
+        id: "destination",
+        prompt: "Where should Iris put the text?",
+        options: [
+            .init(id: "choose", label: "Let me choose"),
+            .init(id: "focused", label: "Use what I am looking at")
+        ],
+        topic: .destination
+    )
+    #expect(try HarnessClarificationPolicy.validate([destination], targetAppIsBound: true) == [destination])
+
+    let repeatedApp = HarnessTargetedQuestion(
+        id: "app",
+        prompt: "Which app?",
+        options: [
+            .init(id: "one", label: "First app"),
+            .init(id: "two", label: "Second app")
+        ],
+        topic: .targetApp
+    )
+    #expect(throws: HarnessClarificationPolicyError.targetAppAlreadyBound(questionID: "app")) {
+        _ = try HarnessClarificationPolicy.validate([repeatedApp], targetAppIsBound: true)
+    }
+}
+
 private func makeBrief(domain: String) throws -> HarnessTaskBrief {
     try HarnessTaskBrief(
         userRequest: "Improve the \(domain) workflow",

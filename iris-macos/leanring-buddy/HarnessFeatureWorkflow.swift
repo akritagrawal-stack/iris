@@ -1,5 +1,64 @@
 import Foundation
 
+/// Validation errors for the harness product-question gate. Technical choices
+/// stay repository-derived; the planner may only request bounded user choices.
+nonisolated enum HarnessClarificationPolicyError: Error, Equatable, Sendable {
+    case tooManyQuestions(actualCount: Int, maximumCount: Int)
+    case implementationQuestion(questionID: String)
+    case invalidOptionCount(questionID: String, actualCount: Int)
+    case duplicateQuestionID(String)
+    case duplicateOptionID(questionID: String, optionID: String)
+    case duplicateTopic(HarnessClarificationTopic)
+    case targetAppAlreadyBound(questionID: String)
+}
+
+/// Small ask-vs-act gate for nontechnical intake. It keeps the live planner
+/// from turning an underspecified request into an open-ended questionnaire.
+nonisolated enum HarnessClarificationPolicy {
+    static let maximumQuestions = 3
+
+    static func validate(
+        _ questions: [HarnessTargetedQuestion],
+        targetAppIsBound: Bool
+    ) throws -> [HarnessTargetedQuestion] {
+        guard questions.count <= maximumQuestions else {
+            throw HarnessClarificationPolicyError.tooManyQuestions(
+                actualCount: questions.count, maximumCount: maximumQuestions
+            )
+        }
+
+        var questionIDs = Set<String>()
+        var topics = Set<HarnessClarificationTopic>()
+        for question in questions {
+            guard question.kind == .productChoice else {
+                throw HarnessClarificationPolicyError.implementationQuestion(questionID: question.id)
+            }
+            guard (2...3).contains(question.options.count) else {
+                throw HarnessClarificationPolicyError.invalidOptionCount(
+                    questionID: question.id, actualCount: question.options.count
+                )
+            }
+            guard questionIDs.insert(question.id).inserted else {
+                throw HarnessClarificationPolicyError.duplicateQuestionID(question.id)
+            }
+            var optionIDs = Set<String>()
+            for option in question.options where !optionIDs.insert(option.id).inserted {
+                throw HarnessClarificationPolicyError.duplicateOptionID(
+                    questionID: question.id, optionID: option.id
+                )
+            }
+            guard let topic = question.topic else { continue }
+            guard topics.insert(topic).inserted else {
+                throw HarnessClarificationPolicyError.duplicateTopic(topic)
+            }
+            if targetAppIsBound, topic == .targetApp {
+                throw HarnessClarificationPolicyError.targetAppAlreadyBound(questionID: question.id)
+            }
+        }
+        return questions
+    }
+}
+
 nonisolated enum HarnessScopeChangeKind: String, Codable, Equatable, Sendable {
     case changed
     case removed
@@ -134,6 +193,7 @@ final class HarnessFeatureWorkflow {
 
     let modelSession: HarnessModelSession
     let maximumClarificationRounds: Int
+    let targetAppIsBound: Bool
     private(set) var state: HarnessTaskState?
     private(set) var clarificationRoundCount = 0
     private(set) var pendingScopeReconciliation: HarnessScopeReconciliation?
@@ -166,9 +226,14 @@ final class HarnessFeatureWorkflow {
         pendingScopeReconciliation?.id
     }
 
-    init(modelSession: HarnessModelSession, maximumClarificationRounds: Int = 3) {
+    init(
+        modelSession: HarnessModelSession,
+        maximumClarificationRounds: Int = 3,
+        targetAppIsBound: Bool = false
+    ) {
         self.modelSession = modelSession
         self.maximumClarificationRounds = max(1, maximumClarificationRounds)
+        self.targetAppIsBound = targetAppIsBound
     }
 
     /// Restore only the user-approved contract for a review-only recheck. No
@@ -559,14 +624,19 @@ final class HarnessFeatureWorkflow {
         guard brief.acceptanceCriteria.allSatisfy({ $0.kind == .userObservable }) else {
             throw WorkflowError.nonUserFacingAcceptanceCriteria
         }
-        guard brief.targetedQuestions.allSatisfy({ $0.kind == .productChoice }) else {
+        do {
+            _ = try HarnessClarificationPolicy.validate(
+                brief.targetedQuestions,
+                targetAppIsBound: targetAppIsBound
+            )
+        } catch HarnessClarificationPolicyError.implementationQuestion {
             throw WorkflowError.implementationQuestion
+        } catch {
+            throw WorkflowError.invalidQuestions
         }
-        guard brief.targetedQuestions.count <= 3,
-              brief.targetedQuestions.allSatisfy({
-                  (2...3).contains($0.options.count)
-                      && Set($0.options.map(\.label)).count == $0.options.count
-              }) else { throw WorkflowError.invalidQuestions }
+        guard brief.targetedQuestions.allSatisfy({
+            Set($0.options.map(\.label)).count == $0.options.count
+        }) else { throw WorkflowError.invalidQuestions }
     }
 
     /// Returns the planner's brief with one plain-language destination choice
@@ -601,7 +671,8 @@ final class HarnessFeatureWorkflow {
                     label: "Ask me when more than one app or tab could match"
                 ),
             ],
-            kind: .productChoice
+            kind: .productChoice,
+            topic: .destination
         )
         // The destination behavior is a required user decision for this
         // request. Do not silently drop it when the planner already used the

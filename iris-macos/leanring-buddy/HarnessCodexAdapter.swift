@@ -17,7 +17,8 @@ enum HarnessCodexAdapter {
     static func makeWorkflow(arm: HarnessImplementationArm = .astraLow,
                              settings: HarnessRunLedgerSettings,
                              maximumDurationNanoseconds: UInt64,
-                             webSearchEnabled: Bool = true) throws -> HarnessFeatureWorkflow {
+                             webSearchEnabled: Bool = true,
+                             targetAppIsBound: Bool = true) throws -> HarnessFeatureWorkflow {
         let session = try HarnessModelSession(implementationArm: arm, settings: settings,
             maximumDurationNanoseconds: maximumDurationNanoseconds,
             serializedInputByteCounter: { request in
@@ -54,7 +55,10 @@ enum HarnessCodexAdapter {
                     throw HarnessModelTransportFailure(cause: error, usage: measuredUsage(capture.usage))
                 }
             }
-        return HarnessFeatureWorkflow(modelSession: session)
+        return HarnessFeatureWorkflow(
+            modelSession: session,
+            targetAppIsBound: targetAppIsBound
+        )
     }
 
     /// Counts the request shape that `CodexMaintainProvider` actually submits:

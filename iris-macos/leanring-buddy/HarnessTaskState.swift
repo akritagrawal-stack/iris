@@ -148,6 +148,20 @@ public nonisolated struct HarnessQuestionOption: Codable, Equatable, Sendable {
     }
 }
 
+/// The user-owned product decision represented by a targeted question.
+///
+/// This is intentionally optional so briefs written before the intake gate
+/// gained typed topics remain readable. A topic is a routing hint for the
+/// clarification policy, not user-facing copy and never a substitute for the
+/// question's plain-language prompt.
+public nonisolated enum HarnessClarificationTopic: String, Codable, Equatable, Sendable {
+    case targetApp
+    case destination
+    case trigger
+    case dataBoundary
+    case successObservation
+}
+
 public nonisolated enum HarnessTargetedQuestionKind: String, Codable, Equatable, Sendable {
     case productChoice
     case implementationDetail
@@ -158,17 +172,20 @@ public nonisolated struct HarnessTargetedQuestion: Codable, Equatable, Sendable 
     public let prompt: String
     public let options: [HarnessQuestionOption]
     public let kind: HarnessTargetedQuestionKind
+    public let topic: HarnessClarificationTopic?
 
     public init(
         id: String,
         prompt: String,
         options: [HarnessQuestionOption] = [],
-        kind: HarnessTargetedQuestionKind = .productChoice
+        kind: HarnessTargetedQuestionKind = .productChoice,
+        topic: HarnessClarificationTopic? = nil
     ) {
         self.id = id
         self.prompt = prompt
         self.options = options
         self.kind = kind
+        self.topic = topic
     }
 
     public init(from decoder: Decoder) throws {
@@ -182,6 +199,10 @@ public nonisolated struct HarnessTargetedQuestion: Codable, Equatable, Sendable 
             HarnessTargetedQuestionKind.self,
             forKey: .kind
         ) ?? .productChoice
+        self.topic = try container.decodeIfPresent(
+            HarnessClarificationTopic.self,
+            forKey: .topic
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -189,6 +210,7 @@ public nonisolated struct HarnessTargetedQuestion: Codable, Equatable, Sendable 
         case prompt
         case options
         case kind
+        case topic
     }
 }
 
@@ -594,8 +616,11 @@ nonisolated struct HarnessSavedFeatureContract: Codable, Equatable, Sendable {
         )
     }
 
-    func isBound(to candidate: PendingEditCandidateIdentity, request: String) -> Bool {
-        brief.userRequest == request && candidateBindingDigest == candidate.bindingDigest
+    /// Compare a persisted contract with the already-captured candidate digest.
+    /// Keeping this boundary to stable data lets the standalone harness target
+    /// validate contracts without importing the app-only Git recovery type.
+    func isBound(toCandidateDigest candidateBindingDigest: String, request: String) -> Bool {
+        brief.userRequest == request && self.candidateBindingDigest == candidateBindingDigest
     }
 
     private func validate() throws {
@@ -879,7 +904,7 @@ fileprivate nonisolated enum HarnessTaskBriefParserSupport {
         "modelAssumptions"
     ]
     private static let acceptanceKeys: Set<String> = ["id", "statement", "kind"]
-    private static let questionKeys: Set<String> = ["id", "prompt", "options", "kind"]
+    private static let questionKeys: Set<String> = ["id", "prompt", "options", "kind", "topic"]
     private static let optionKeys: Set<String> = ["id", "label"]
     private static let milestoneKeys: Set<String> = ["id", "title", "dependencies"]
     private static let assumptionKeys: Set<String> = ["id", "statement"]

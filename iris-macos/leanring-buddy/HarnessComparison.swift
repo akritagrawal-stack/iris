@@ -89,8 +89,13 @@ nonisolated enum HarnessRoutingPolicy {
     ) -> HarnessRouteDecision {
         // Astra remains decodable for the completed comparison, but automatic
         // routing must never select it for a new Iris request.
-        let executionArm: HarnessImplementationArm = implementationArm == .astraLow
-            ? .lunaMax : implementationArm
+        let executionArm: HarnessImplementationArm
+        switch implementationArm {
+        case .astraLow, .terraHigh:
+            executionArm = .lunaMax
+        case .lunaXHigh, .lunaMax, .gpt55Medium:
+            executionArm = implementationArm
+        }
         switch phase {
         case .intake:
             return HarnessRouteDecision(
@@ -107,9 +112,14 @@ nonisolated enum HarnessRoutingPolicy {
                 maximumInputBytes: 1_800_000
             )
         case .review, .recheck:
+            // Terra is explicit and review-only. The normal review path stays
+            // on Luna, while implementation requests never select Terra.
+            let reviewRoute = implementationArm == .terraHigh
+                ? HarnessImplementationArm.terraHigh.route
+                : HarnessImplementationArm.lunaMax.route
             return HarnessRouteDecision(
                 routeClass: .boundedExtraction,
-                modelRoute: HarnessImplementationArm.lunaMax.route,
+                modelRoute: reviewRoute,
                 maximumOutputTokens: 1_200,
                 maximumInputBytes: 512 * 1024
             )

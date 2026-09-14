@@ -31,6 +31,21 @@ func everyModelPhaseHasAnExplicitRouteClass(_ phase: HarnessRunTaskKind) {
     #expect(extraction.maximumOutputTokens < implementation.maximumOutputTokens)
 }
 
+@Test func fallbackAndReviewerRoutesStayNarrowlyScoped() {
+    let fallback = HarnessRoutingPolicy.decision(
+        for: .repair, implementationArm: .gpt55Medium
+    )
+    let reviewer = HarnessRoutingPolicy.decision(
+        for: .review, implementationArm: .terraHigh
+    )
+    let terraImplementation = HarnessRoutingPolicy.decision(
+        for: .edit, implementationArm: .terraHigh
+    )
+    #expect(fallback.modelRoute == HarnessImplementationArm.gpt55Medium.route)
+    #expect(reviewer.modelRoute == HarnessImplementationArm.terraHigh.route)
+    #expect(terraImplementation.modelRoute == HarnessImplementationArm.lunaMax.route)
+}
+
 @Test func routeTelemetrySeparatesAvoidedCallsFromModelCalls() {
     var telemetry = HarnessRouteTelemetry()
     telemetry.recordDeterministicOperation()

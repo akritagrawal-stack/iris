@@ -53,6 +53,7 @@ struct CompanionPanelView: View {
     /// and never repopulated — a saved key is never echoed back into the UI.
     @State private var anthropicAPIKeyInput: String = ""
     @State private var isShowingEmailAndPasswordSignIn: Bool = false
+    @State private var isRetryingSavedSession = false
     @State private var emailAddressInput: String = ""
     @State private var passwordInput: String = ""
 
@@ -1005,6 +1006,8 @@ struct CompanionPanelView: View {
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                savedSessionRecovery
+
                 Divider()
                     .background(DS.Colors.borderSubtle)
 
@@ -1043,17 +1046,40 @@ struct CompanionPanelView: View {
                 emailAndPasswordSignInFields
             }
 
-            if let signInFailureMessage = accountService.signInFailureMessage {
-                Text(signInFailureMessage)
-                    .font(.system(size: 10))
-                    .foregroundColor(DS.Colors.destructiveText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            savedSessionRecovery
 
             Divider()
                 .background(DS.Colors.borderSubtle)
 
             bringYourOwnCredentialSection
+        }
+    }
+
+    @ViewBuilder
+    private var savedSessionRecovery: some View {
+        if let message = accountService.signInFailureMessage {
+            Text(message)
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.destructiveText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let message = accountService.sessionPersistenceMessage {
+            Text(message)
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.amber)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if accountService.needsSavedLoginAuthorization || accountService.sessionPersistenceMessage != nil {
+            Button(accountService.savedSessionRetryLabel) {
+                isRetryingSavedSession = true
+                Task { @MainActor in
+                    defer { isRetryingSavedSession = false }
+                    await accountService.retrySavedSessionAction()
+                }
+            }
+            .irisTinyButton()
+            .disabled(isRetryingSavedSession || accountService.isSignInInProgress || accountService.isRestoringSession)
+            .help("Retry access to your existing saved login. macOS may ask you to approve access.")
         }
     }
 

@@ -253,6 +253,7 @@ nonisolated enum GuidePointingUnavailableReason: String, Equatable, Sendable {
     case missingCoordinateMetadata
     case invalidCoordinateMetadata
     case noCurrentDisplay
+    case cancelled
 }
 
 nonisolated enum GuidePointingFreshnessVerdict: Equatable, Sendable {

@@ -1004,6 +1004,10 @@ final class GuideSessionController: ObservableObject {
     private let offlineNativeFixture: GuideOfflineNativeFixture?
     private var sourceWorkspaceRequest: GuideSourceWorkspaceRequest?
     private var sourceWorkspaceInspection: GuideSourceWorkspaceInspection?
+    /// Keeps a cancelled setup's identity for a same-folder retry. The source
+    /// path and guide identity are checked before reuse, so choosing another
+    /// folder always starts a fresh owned destination.
+    private var cancelledSourceWorkspaceRequest: GuideSourceWorkspaceRequest?
     /// Invalidates source setup completions that belonged to a cancelled,
     /// closed, or superseded setup attempt. Guide identity alone is not enough:
     /// two attempts for the same guide can legitimately overlap.
@@ -1189,6 +1193,7 @@ final class GuideSessionController: ObservableObject {
         selectedWorkspaceBinding = nil
         sourceWorkspaceRequest = nil
         sourceWorkspaceInspection = nil
+        cancelledSourceWorkspaceRequest = nil
         sourceWorkspaceSetupState = .idle
 
         let fetchedGuide: IrisGuide
@@ -1311,6 +1316,7 @@ final class GuideSessionController: ObservableObject {
         selectedWorkspaceBinding = nil
         sourceWorkspaceRequest = nil
         sourceWorkspaceInspection = nil
+        cancelledSourceWorkspaceRequest = nil
         sourceWorkspaceSetupState = .idle
     }
 
@@ -1452,7 +1458,7 @@ final class GuideSessionController: ObservableObject {
     func inspectSourceWorkspace(
         sourcePath: String,
         ownedProjectsRoot: URL,
-        runID: UUID = UUID()
+        runID requestedRunID: UUID? = nil
     ) async -> Result<GuideSourceWorkspaceInspection, GuideSourceWorkspacePreparationError> {
         guard let guide = guideBeingFollowed,
               let sourceCommit = guide.sourceCommit else {
@@ -1467,6 +1473,11 @@ final class GuideSessionController: ObservableObject {
             sourceWorkspaceSetupState = .failed("this guide's source identity is invalid")
             return failure
         }
+        let runID = requestedRunID ?? reusableCancelledSetupRunID(
+            sourcePath: sourcePath, ownedProjectsRoot: ownedProjectsRoot,
+            guideID: guide.appSlug, guideRevision: guide.version,
+            expectedOrigin: expectedOrigin, expectedCommit: sourceCommit
+        ) ?? UUID()
         let request = GuideSourceWorkspaceRequest(
             runID: runID,
             guideID: guide.appSlug,
@@ -1481,6 +1492,7 @@ final class GuideSessionController: ObservableObject {
         sourceWorkspaceGeneration &+= 1
         let generation = sourceWorkspaceGeneration
         sourceWorkspaceRequest = request
+        cancelledSourceWorkspaceRequest = nil
         sourceWorkspaceInspection = nil
         sourceWorkspaceSetupState = .inspecting
         let result = await sourceWorkspaceService.inspect(request)
@@ -1534,6 +1546,7 @@ final class GuideSessionController: ObservableObject {
             }
             selectedWorkspaceBinding = binding
             selectedWorkspaceMemory.save(binding)
+            cancelledSourceWorkspaceRequest = nil
             sourceWorkspaceSetupState = .ready(binding)
             return .success(binding)
         } catch let error as GuideSourceWorkspacePreparationError {
@@ -1558,11 +1571,36 @@ final class GuideSessionController: ObservableObject {
     }
 
     func cancelSourceWorkspaceSetup() {
+        cancelledSourceWorkspaceRequest = sourceWorkspaceRequest
         cancelPendingSourceWorkspaceOperation()
         sourceWorkspaceGeneration &+= 1
         sourceWorkspaceRequest = nil
         sourceWorkspaceInspection = nil
         sourceWorkspaceSetupState = .idle
+    }
+
+    private func reusableCancelledSetupRunID(
+        sourcePath: String,
+        ownedProjectsRoot: URL,
+        guideID: String,
+        guideRevision: Int,
+        expectedOrigin: GuideSourceWorkspaceOrigin,
+        expectedCommit: String
+    ) -> UUID? {
+        guard let cancelled = cancelledSourceWorkspaceRequest,
+              cancelled.sourcePath == URL(fileURLWithPath: sourcePath).standardizedFileURL.path,
+              cancelled.ownedProjectsRoot.standardizedFileURL.path
+                == ownedProjectsRoot.standardizedFileURL.path,
+              cancelled.guideID == guideID,
+              cancelled.guideRevision == guideRevision,
+              GuideSourceWorkspaceOrigin.equivalent(
+                  cancelled.expectedOrigin,
+                  "https://\(expectedOrigin.host)/\(expectedOrigin.path)"
+              ),
+              cancelled.expectedCommit == expectedCommit else {
+            return nil
+        }
+        return cancelled.runID
     }
 
     /// Cancels the fixed-argv source probe or worktree staging operation before

@@ -866,22 +866,52 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
         let destination = root.appendingPathComponent(
             "\(request.projectID)-\(request.runID.uuidString)", isDirectory: true
         )
-        guard GuideSourceWorkspacePath.validateOwnedDestination(destination, within: root) else {
-            throw GuideSourceWorkspacePreparationError.destinationAlreadyExists
+        // A cancelled Git process can finish creating the linked worktree just
+        // before cancellation reaches this service. Reusing that path is safe
+        // only when the write-ahead record names this exact request and the
+        // destination still proves it is a Test-owned, clean worktree. Without
+        // this branch, a retry gets a new run ID and leaves the old owned copy
+        // behind while creating a duplicate.
+        let existingRecord: GuideSourceWorkspaceRecord?
+        if FileManager.default.fileExists(atPath: destination.path) {
+            guard let recordReader = store as? any GuideSourceWorkspaceRecordReading,
+                  let record = recordReader.record(for: request.runID),
+                  record.guideID == request.guideID,
+                  record.guideRevision == request.guideRevision,
+                  record.projectID == request.projectID,
+                  record.originalPath == identity.canonicalPath,
+                  record.stagedPath == destination.path,
+                  record.expectedOrigin == request.expectedOrigin,
+                  record.expectedCommit == request.expectedCommit,
+                  GuideSourceWorkspacePath.validateExistingOwnedDestination(
+                      destination, within: root
+                  ) else {
+                throw GuideSourceWorkspacePreparationError.destinationAlreadyExists
+            }
+            existingRecord = record
+        } else {
+            guard GuideSourceWorkspacePath.validateOwnedDestination(destination, within: root) else {
+                throw GuideSourceWorkspacePreparationError.destinationAlreadyExists
+            }
+            existingRecord = nil
         }
-        let marker = UUID().uuidString
+        let marker = existingRecord?.ownershipMarker ?? UUID().uuidString
         do {
-            try saveRecord(GuideSourceWorkspaceRecord(
-                runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
-                projectID: request.projectID, originalPath: identity.canonicalPath, stagedPath: destination.path,
-                expectedOrigin: request.expectedOrigin, expectedCommit: request.expectedCommit,
-                ownershipMarker: marker, state: .staging
-            ))
-        } catch {
-            throw GuideSourceWorkspacePreparationError.recoveryRecordCouldNotBeSaved
-        }
-
-        do {
+            if let existingRecord {
+                return try await resumeExistingStage(
+                    request: request, identity: identity, record: existingRecord
+                )
+            }
+            do {
+                try saveRecord(GuideSourceWorkspaceRecord(
+                    runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
+                    projectID: request.projectID, originalPath: identity.canonicalPath, stagedPath: destination.path,
+                    expectedOrigin: request.expectedOrigin, expectedCommit: request.expectedCommit,
+                    ownershipMarker: marker, state: .staging
+                ))
+            } catch {
+                throw GuideSourceWorkspacePreparationError.recoveryRecordCouldNotBeSaved
+            }
             try throwIfOperationWasCancelled(request.runID)
             let result = try await runGit([
                 "worktree", "add", "--detach", destination.path, request.expectedCommit
@@ -978,6 +1008,69 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
             }
             throw error
         }
+    }
+
+    /// Admit a destination left by a cancelled or failed setup attempt. The
+    /// persisted record is only a candidate: Git origin, commit, clean state,
+    /// source identity, ownership and linked-worktree admin identity are all
+    /// re-read before the record can become ready again.
+    private func resumeExistingStage(
+        request: GuideSourceWorkspaceRequest,
+        identity: GuideSourceWorkspaceIdentity,
+        record: GuideSourceWorkspaceRecord
+    ) async throws -> GuideSourceWorkspaceBinding {
+        guard [.staging, .cancelled, .failed, .ready].contains(record.state),
+              record.originalPath == identity.canonicalPath,
+              record.stagedPath == URL(fileURLWithPath: record.stagedPath).standardizedFileURL.path else {
+            throw GuideSourceWorkspacePreparationError.destinationNotOwned
+        }
+        let destination = URL(fileURLWithPath: record.stagedPath, isDirectory: true)
+        let root = request.ownedProjectsRoot.standardizedFileURL
+        guard GuideSourceWorkspacePath.validateExistingOwnedDestination(destination, within: root) else {
+            throw GuideSourceWorkspacePreparationError.destinationNotOwned
+        }
+        try throwIfOperationWasCancelled(request.runID)
+        let stagedIdentity = try await inspectIdentity(
+            GuideSourceWorkspaceRequest(
+                runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
+                projectID: request.projectID, sourcePath: destination.path,
+                expectedOrigin: request.expectedOrigin, expectedCommit: request.expectedCommit,
+                ownedProjectsRoot: request.ownedProjectsRoot
+            )
+        )
+        try throwIfOperationWasCancelled(request.runID)
+        guard !stagedIdentity.isDirty, stagedIdentity.head == request.expectedCommit else {
+            throw GuideSourceWorkspacePreparationError.stagedWorkspaceVerificationFailed(
+                "recorded worktree is not clean at the expected commit"
+            )
+        }
+        let finalOriginalIdentity = try await inspectIdentity(request)
+        guard finalOriginalIdentity == identity else {
+            throw GuideSourceWorkspacePreparationError.sourceChangedSinceInspection
+        }
+        try throwIfOperationWasCancelled(request.runID)
+        let linkedGitDirectory = try await readGitDirectory(in: destination)
+        let binding = GuideSourceWorkspaceBinding(
+            runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
+            projectID: request.projectID, original: identity, staged: stagedIdentity,
+            originalPath: identity.canonicalPath, stagedPath: destination.path,
+            expectedOrigin: identity.origin, expectedCommit: request.expectedCommit,
+            ownershipMarker: record.ownershipMarker, commonGitDirectory: identity.commonGitDirectory,
+            linkedWorktreeGitDirectory: linkedGitDirectory, isIsolated: true
+        )
+        do {
+            try throwIfOperationWasCancelled(request.runID)
+            try saveRecord(GuideSourceWorkspaceRecord(
+                runID: request.runID, guideID: request.guideID, guideRevision: request.guideRevision,
+                projectID: request.projectID, originalPath: identity.canonicalPath,
+                stagedPath: destination.path, expectedOrigin: request.expectedOrigin,
+                expectedCommit: request.expectedCommit, ownershipMarker: record.ownershipMarker,
+                state: .ready
+            ))
+        } catch {
+            throw GuideSourceWorkspacePreparationError.recoveryRecordCouldNotBeSaved
+        }
+        return binding
     }
 
     private func makeExistingBinding(

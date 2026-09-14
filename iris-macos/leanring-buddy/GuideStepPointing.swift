@@ -474,10 +474,14 @@ enum GuideStepPointingCoordinator {
                 theModelWasAsked: false
             )
         }
+        guard !Task.isCancelled else {
+            return Self.cancelledOutcome(theModelWasAsked: false)
+        }
 
         var found: CGRect?
         var targetEvidence: GuideTargetEvidence?
         var lookupAmbiguity: GuidePointingAmbiguityReason?
+        var lookupUnavailable: GuidePointingUnavailableReason?
         var freshnessFailure: GuidePointingFreshnessVerdict?
         var theModelWasAsked = false
         var theModelLocationWasRejected = false
@@ -494,8 +498,8 @@ enum GuideStepPointingCoordinator {
                     found = evidence.rectangle
                 case .ambiguous(let reason):
                     lookupAmbiguity = reason
-                case .unavailable:
-                    break
+                case .unavailable(let reason):
+                    lookupUnavailable = lookupUnavailable ?? reason
                 }
                 if found == nil, lookupAmbiguity == nil {
                     switch evidenceLocator.locateWindowEvidence(ofApp: bundleIdentifier) {
@@ -504,8 +508,8 @@ enum GuideStepPointingCoordinator {
                         found = evidence.rectangle
                     case .ambiguous(let reason):
                         lookupAmbiguity = reason
-                    case .unavailable:
-                        break
+                    case .unavailable(let reason):
+                        lookupUnavailable = lookupUnavailable ?? reason
                     }
                 }
             } else {
@@ -525,8 +529,8 @@ enum GuideStepPointingCoordinator {
                     found = evidence.rectangle
                 case .ambiguous(let reason):
                     lookupAmbiguity = reason
-                case .unavailable:
-                    break
+                case .unavailable(let reason):
+                    lookupUnavailable = lookupUnavailable ?? reason
                 }
             } else if lookupAmbiguity == nil {
                 found = locator.locateInAccessibilityTree(descriptor: target.descriptor, inApp: target.inApp)
@@ -546,6 +550,9 @@ enum GuideStepPointingCoordinator {
             let rectangleTheModelAnsweredWith = await locator.locateByAskingTheModel(
                 stepTitle: stepTitle, stepBody: stepBody
             )
+            if Task.isCancelled {
+                return Self.cancelledOutcome(theModelWasAsked: theModelWasAsked)
+            }
             found = rectangleTheModelAnsweredWith.flatMap {
                 GuidePointingFreshness.rectangleIfStillUsable(
                     $0,
@@ -558,6 +565,10 @@ enum GuideStepPointingCoordinator {
                 )
             }
             theModelLocationWasRejected = rectangleTheModelAnsweredWith != nil && found == nil
+        }
+
+        if Task.isCancelled {
+            return Self.cancelledOutcome(theModelWasAsked: theModelWasAsked)
         }
 
         if let targetEvidence {
@@ -584,6 +595,10 @@ enum GuideStepPointingCoordinator {
                 refusal = .pointingUnavailable(
                     message: "I couldn't confirm that location on the current screen, so I stopped pointing."
                 )
+            } else if let lookupUnavailable {
+                refusal = .pointingUnavailable(
+                    message: Self.message(for: .unavailable(lookupUnavailable))
+                )
             } else {
                 refusal = .couldNotFindIt(descriptor: target.descriptor)
             }
@@ -595,6 +610,7 @@ enum GuideStepPointingCoordinator {
                 targetEvidence: targetEvidence,
                 freshness: freshnessFailure
                     ?? lookupAmbiguity.map(GuidePointingFreshnessVerdict.ambiguous)
+                    ?? lookupUnavailable.map(GuidePointingFreshnessVerdict.unavailable)
                     ?? .unavailable(.geometryOnly)
             )
         }
@@ -644,14 +660,34 @@ enum GuideStepPointingCoordinator {
         )
     }
 
+    private static func cancelledOutcome(theModelWasAsked: Bool) -> GuideStepPointingOutcome {
+        GuideStepPointingOutcome(
+            decision: .doNotPoint(.pointingUnavailable(message: "Pointing was cancelled.")),
+            screenLocation: nil,
+            displayFrame: nil,
+            theModelWasAsked: theModelWasAsked,
+            freshness: .unavailable(.cancelled)
+        )
+    }
+
     private static func message(for freshness: GuidePointingFreshnessVerdict) -> String {
         switch freshness {
         case .stale:
             return "The screen changed while I was locating that control, so I stopped pointing."
         case .ambiguous:
             return "I found more than one matching control, so I stopped rather than choose the wrong one."
-        case .unavailable:
-            return "I couldn't confirm the current app and window identity, so I stopped pointing."
+        case .unavailable(let reason):
+            switch reason {
+            case .cancelled:
+                return "Pointing was cancelled."
+            case .noCurrentDisplay:
+                return "I couldn't find that target on a visible display, so I stopped pointing."
+            case .missingSemanticIdentity:
+                return "I couldn't confirm that target's identity, so I stopped pointing."
+            case .geometryOnly, .missingForegroundObservation, .missingFocusedWindowObservation,
+                    .missingCoordinateMetadata, .invalidCoordinateMetadata:
+                return "I couldn't confirm the current app and window identity, so I stopped pointing."
+            }
         case .fresh, .movedSameTarget:
             return "I couldn't confirm that location on the current screen, so I stopped pointing."
         }

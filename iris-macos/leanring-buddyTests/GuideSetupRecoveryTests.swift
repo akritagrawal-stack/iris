@@ -707,6 +707,51 @@ struct GuideSourceWorkspaceServiceTests {
         #expect(!executor.arguments.contains(where: { $0.contains("clone") }))
     }
 
+    @Test func retryResumesARecordedOwnedWorktreeWithoutCreatingADuplicate() async throws {
+        let fixture = try Self.fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: fixture.commit,
+            origin: "https://github.com/example/project",
+            commonGitDirectory: fixture.commonGitDirectory.path,
+            linkedGitDirectory: fixture.linkedGitDirectory.path
+        )
+        let service = Self.service(fixture: fixture, executor: executor)
+        let request = GuideSourceWorkspaceRequest(
+            runID: fixture.runID,
+            guideID: "fixture",
+            guideRevision: 1,
+            projectID: "fixture",
+            sourcePath: fixture.source.path,
+            expectedOrigin: "https://github.com/example/project",
+            expectedCommit: fixture.commit,
+            ownedProjectsRoot: fixture.ownedRoot
+        )
+        let inspection = GuideSourceWorkspaceInspection.existingClean(fixture.binding.original)
+        try fixture.store.save(GuideSourceWorkspaceRecord(
+            runID: fixture.runID,
+            guideID: request.guideID,
+            guideRevision: request.guideRevision,
+            projectID: request.projectID,
+            originalPath: request.sourcePath,
+            stagedPath: fixture.staged.path,
+            expectedOrigin: request.expectedOrigin,
+            expectedCommit: request.expectedCommit,
+            ownershipMarker: "cancelled-stage-marker",
+            state: .cancelled
+        ))
+
+        let binding = try await service.prepare(
+            request, from: inspection, choice: .createIsolatedWorktree
+        )
+
+        #expect(binding.stagedPath == fixture.staged.path)
+        #expect(binding.ownershipMarker == "cancelled-stage-marker")
+        #expect(fixture.store.record(for: fixture.runID)?.state == .ready)
+        #expect(!executor.arguments.contains(where: { $0.contains("worktree") }),
+                "a retry must validate and resume the recorded worktree instead of adding another one")
+    }
+
     @Test func existingCheckoutBindingRecordsItsActualGitDirectory() async throws {
         let fixture = try Self.fixture()
         defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }

@@ -15,6 +15,10 @@ read. Reconnect was triggered, but the secure macOS approval dialog is outside
 the computer-use accessibility surface; the account-dependent native run is
 therefore pending the owner selecting **Always Allow** for Iris Test.
 
+### 2026-09-14 native acceptance-gated RC rebuild
+
+The Test configuration rebuilt successfully from commit `1395f28`; strict code-signature verification passed. The named RC now contains executable SHA-256 `de9456684a2700cf03878aea46ac6f0eae3f9c5f7a4e0e09ac6063f08e33654d`. The launch environment remains opt-in for marketplace guide acceptance.
+
 ### 2026-09-14 explicit native marketplace-guide admission
 
 Iris Test now admits the real marketplace guide engine only in an explicitly

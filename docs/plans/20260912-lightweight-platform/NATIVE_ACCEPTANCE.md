@@ -195,3 +195,12 @@ it does not prove the full versioned app-bundle lifecycle or cleanup deletion.
 in `ARTIFACT_SHA256.txt`. This is the named integrated macOS release candidate
 for further native UI checks. It is unsigned and therefore does not establish
 phone installation or production distribution readiness.
+
+## RC native launch observation, September 14
+
+The named RC was launched through computer use. It opened Iris Setup and
+truthfully displayed a permissions-needed state: Accessibility and Screen
+Recording grants are missing or revoked, with `Grant`, `Show Iris`, and `Quit
+Iris` controls. No permission-setting action was taken. This proves the RC
+launches and exposes the required native gate; screen-help/spatial acceptance
+remains pending until the owner grants those macOS permissions.

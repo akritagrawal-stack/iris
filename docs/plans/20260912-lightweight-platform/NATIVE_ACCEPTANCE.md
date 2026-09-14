@@ -253,6 +253,13 @@ algorithm itself is additive within one origin; durable cross-relaunch storage
 requires a stable origin or a filesystem/native persistence bridge before this
 journey can pass.
 
+The stable-origin change is now implemented in NitroAI's Electron shell and the
+isolated oracle, using a deterministic profile-derived port. The oracle no longer
+loses the destination record and advances through relaunch, collision, duplicate,
+malformed, dangling-reference, and atomic-abort checks. The remaining red result
+is duplicate-title card reopening after restart; the data snapshot is intact, but
+the frozen visible readback cannot reliably select the second matching card.
+
 ## Current Iris model-route policy, September 14
 
 New planner and implementation work uses Luna by default. GPT-5.5 is available

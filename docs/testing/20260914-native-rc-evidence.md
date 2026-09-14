@@ -289,3 +289,9 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 
 - Commit `016053f` enforces per-route model budgets in `HarnessModelSession`: input-byte ceilings are checked before admission or transport, caller output requests are capped to route policy, and oversized input produces an explicit blocked lifecycle result without sending a model request.
 - Focused harness suite passed `161/161` tests across `7` suites after the change. This is source-level routing evidence only; live provider, packaged UI, installed-app, and physical-device acceptance remain separate gates.
+
+### 2026-09-14 native RC v7: routing-budget integration build
+
+- Xcode GUI built the integrated `Iris Test` scheme after routing commit `016053f`; the resulting app was copied to `/Users/Shared/Iris-RC-20260914-v7/Iris Test.app`.
+- Strict code-signature verification passed. Executable SHA-256: `bc572ec21ceafe003cf4ee4950de0b57a0f45334087a1afffde39f3c66f73b14`.
+- The build was launched through Xcode and then stopped cleanly. This establishes a named integrated artifact, but does not close native spatial permissions, live-provider transfer, or physical-device acceptance.

@@ -122,7 +122,7 @@ struct AppDeliveryChecks {
             dependencies: ["electron": "1"]
         )
         let staticConfig = staticConfigRoot.appendingPathComponent("electron-builder.cjs")
-        try Data("module.exports = {\n  files: [\"electron/**\"],\n};\n".utf8).write(to: staticConfig)
+        try Data("module.exports = {\n  files: [\"electron/**\", \"!**/*.map\"],\n};\n".utf8).write(to: staticConfig)
         let staticSummary = try requireNonempty(
             RepoRecipeElectronShippingEvidence.nativeReviewSummary(
                 repoRootPath: staticConfigRoot.path,
@@ -133,6 +133,18 @@ struct AppDeliveryChecks {
         try require(
             staticSummary.contains("covering electron/iris-test-preload.cjs"),
             "literal Electron Builder files configuration did not prove changed preload inclusion"
+        )
+        try Data("module.exports = {\n  files: [\"electron/**\", \"!electron/**\"],\n};\n".utf8).write(to: staticConfig)
+        let excludedSummary = try requireNonempty(
+            RepoRecipeElectronShippingEvidence.nativeReviewSummary(
+                repoRootPath: staticConfigRoot.path,
+                changedPaths: ["electron/iris-test-preload.cjs"]
+            ),
+            "excluded Electron Builder configuration had no review summary"
+        )
+        try require(
+            excludedSummary.contains("packaged inclusion as unproven"),
+            "Electron Builder exclusion did not negate matching inclusion evidence"
         )
         try Data("const files = [\"electron/**\"];\nmodule.exports = { files };\n".utf8).write(to: staticConfig)
         let computedSummary = try requireNonempty(

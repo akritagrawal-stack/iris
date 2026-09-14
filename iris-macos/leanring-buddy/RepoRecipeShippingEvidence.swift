@@ -349,11 +349,17 @@ nonisolated struct RepoRecipeElectronShippingEvidence: Sendable, Equatable {
               ["electron-builder.js", "electron-builder.cjs", "electron-builder.mjs"].contains(configurationPath),
               let text = RepoRecipeFiles.readText(configurationPath, underRepoRoot: repoRootPath),
               let patterns = staticSameLineFilesArray(in: text),
-              !patterns.isEmpty,
-              !patterns.contains(where: { $0.hasPrefix("!") })
+              !patterns.isEmpty
         else { return [] }
+        let inclusions = patterns.filter { !$0.hasPrefix("!") }
+        let exclusions = patterns.compactMap { pattern -> String? in
+            guard pattern.hasPrefix("!") else { return nil }
+            return String(pattern.dropFirst())
+        }
+        guard !inclusions.isEmpty else { return [] }
         return changedPaths.filter { path in
-            patterns.contains { manifestPattern($0, covers: path) }
+            inclusions.contains { manifestPattern($0, covers: path) }
+                && !exclusions.contains { manifestPattern($0, covers: path) }
         }
     }
 

@@ -752,6 +752,22 @@ final class GuideSessionController: ObservableObject {
 
     private var debouncedPointingRefreshTask: Task<Void, Never>?
 
+    /// A tab can change without its application activating. Safari and Chrome
+    /// keep the same process and focused window while replacing the document
+    /// underneath the accessibility tree, so the activation observer above
+    /// never fires. A small, free revalidation loop closes that gap: authored
+    /// targets are reacquired from AX, stale outlines are cleared, and the
+    /// existing per-step model budget still bounds inferred targets. The loop
+    /// exists only while a visible guide has a target locator; it is cancelled
+    /// with the guide and pauses while the card is hidden.
+    private var pointingRevalidationTask: Task<Void, Never>?
+
+    /// AX reads are local and bounded by `SystemGuideTargetLocator`'s walk
+    /// deadline. This interval is long enough to avoid turning a tab switch
+    /// into a tight polling loop, while short enough that a changed page does
+    /// not leave an old outline on screen for a noticeable interaction.
+    private static let pointingRevalidationInterval: Duration = .milliseconds(900)
+
     /// Coalesces a burst of app activations into one pointing refresh.
     private func refreshPointingOnceAppActivationsHaveSettled() {
         debouncedPointingRefreshTask?.cancel()
@@ -763,6 +779,29 @@ final class GuideSessionController: ObservableObject {
             guard self.theReaderCanSeeTheGuideStepRightNow else { return }
             self.refreshPointingForTheOpenStep()
         }
+    }
+
+    /// Keep the current target honest when the app remains frontmost but its
+    /// window/document changes. App activation cannot observe those changes;
+    /// this bounded loop reuses the normal refresh path so all of the same
+    /// identity, ambiguity, minimization, cancellation, and model-budget
+    /// gates apply. A hidden guide stops the loop and the next explicit refresh
+    /// starts it again, which avoids background AX work.
+    private func startPointingRevalidationIfNeeded() {
+        guard pointingRevalidationTask == nil else { return }
+        pointingRevalidationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.pointingRevalidationInterval)
+                guard !Task.isCancelled, let self else { return }
+                guard self.theReaderCanSeeTheGuideStepRightNow else { return }
+                self.refreshPointingForTheOpenStep()
+            }
+        }
+    }
+
+    private func stopPointingRevalidation() {
+        pointingRevalidationTask?.cancel()
+        pointingRevalidationTask = nil
     }
 
     deinit {
@@ -782,6 +821,7 @@ final class GuideSessionController: ObservableObject {
         else {
             pointingTask?.cancel()
             theQuestionThePointingTaskIsAnswering = nil
+            stopPointingRevalidation()
             pointingDecisionForTheOpenStep = .doNotPoint(.stepHasNothingToPointAt)
             explanationForIrisHavingStoppedPointingAtThisStep = nil
             theFlightTheEyeIsShowing.theEyeStoppedPointing()
@@ -844,6 +884,10 @@ final class GuideSessionController: ObservableObject {
             clearGuideTargetOutline?()
             stopPointingTheEye?()
             return
+        }
+
+        if case .pointAt = decision {
+            startPointingRevalidationIfNeeded()
         }
 
         // Pointing refreshes on app activation as well as on step changes, so
@@ -1410,6 +1454,7 @@ final class GuideSessionController: ObservableObject {
         // looking at any more.
         debouncedPointingRefreshTask?.cancel()
         debouncedPointingRefreshTask = nil
+        stopPointingRevalidation()
         explanationForIrisHavingStoppedPointingAtThisStep = nil
         clearGuideTargetOutline?()
         stopPointingTheEye?()

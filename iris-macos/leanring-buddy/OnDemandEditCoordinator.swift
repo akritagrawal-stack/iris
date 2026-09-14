@@ -1622,6 +1622,17 @@ final class OnDemandEditCoordinator: ObservableObject {
             appSlug: activeAppSlug ?? "", normalizedRequest: normalizedForIdentity
         )
 
+        // A second valid request can arrive while the first normal intake is
+        // still awaiting its provider. Close that generation before replacing
+        // its log or usage object; its observer keeps the original log capture
+        // for a late process settlement, while the next generation starts clean.
+        if makeHarnessWorkflow == nil, normalCodexUsage != nil {
+            finishNormalCodexUsageIfCurrent(normalCodexUsage, reason: .cancelled)
+            runLog?.finish(outcome: "request replaced before planning")
+            runLog = nil
+            normalCodexUsage = nil
+            normalCodexRunSnapshot = nil
+        }
         scrubbedRequest = scrubbed
         activeRequestText = scrubbed
         changeId = synthesizedChangeId

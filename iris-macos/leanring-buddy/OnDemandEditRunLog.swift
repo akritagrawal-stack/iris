@@ -67,7 +67,16 @@ final class OnDemandEditRunLog {
         // Timestamp-first names sort chronologically by plain string compare,
         // which is what the pruner relies on.
         let safeSlug = OnDemandEditRunLog.safeAppSlugForFileName(appSlug)
-        let fileName = "\(fileNameFormatter.string(from: now))-\(safeSlug).log"
+        let timestamp = fileNameFormatter.string(from: now)
+        // A replacement request can legitimately start in the same millisecond
+        // as the intake it cancels. Keep the app slug as the suffix callers
+        // use to locate a run, but give the replacement its own transcript.
+        let ordinaryFileName = "\(timestamp)-\(safeSlug).log"
+        let fileName = fileManager.fileExists(
+            atPath: (directoryPath as NSString).appendingPathComponent(ordinaryFileName)
+        )
+            ? "\(timestamp)-\(UUID().uuidString)-\(safeSlug).log"
+            : ordinaryFileName
         filePath = (directoryPath as NSString).appendingPathComponent(fileName)
 
         lineTimestampFormatter = DateFormatter()

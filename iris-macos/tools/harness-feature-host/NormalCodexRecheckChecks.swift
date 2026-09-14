@@ -46,9 +46,10 @@ func runNormalCodexRecheckChecks() async throws {
     let accounting = CodexRunUsageAccounting(settings: try HarnessRunLedgerSettings(
         maxCalls: 8, maxInputBytes: 4_000
     ))
+    var oldGenerationUIUpdates = 0
     let observer = OnDemandEditCoordinator.normalCodexUsageObserver(
         for: accounting, runLog: oldRunLog
-    )
+    ) { oldGenerationUIUpdates += 1 }
     let answer = try await CodexMaintainProvider.runCodexExec(
         codexBinaryPath: binary.path,
         promptText: "check the delivered app symptom",
@@ -77,7 +78,7 @@ func runNormalCodexRecheckChecks() async throws {
     try await observer.beforeAttempt?(late)
     try require(accounting.finish(reason: .cancelled), "reset could not finish the current generation")
     oldRunLog.record(accounting.summary)
-    oldRunLog.finish(outcome: "flow reset")
+    oldRunLog.finish(outcome: "request replaced before planning")
 
     // A replacement flow must own its own record and UI; an old process
     // completion must append only to the captured, closed original transcript.
@@ -88,9 +89,10 @@ func runNormalCodexRecheckChecks() async throws {
     let replacementUsage = CodexRunUsageAccounting(settings: try HarnessRunLedgerSettings(
         maxCalls: 2, maxInputBytes: 200
     ))
+    var replacementGenerationUIUpdates = 0
     let replacementObserver = OnDemandEditCoordinator.normalCodexUsageObserver(
         for: replacementUsage, runLog: replacementLog
-    )
+    ) { replacementGenerationUIUpdates += 1 }
     let replacementContext = CodexProcessAttemptContext(
         attemptID: UUID(), model: "new-model", reasoningEffort: nil,
         task: .intake, submittedInputBytes: 10
@@ -108,7 +110,9 @@ func runNormalCodexRecheckChecks() async throws {
                     && oldRecord.contains("calls: 4/4 settled"),
                 "late settlement did not update the original persisted usage record")
     try require(!replacementRecord.contains("late usage settlement")
-                    && replacementUsage.snapshot.admittedCallCount == 1,
+                    && replacementUsage.snapshot.admittedCallCount == 1
+                    && replacementGenerationUIUpdates == 1
+                    && oldGenerationUIUpdates == 8,
                 "late settlement touched the replacement run")
 
     // Intake calls occur before the old edit-start logging point. The normal
@@ -135,5 +139,77 @@ func runNormalCodexRecheckChecks() async throws {
     let intakeRecord = try String(contentsOfFile: intakeLog.filePath, encoding: .utf8)
     try require(intakeRecord.contains("calls: 0/1 settled"),
                 "cancelled intake before edit did not persist its admitted call")
-    print("PASS normal Codex recheck: retries, late old-run settlement, replacement isolation, and cancelled intake are recorded")
+
+    // Drive the public coordinator entrypoint twice without yielding between
+    // calls, the shape a rapid replacement takes on the main actor. The first
+    // intake must become a closed, terminal record before the second call
+    // publishes a replacement ledger and transcript.
+    let resubmitRoot = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Caches/iris-normal-resubmit-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: resubmitRoot) }
+    let resubmitClone = resubmitRoot.appendingPathComponent("clone", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: resubmitClone.appendingPathComponent(".git", isDirectory: true),
+        withIntermediateDirectories: true
+    )
+    try Data("{\"name\":\"resubmit-fixture\",\"scripts\":{\"build\":\"true\",\"test\":\"true\"}}\n".utf8)
+        .write(to: resubmitClone.appendingPathComponent("package.json"))
+    let resubmitSlug = "rapid-resubmit-\(UUID().uuidString)"
+    let resubmitDefaultsName = "iris.normal-resubmit.\(UUID().uuidString)"
+    let resubmitDefaults = UserDefaults(suiteName: resubmitDefaultsName)!
+    let resubmitProvenance = InstallProvenanceStore(userDefaults: resubmitDefaults)
+    resubmitProvenance.recordGuideSourceClone(
+        appSlug: resubmitSlug, clonePath: resubmitClone.path, pinnedCommit: nil, canonicalRepo: nil
+    )
+    let resubmitCoordinator = OnDemandEditCoordinator(
+        installProvenanceStore: resubmitProvenance,
+        patchQueue: PatchQueue(baseDirectoryURL: resubmitRoot.appendingPathComponent("patches")),
+        clonePathLock: MaintainClonePathLock(),
+        topRequestsForApp: { _ in [] },
+        probeRequestTriggers: { _, _ in .allQuiet },
+        deliveredUndoRecoveryStore: DeliveredEditUndoRecoveryStore(
+            recordURL: resubmitRoot.appendingPathComponent("recovery.json")
+        ),
+        appDeliveryReceiptStore: AppDeliveryReceiptStore(
+            baseDirectory: resubmitRoot.appendingPathComponent("receipts")
+        ),
+        editReadiness: { .ready }
+    )
+    let runDirectory = OnDemandEditRunLog.runsDirectoryPath
+    let runFileSuffix = "-\(resubmitSlug).log"
+    func resubmitRunPaths() -> [String] {
+        (try? FileManager.default.contentsOfDirectory(atPath: runDirectory))?
+            .filter { $0.hasSuffix(runFileSuffix) }
+            .sorted()
+            .map { (runDirectory as NSString).appendingPathComponent($0) } ?? []
+    }
+    for path in resubmitRunPaths() { try? FileManager.default.removeItem(atPath: path) }
+    defer {
+        for path in resubmitRunPaths() { try? FileManager.default.removeItem(atPath: path) }
+        resubmitDefaults.removePersistentDomain(forName: resubmitDefaultsName)
+    }
+    try require(
+        resubmitCoordinator.pickApp(slug: resubmitSlug, name: "Rapid Resubmit", stack: .nextjs),
+        "rapid resubmit fixture was not eligible"
+    )
+    try require(
+        resubmitCoordinator.describeRequest("first request \(resubmitSlug)", kind: .feature),
+        "first rapid request was rejected"
+    )
+    try require(
+        resubmitCoordinator.describeRequest("replacement request \(resubmitSlug)", kind: .feature),
+        "replacement rapid request was rejected"
+    )
+    try require(resubmitCoordinator.normalCodexRunSnapshot?.status == .running,
+                "rapid replacement did not publish a fresh current usage snapshot")
+    let resubmitRuns = resubmitRunPaths()
+    try require(resubmitRuns.count == 2, "rapid replacement did not retain two distinct run logs")
+    let resubmitRecords = try resubmitRuns.map { try String(contentsOfFile: $0, encoding: .utf8) }
+    guard let originalRecord = resubmitRecords.first(where: { $0.contains("Request: first request \(resubmitSlug)") }),
+          let rapidReplacementRecord = resubmitRecords.first(where: { $0.contains("Request: replacement request \(resubmitSlug)") })
+    else { throw NormalCodexRecheckCheckError.failed("rapid replacement logs did not retain request identity") }
+    try require(originalRecord.contains("outcome: request replaced before planning")
+                    && !rapidReplacementRecord.contains("request replaced before planning"),
+                "rapid replacement did not terminalize only the original run")
+    print("PASS normal Codex recheck: retries, late old-run settlement, rapid replacement isolation, and cancelled intake are recorded")
 }

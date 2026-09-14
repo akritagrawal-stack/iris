@@ -213,3 +213,14 @@ The list shows `Iris` and `Iris Test (pre-rc-20260913)` enabled, but no entry fo
 setup card. I did not add or toggle an application. The owner must add this
 specific RC to Accessibility and grant Screen Recording before live spatial
 acceptance can proceed.
+
+## NitroAI transfer oracle observation, September 14
+
+The isolated native transfer oracle was run against the explicit `/Users/akrit/NitroAI`
+fixture using its Vitest/Electron runtime. The readiness case passed, but the full
+round-trip suite stopped during `seed-export`: the fixture could not locate the
+`Export notes and folders` control. This is a meaningful complex-feature failure,
+not a passed transfer claim. No user NitroAI profile was modified; failure artifacts
+were retained for diagnosis. The next bounded action is to reconcile the fixture's
+current UI contract with the oracle, then rerun the same round-trip and atomic-failure
+cases without generating a second implementation.

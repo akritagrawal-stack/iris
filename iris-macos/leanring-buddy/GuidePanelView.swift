@@ -147,7 +147,8 @@ struct GuidePanelView: View {
                     if let unsupportedPair = guideSessionController.unsupportedPairForTheSelectedBranch {
                         unsupportedPairExplanation(unsupportedPair)
                     } else {
-                        if guideSessionController.guideOffersSourceWorkspaceSetup {
+                        if guideSessionController.guideOffersSourceWorkspaceSetup
+                            || guideSessionController.guideNeedsPublisherWorkspaceMigration {
                             sourceWorkspaceSetupCard
                         }
                         if let setupRecoveryState = guideSessionController.setupRecoveryState {
@@ -581,7 +582,7 @@ struct GuidePanelView: View {
     @ViewBuilder
     private var sourceWorkspaceSetupContent: some View {
         if guideSessionController.guideNeedsPublisherWorkspaceMigration {
-            Text("This published guide still uses HOME-relative project commands. You can inspect a checkout, but Iris will not automate those commands until Publik publishes a structural workspace version.")
+            Text("This published guide still uses HOME-relative project commands. Iris can safely automate it after you choose and prepare the reviewed source copy below.")
                 .font(.system(size: 11))
                 .foregroundColor(DS.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)

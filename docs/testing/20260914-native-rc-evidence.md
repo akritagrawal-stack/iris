@@ -1,3 +1,7 @@
+### 2026-09-14 legacy guide autopilot implementation
+
+The updated RC now permits the isolated Test bundle to run the legacy Kneecap guide only when a matching validated workspace binding exists. The runner rechecks the binding before each legacy command and maps `~/kneecap` references to that staged root. The source compiled and signed successfully; the next native gate is exercising this path after selecting the staged binding.
+
 ### 2026-09-14 legacy Kneecap workspace routing fix
 
 The native run proved the public guide still used HOME-relative `~/kneecap` commands and blocked autopilot. Iris now requires a validated isolated source binding before allowing that legacy guide, then revalidates the binding at each command boundary and translates only the legacy project path to the staged workspace. Unrelated HOME commands remain unchanged. The Test configuration rebuilt successfully from `db779fc`; strict signing passed. The updated RC executable SHA-256 is `b8aab4504a52f6ea4f092c3f81d921641b0df5f069dc7f92342fa9860484bfd9`.

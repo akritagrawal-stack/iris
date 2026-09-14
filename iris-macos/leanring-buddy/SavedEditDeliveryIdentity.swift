@@ -50,6 +50,28 @@ nonisolated struct SavedDeliveryRetryRecord: Codable, Equatable, Sendable {
     let appName: String
     let changeID: String
     let identity: SavedEditDeliveryIdentity
+    /// The source checkout's exact baseline, captured before the edit. A retry
+    /// after Iris restarts needs this to rebuild the same source-bound receipt;
+    /// the branch tip alone is not enough to reconstruct Undo or patch history.
+    /// Optional keeps records written by older Iris Test builds readable.
+    let originalHeadCommit: String?
+    let originalHeadRef: String?
+
+    init(
+        appSlug: String,
+        appName: String,
+        changeID: String,
+        identity: SavedEditDeliveryIdentity,
+        originalHeadCommit: String? = nil,
+        originalHeadRef: String? = nil
+    ) {
+        self.appSlug = appSlug
+        self.appName = appName
+        self.changeID = changeID
+        self.identity = identity
+        self.originalHeadCommit = originalHeadCommit
+        self.originalHeadRef = originalHeadRef
+    }
 }
 
 /// Keeps a failed Iris Test package retry across an app restart.  This is not a

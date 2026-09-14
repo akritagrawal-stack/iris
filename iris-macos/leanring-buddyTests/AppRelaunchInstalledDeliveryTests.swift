@@ -110,13 +110,17 @@ import Testing
                 clonePath: "/Users/someone/IrisTestDelivery",
                 branchName: "iris/edit-fixture",
                 commit: String(repeating: "a", count: 40)
-            )
+            ),
+            originalHeadCommit: String(repeating: "b", count: 40),
+            originalHeadRef: "main"
         )
 
         #expect(store.load() == nil)
         store.save(record)
         let restored = try #require(store.load())
         #expect(restored == record)
+        #expect(restored.originalHeadCommit == String(repeating: "b", count: 40))
+        #expect(restored.originalHeadRef == "main")
 
         // These are the state values the coordinator publishes after a
         // valid saved source has been rechecked on startup. No edit task,

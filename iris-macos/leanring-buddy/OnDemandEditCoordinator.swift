@@ -494,12 +494,41 @@ final class OnDemandEditCoordinator: ObservableObject {
                 self.savedDeliveryRetryStore.clear()
                 return
             }
+            // The retry record is deliberately small, but a branch tip by
+            // itself cannot recreate the source-bound delivery receipt. Read
+            // the exact parent of the saved edit now, while the identity has
+            // just been revalidated. This also upgrades older records that
+            // predate the persisted baseline without guessing which ref was
+            // checked out before the edit.
+            guard let runner = try? MaintainShellRunner(repoRootPath: record.identity.clonePath),
+                  let parentResult = try? await runner.run("git rev-parse HEAD^", deadline: 15),
+                  parentResult.succeeded,
+                  parentResult.bytesDroppedBeforeTail == 0 else {
+                self.savedDeliveryRetryStore.clear()
+                return
+            }
+            let recoveredBaseCommit = parentResult.outputTail
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard GitInspectionService.isValidCommitIdentifier(recoveredBaseCommit),
+                  record.originalHeadCommit.map({ $0 == recoveredBaseCommit }) ?? true,
+                  record.originalHeadRef.map({
+                      !$0.isEmpty && $0.utf8.count <= 4096
+                          && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+                  }) ?? true else {
+                // A record that was edited or whose source history moved is
+                // not safe to replay. Keep the user's source untouched and
+                // discard only this stale retry affordance.
+                self.savedDeliveryRetryStore.clear()
+                return
+            }
             guard self.editTask == nil, self.phase == .pickApp else { return }
             self.activeAppSlug = record.appSlug
             self.activeAppName = record.appName
             self.changeId = record.changeID
             self.committedBranchName = record.identity.branchName
             self.resolvedClonePath = record.identity.clonePath
+            self.originalHeadCommit = recoveredBaseCommit
+            self.originalHeadRef = record.originalHeadRef
             self.savedDeliveryIdentity = record.identity
             self.savedDeliveryMayBeRetried = true
             self.phase = .done
@@ -517,7 +546,9 @@ final class OnDemandEditCoordinator: ObservableObject {
             appSlug: appSlug,
             appName: activeAppName ?? appSlug,
             changeID: changeID,
-            identity: identity
+            identity: identity,
+            originalHeadCommit: originalHeadCommit,
+            originalHeadRef: originalHeadRef?.isEmpty == false ? originalHeadRef : nil
         ))
     }
 

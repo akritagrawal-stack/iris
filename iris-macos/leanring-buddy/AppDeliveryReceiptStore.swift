@@ -681,7 +681,12 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
                 backupRoot: backupRoot,
                 recoveryStore: recoveryStore,
                 bundleIdentifier: bundleIdentifier,
-                additionalProtectedPaths: protectedPaths
+                additionalProtectedPaths: protectedPaths,
+                // Preview is the read-only front door to explicit cleanup.
+                // Allow it to inspect a bounded history that has outgrown the
+                // normal admission/display cap so the user can see what can
+                // be compacted before confirming removal.
+                allowingMoreThanMaximumEntries: true
             )
             let selectedPrefix = backupRoot.appendingPathComponent(bundleIdentifier, isDirectory: true)
                 .standardizedFileURL.path + "/"
@@ -761,7 +766,11 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
         return try withExclusiveStoreLock {
             let receipts: [AppDeliveryReceipt]
             do {
-                receipts = try retentionReceipts()
+                // Explicit cleanup is the bounded recovery route for a valid
+                // history which has grown past the normal admission cap. It
+                // still validates every receipt and stops at the separate
+                // cleanup ceiling before deleting anything.
+                receipts = try retentionReceipts(allowingMoreThanMaximumEntries: true)
             } catch {
                 throw cleanupError(for: error)
             }
@@ -1483,6 +1492,17 @@ nonisolated struct AppDeliveryReceiptStore: Sendable {
             guard lstat(file.path, &metadata) == 0 else { throw RetentionError.unreadableInventory }
             if name == ".lock" {
                 guard (metadata.st_mode & S_IFMT) == S_IFREG else { throw RetentionError.corruptInventory }
+                continue
+            }
+            // Accepted-candidate records live under a bounded child
+            // directory of the receipt store. They are scanned separately by
+            // acceptedEvidenceReceiptIDs(); never treat that directory as a
+            // receipt envelope or walk its payloads here.
+            if file == acceptedCandidatesDirectory {
+                guard (metadata.st_mode & S_IFMT) == S_IFDIR,
+                      pathHasNoSymlinkComponents(file.path, allowMissing: false) else {
+                    throw RetentionError.corruptInventory
+                }
                 continue
             }
             guard name.hasSuffix(".json"),

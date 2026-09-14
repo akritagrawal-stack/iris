@@ -165,9 +165,9 @@ struct BackupRetentionChecks {
                     "cleanup did not report logical and allocated measurements")
         try require(!FileManager.default.fileExists(atPath: oldest.path)
             && !FileManager.default.fileExists(atPath: newest.path), "obsolete backup still exists")
-        try require(FileManager.default.fileExists(atPath: cleanupFixture.store.url(for: receiptID(
+        try require(!FileManager.default.fileExists(atPath: cleanupFixture.store.url(for: receiptID(
             store: cleanupFixture.store, backup: oldest, identifier: identifier
-        )).path), "cleanup removed the receipt JSON")
+        )).path), "cleanup did not reconcile the obsolete receipt JSON")
         try require(FileManager.default.fileExists(atPath: recent.path),
                     "cleanup removed a retained rollback backup")
         print("PASS Test-only cleanup removes obsolete restored backup and retains newest/recent rollback")
@@ -295,27 +295,38 @@ struct BackupRetentionChecks {
         print("PASS repeat cleanup treats removed restored payloads as idempotently absent")
     }
 
-    private static func checkSuccessiveInstalledDeliveriesRemain(root: URL) throws {
+    private static func checkSuccessiveInstalledDeliveriesAreCompacted(root: URL) throws {
         let fixture = try Self.fixture(root: root, name: "cleanup-installed-growth")
         let identifier = "com.fixture.retention.installed"
         try makeBundle(at: fixture.installed, identifier: identifier, payload: "v0")
         try makeBundle(at: fixture.replacement, identifier: identifier, payload: "v1")
         let replacementTwo = fixture.root.appendingPathComponent("replacement-two/Retention.app")
         try makeBundle(at: replacementTwo, identifier: identifier, payload: "v2")
+        let replacementThree = fixture.root.appendingPathComponent("replacement-three/Retention.app")
+        try makeBundle(at: replacementThree, identifier: identifier, payload: "v3")
+        let replacementFour = fixture.root.appendingPathComponent("replacement-four/Retention.app")
+        try makeBundle(at: replacementFour, identifier: identifier, payload: "v4")
         let backupOne = fixture.backupRoot.appendingPathComponent(
             "com.fixture.retention.installed/one/Retention.app", isDirectory: true
         )
         let backupTwo = fixture.backupRoot.appendingPathComponent(
             "com.fixture.retention.installed/two/Retention.app", isDirectory: true
         )
+        let backupThree = fixture.backupRoot.appendingPathComponent(
+            "com.fixture.retention.installed/three/Retention.app", isDirectory: true
+        )
+        let backupFour = fixture.backupRoot.appendingPathComponent(
+            "com.fixture.retention.installed/four/Retention.app", isDirectory: true
+        )
         let policy = AppDeliveryReceiptStore.BackupRetentionPolicy(
             logicalByteLimit: 2 * 1024 * 1024, backupRoot: fixture.backupRoot
         )
+        let sourceIdentity = deliverySourceIdentity(fixture: fixture)
         let first = AppRelaunchService.replaceBundleWithRecoveryReceipt(
             bundleIdentifier: identifier, installedPath: fixture.installed.path,
             artifactPath: fixture.replacement.path, backupPath: backupOne.path,
-            grantsMayReset: true, store: fixture.store,
-            undoRecoveryStore: fixture.recoveryStore, retentionPolicy: policy
+            grantsMayReset: true, store: fixture.store, undoRecoveryStore: fixture.recoveryStore,
+            sourceIdentity: sourceIdentity, retentionPolicy: policy
         )
         guard case .replacedInstalledApp = first else {
             throw BackupRetentionCheckError.failed("first installed delivery did not succeed")
@@ -324,8 +335,8 @@ struct BackupRetentionChecks {
         let second = AppRelaunchService.replaceBundleWithRecoveryReceipt(
             bundleIdentifier: identifier, installedPath: fixture.installed.path,
             artifactPath: replacementTwo.path, backupPath: backupTwo.path,
-            grantsMayReset: true, store: fixture.store,
-            undoRecoveryStore: fixture.recoveryStore, retentionPolicy: policy
+            grantsMayReset: true, store: fixture.store, undoRecoveryStore: fixture.recoveryStore,
+            sourceIdentity: sourceIdentity, retentionPolicy: policy
         )
         guard case .replacedInstalledApp = second else {
             throw BackupRetentionCheckError.failed("second installed delivery did not succeed")
@@ -333,6 +344,36 @@ struct BackupRetentionChecks {
         let bytesAfterSecond = try requireSize(fixture.backupRoot)
         try require(bytesAfterSecond > bytesAfterFirst,
                     "successive installed deliveries did not leave measurable backup growth")
+        let third = AppRelaunchService.replaceBundleWithRecoveryReceipt(
+            bundleIdentifier: identifier, installedPath: fixture.installed.path,
+            artifactPath: replacementThree.path, backupPath: backupThree.path,
+            grantsMayReset: true, store: fixture.store, undoRecoveryStore: fixture.recoveryStore,
+            sourceIdentity: sourceIdentity, retentionPolicy: policy
+        )
+        guard case .replacedInstalledApp = third else {
+            throw BackupRetentionCheckError.failed("third installed delivery did not succeed")
+        }
+        let bytesAfterThird = try requireSize(fixture.backupRoot)
+        let tightPolicy = AppDeliveryReceiptStore.BackupRetentionPolicy(
+            logicalByteLimit: bytesAfterThird, backupRoot: fixture.backupRoot
+        )
+        let blockedFourth = AppRelaunchService.replaceBundleWithRecoveryReceipt(
+            bundleIdentifier: identifier, installedPath: fixture.installed.path,
+            artifactPath: replacementFour.path, backupPath: backupFour.path,
+            grantsMayReset: true, store: fixture.store, undoRecoveryStore: fixture.recoveryStore,
+            sourceIdentity: sourceIdentity, retentionPolicy: tightPolicy
+        )
+        guard case .deliveryFailed = blockedFourth else {
+            throw BackupRetentionCheckError.failed("over-cap fourth delivery was admitted before cleanup")
+        }
+        let acceptedHistoricalReceipt = try requireReceipt(
+            store: fixture.store, backupPath: backupOne.path
+        )
+        try saveAcceptedEvidenceReference(
+            store: fixture.store, receipt: acceptedHistoricalReceipt,
+            clonePath: fixture.root.appendingPathComponent("clone").path,
+            installedPath: fixture.installed.path
+        )
         let project = IrisTestProjectRegistry.Project(
             slug: "installed", name: "Installed", clonePath: fixture.root.appendingPathComponent("clone").path,
             applicationPath: fixture.installed.path, buildArtifactPath: replacementTwo.path,
@@ -341,17 +382,70 @@ struct BackupRetentionChecks {
         let result = try IrisTestAppDelivery.cleanupObsoleteBackups(
             project: project, backupDirectory: fixture.backupRoot,
             receiptStore: fixture.store, recoveryStore: fixture.recoveryStore,
-            policy: .init(now: Date(timeIntervalSince1970: 1_725_000_000))
+            policy: .init(now: Date().addingTimeInterval(8 * 24 * 60 * 60))
         )
-        try require(result.deletedPaths.isEmpty, "cleanup removed an installed Undo backup")
-        try require(try requireSize(fixture.backupRoot) == bytesAfterSecond,
-                    "installed backup inventory changed during no-op cleanup")
+        try require(result.deletedPaths == [backupTwo.path],
+                    "cleanup did not compact only superseded installed backups: \(result.deletedPaths)")
+        try require(FileManager.default.fileExists(atPath: backupOne.path)
+            && FileManager.default.fileExists(atPath: fixture.store.url(for: acceptedHistoricalReceipt.identifier).path),
+                    "cleanup removed accepted-evidence history")
+        try require(FileManager.default.fileExists(atPath: backupThree.path),
+                    "cleanup removed the current rollback backup")
         try require(fixture.store.entries().compactMap({
             if case .valid(let receipt) = $0 { return receipt.phase }
             return nil
         }).filter({ $0 == AppDeliveryReceipt.Phase.installed }).count == 2,
-                    "successful deliveries did not retain both installed receipts")
-        print("PASS successive installed deliveries retain receipts/backups; growth remains outside cleanup")
+                    "cleanup did not compact superseded receipt envelopes")
+        let fourth = AppRelaunchService.replaceBundleWithRecoveryReceipt(
+            bundleIdentifier: identifier, installedPath: fixture.installed.path,
+            artifactPath: replacementFour.path, backupPath: backupFour.path,
+            grantsMayReset: true, store: fixture.store, undoRecoveryStore: fixture.recoveryStore,
+            sourceIdentity: sourceIdentity, retentionPolicy: tightPolicy
+        )
+        guard case .replacedInstalledApp = fourth else {
+            throw BackupRetentionCheckError.failed("cleanup did not reclaim space for the next delivery")
+        }
+        print("PASS successive installed deliveries compact superseded versions and admit the next delivery")
+    }
+
+    private static func checkOverCapValidHistoryCanBeCompacted(root: URL) throws {
+        let fixture = try Self.fixture(root: root, name: "cleanup-over-cap-history")
+        let identifier = "com.fixture.retention.over-cap"
+        try makeBundle(at: fixture.installed, identifier: identifier, payload: "current")
+        try makeBundle(at: fixture.replacement, identifier: identifier, payload: "replacement")
+        let now = Date().addingTimeInterval(40 * 24 * 60 * 60)
+        for index in 0...AppDeliveryReceiptStore.maximumEntries {
+            let backup = fixture.backupRoot.appendingPathComponent(
+                "com.fixture.retention.over-cap/\(index)/Retention.app", isDirectory: true
+            )
+            try makeBundle(at: backup, identifier: identifier, payload: "current")
+            try saveRestoredReceipt(
+                store: fixture.store, installed: fixture.installed, replacement: fixture.replacement,
+                backup: backup, identifier: identifier,
+                startedAt: now.addingTimeInterval(-Double(index + 1) * 24 * 60 * 60)
+            )
+        }
+        let project = cleanupProject(fixture: fixture, identifier: identifier)
+        let result = try IrisTestAppDelivery.cleanupObsoleteBackups(
+            project: project, backupDirectory: fixture.backupRoot,
+            receiptStore: fixture.store, recoveryStore: fixture.recoveryStore,
+            policy: .init(now: now)
+        )
+        let retainedRecentRollbackCount = 7
+        try require(result.deletedPaths.count == AppDeliveryReceiptStore.maximumEntries + 1 - retainedRecentRollbackCount,
+                    "over-cap valid history did not compact enough records: \(result.deletedPaths.count)")
+        try require(fixture.store.entries().count == retainedRecentRollbackCount,
+                    "obsolete receipt envelopes kept the valid history over the admission cap")
+        let nextBackup = fixture.backupRoot.appendingPathComponent(
+            "com.fixture.retention.over-cap/next/Retention.app", isDirectory: true
+        )
+        guard try fixture.store.admitBackup(
+            sourcePath: fixture.installed.path, destinationPath: nextBackup.path,
+            policy: fixture.policy, recoveryStore: fixture.recoveryStore
+        ) != nil else {
+            throw BackupRetentionCheckError.failed("compacted valid history did not admit the next backup")
+        }
+        print("PASS >256 valid receipt history is compacted and admits the next backup")
     }
 
     private static func checkReceiptEnvelopeFailureReconciles(root: URL) throws {
@@ -1066,6 +1160,56 @@ struct BackupRetentionChecks {
             buildArtifactPath: fixture.replacement.path,
             bundleIdentifier: identifier, pinnedCommit: String(repeating: "a", count: 40)
         )
+    }
+
+    private static func deliverySourceIdentity(fixture: Fixture) -> AppDeliveryReceipt.SourceIdentity {
+        AppDeliveryReceipt.SourceIdentity(
+            appSlug: "installed", appName: "Installed",
+            clonePath: fixture.root.appendingPathComponent("clone").path,
+            branchName: "iris/edit-installed", commit: String(repeating: "a", count: 40),
+            baseCommit: String(repeating: "b", count: 40), baseRef: "main", changeId: "installed"
+        )
+    }
+
+    private static func requireReceipt(
+        store: AppDeliveryReceiptStore, backupPath: String
+    ) throws -> AppDeliveryReceipt {
+        for entry in store.entries() {
+            if case .valid(let receipt) = entry, receipt.backupPath == backupPath {
+                return receipt
+            }
+        }
+        throw BackupRetentionCheckError.failed("fixture receipt was not saved for \(backupPath)")
+    }
+
+    private static func saveAcceptedEvidenceReference(
+        store: AppDeliveryReceiptStore, receipt: AppDeliveryReceipt,
+        clonePath: String, installedPath: String
+    ) throws {
+        guard let sourceIdentity = receipt.sourceIdentity,
+              let artifactDigest = AcceptedCandidateRecord.digest(atArtifactPath: receipt.sourceArtifactPath),
+              let observedIdentity = receipt.replacementBundleIdentity else {
+            throw BackupRetentionCheckError.failed("fixture receipt cannot support accepted evidence")
+        }
+        let verificationID = UUID()
+        let reviewID = UUID()
+        let uiRunID = UUID()
+        let candidate = try AcceptedCandidateRecord(
+            projectSlug: sourceIdentity.appSlug, bundleIdentifier: receipt.bundleIdentifier,
+            registeredProjectPath: clonePath, registeredApplicationPath: installedPath,
+            artifactPath: receipt.sourceArtifactPath, sourceIdentity: sourceIdentity,
+            artifactDigest: artifactDigest, verificationEvidenceID: verificationID,
+            reviewEvidenceID: reviewID, uiAcceptedRunID: uiRunID,
+            uiAcceptedReceiptID: receipt.identifier
+        )
+        try store.saveAcceptedCandidate(candidate)
+        let evidence = try AcceptedCandidateEvidenceRecord(
+            evidenceID: uiRunID, candidateID: candidate.candidateID, kind: .uiAcceptance,
+            sourceIdentity: sourceIdentity, artifactDigest: artifactDigest, result: .passed,
+            receiptIdentifier: receipt.identifier, runIdentifier: uiRunID,
+            observedBundleIdentity: observedIdentity
+        )
+        try store.saveAcceptedCandidateEvidence(evidence)
     }
 
     @discardableResult

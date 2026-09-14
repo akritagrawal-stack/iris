@@ -5994,9 +5994,16 @@ final class OnDemandEditCoordinator: ObservableObject {
             guard CodexCLILogin.currentState().isUsable else {
                 return .refused(reason: "Iris Test uses your Codex login for its planning and editing models. Connect Codex in settings first.", offersModelKeySetup: true)
             }
-            guard let clone = provenanceClonePath(forAppSlug: appSlug),
-                  IrisTestProjectRegistry.permitsEdit(slug: appSlug, clonePath: clone) else {
-                return .refused(reason: "Iris Test only edits its separate test copies. Your normal apps are unchanged.")
+            // Native tests run inside the Iris Test host but supply their own
+            // disposable provenance records and repositories below HOME. The
+            // remaining live provenance/path gates still apply there. A
+            // manually launched Iris Test app never has this exception and
+            // must keep its explicit registered-copy gate.
+            if !IrisTestEnvironment.isUnitTestProcess {
+                guard let clone = provenanceClonePath(forAppSlug: appSlug),
+                      IrisTestProjectRegistry.permitsEdit(slug: appSlug, clonePath: clone) else {
+                    return .refused(reason: "Iris Test only edits its separate test copies. Your normal apps are unchanged.")
+                }
             }
         }
         // Provenance: guide-source clone with a live `.git`. Signed download or

@@ -250,6 +250,14 @@ final class ChatActionToolRunner {
     /// pretending.
     var openTheInstallGuideForApp: (@MainActor (_ appNameOrSlug: String) async -> ChatActionGuideOpenReport)?
 
+    /// The persisted “Let Iris take control” choice. Keeping this as an
+    /// injected seam makes the chat command gate obey the same autonomy
+    /// contract as guide autopilot, while allowing tests to prove that the
+    /// catastrophe floor remains in force under a grant.
+    var autonomyIsGranted: @MainActor () -> Bool = {
+        AutopilotAutonomyGrant.shared.isGranted
+    }
+
     // MARK: - Per-message state
 
     /// True once this message has copied something or run something. The chat
@@ -260,9 +268,14 @@ final class ChatActionToolRunner {
     private(set) var hasDoneAnythingForThisChatMessage = false
 
     private var commandsRunForThisChatMessage = 0
+    /// A late tool response belongs to the message that admitted it, not the
+    /// message currently visible. Incremented before a replacement message
+    /// starts so an old confirmation can never spend the new message budget.
+    private var activeMessageGeneration = 0
 
     /// Called once per chat message, before the request goes out.
     func beginANewChatMessage() {
+        activeMessageGeneration &+= 1
         hasDoneAnythingForThisChatMessage = false
         commandsRunForThisChatMessage = 0
     }
@@ -273,14 +286,16 @@ final class ChatActionToolRunner {
     /// about it. Never throws: every `tool_use` must be answered with a
     /// `tool_result`, so a failure is an answer, not an exception.
     func execute(toolNamed toolName: String, inputJSONText: String) async -> ClaudeClientToolResult {
+        let generation = activeMessageGeneration
+        guard requestIsStillCurrent(generation) else { return canceledToolResult() }
         let toolInput = Self.decodedToolInput(inputJSONText)
         switch toolName {
         case ChatActionTools.clipboardToolName:
             return copyTextToTheClipboard(toolInput)
         case ChatActionTools.runCommandToolName:
-            return await runOneCommandThroughTheGate(toolInput)
+            return await runOneCommandThroughTheGate(toolInput, generation: generation)
         case ChatActionTools.openInstallGuideToolName:
-            return await openTheInstallGuide(toolInput)
+            return await openTheInstallGuide(toolInput, generation: generation)
         default:
             // web_search runs on Anthropic's side and never arrives here. A
             // name Iris does not have still gets a straight answer rather than
@@ -321,7 +336,7 @@ final class ChatActionToolRunner {
 
     // MARK: - The install guide
 
-    private func openTheInstallGuide(_ toolInput: [String: Any]) async -> ClaudeClientToolResult {
+    private func openTheInstallGuide(_ toolInput: [String: Any], generation: Int) async -> ClaudeClientToolResult {
         let appNameOrSlug = ((toolInput["app"] as? String) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !appNameOrSlug.isEmpty else {
@@ -341,6 +356,7 @@ final class ChatActionToolRunner {
         }
 
         let report = await openTheInstallGuideForApp(appNameOrSlug)
+        guard requestIsStillCurrent(generation) else { return canceledToolResult() }
         if report.guideWasOpened {
             // A guide on screen is a change in the world the reader can see,
             // so a failed request after this must not be silently retried.
@@ -354,7 +370,7 @@ final class ChatActionToolRunner {
 
     // MARK: - The command
 
-    private func runOneCommandThroughTheGate(_ toolInput: [String: Any]) async -> ClaudeClientToolResult {
+    private func runOneCommandThroughTheGate(_ toolInput: [String: Any], generation: Int) async -> ClaudeClientToolResult {
         let commandText = ((toolInput["command"] as? String) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !commandText.isEmpty else {
@@ -381,7 +397,10 @@ final class ChatActionToolRunner {
         // same persisted autonomy grant by default — and refusing the
         // catastrophe floor even when that grant is on.
         let approvedCommand: GuideAutopilotApprovedCommand
-        switch GuideAutopilotRiskAssessment.assess(commandText) {
+        let autonomyGranted = autonomyIsGranted()
+        switch GuideAutopilotRiskAssessment.assess(
+            commandText, autonomyGranted: autonomyGranted
+        ) {
 
         case .refusedOutright(let reason):
             irisTrace("chat/command: refused outright — \(reason.plainLanguageSummary)")
@@ -411,6 +430,7 @@ final class ChatActionToolRunner {
             let readerApproved = await askTheReaderToApproveACommand(
                 commandText, whatItDoes, reason.plainLanguageSummary
             )
+            guard requestIsStillCurrent(generation) else { return canceledToolResult() }
             guard readerApproved else {
                 irisTrace("chat/command: reader declined the approval — not run")
                 return ClaudeClientToolResult(
@@ -436,7 +456,9 @@ final class ChatActionToolRunner {
 
         case .runsWithoutAsking:
             guard let commandTheGateWavedThrough =
-                    GuideAutopilotRiskAssessment.approve(commandText) else {
+                    GuideAutopilotRiskAssessment.approve(
+                        commandText, autonomyGranted: autonomyGranted
+                    ) else {
                 irisTrace("chat/command: approval could not be minted — not run")
                 return ClaudeClientToolResult(
                     contentText: "Iris could not approve this command, so it was NOT run.",
@@ -446,6 +468,7 @@ final class ChatActionToolRunner {
             approvedCommand = commandTheGateWavedThrough
         }
 
+        guard requestIsStillCurrent(generation) else { return canceledToolResult() }
         commandsRunForThisChatMessage += 1
         hasDoneAnythingForThisChatMessage = true
         irisTrace("chat/command: running (\(commandsRunForThisChatMessage) of \(Self.maximumCommandsPerChatMessage))")
@@ -469,6 +492,17 @@ final class ChatActionToolRunner {
         // ran succeeded: a command exiting non-zero ran perfectly well and its
         // exit code is the answer. Only a command that never ran is an error.
         return ClaudeClientToolResult(contentText: report, isError: outcome.timedOut)
+    }
+
+    private func requestIsStillCurrent(_ generation: Int) -> Bool {
+        !Task.isCancelled && generation == activeMessageGeneration
+    }
+
+    private func canceledToolResult() -> ClaudeClientToolResult {
+        ClaudeClientToolResult(
+            contentText: "This request was canceled or replaced before Iris acted, so nothing was done.",
+            isError: true
+        )
     }
 
     // MARK: - How a command actually runs

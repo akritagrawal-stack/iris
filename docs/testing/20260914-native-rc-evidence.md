@@ -301,3 +301,9 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 - The NitroAI source remains clean at `6d4209c`. Settings exposes `Export notes and folders` and `Import notes and folders`; the database import path validates v1 envelopes, preserves existing records, copies changed same-ID notes, rejects dangling or duplicate folders, and restores atomically on failure.
 - The isolated transfer oracle passed `2/2` with private temporary roots. Iris harness remains `161/161`.
 - This does not close the Iris-mediated complex-feature gate. The last native provider attempt made eight setup calls that reread repository/oracle context without producing an edit or delivery; the next action is a single convergent provider run followed by native delivery, relaunch, and readback.
+
+### 2026-09-14 provider convergence guard
+
+- Commit `d86e435` bounds pre-edit investigation for on-demand feature work. After three unchanged investigation steps Iris nudges the provider toward a source edit; after three more unchanged steps it stops honestly and restores the candidate instead of looping.
+- Commit `4aed5fd` aligns the regression fixture with the production `CodexMaintainProvider` capability surface. The focused source test parses successfully; the existing harness remains `161/161` across `7` suites.
+- This closes the production-path convergence guard at source level. A live provider run, packaged delivery, relaunch, and native complex-feature acceptance are still required before claiming the full journey.

@@ -296,6 +296,8 @@ final class GuideAutopilotTakeoverController {
         let minimizeTakeover: () -> Void = { [weak self] in
             self?.dismiss(afterHold: false, thenRun: afterTheReaderMinimizesIt)
         }
+        terminal.onEscapeHatch = onEscapeHatch
+        terminal.onHelp = { GuideAutopilotHelpRequest.theReaderAskedForHelp() }
         terminal.onMinimize = minimizeTakeover
         let takeoverView = GuideAutopilotTakeoverView(
             model: takeoverModel,
@@ -323,6 +325,12 @@ final class GuideAutopilotTakeoverController {
             },
             onMinimizeControlFrameChanged: { [weak terminal] frame in
                 MainActor.assumeIsolated { terminal?.minimizeControlFrame = frame }
+            },
+            onEscapeHatchControlFrameChanged: { [weak terminal] frame in
+                MainActor.assumeIsolated { terminal?.escapeHatchControlFrame = frame }
+            },
+            onHelpControlFrameChanged: { [weak terminal] frame in
+                MainActor.assumeIsolated { terminal?.helpControlFrame = frame }
             }
         )
         let hostingView = NSHostingView(rootView: takeoverView)
@@ -972,21 +980,36 @@ final class GuideAutopilotTakeoverTerminalPanel: NSPanel {
     /// AppKit hit-testing, so the controls name their own frames instead.
     var interactiveControlFrames: [CGRect] = []
 
+    /// Semantic title-bar control frames. These are intentionally kept apart
+    /// from the generic list: the panel can complete these clicks itself even
+    /// when a SwiftUI/AppKit bridge (such as a tooltip) sits above the button.
+    var escapeHatchControlFrame: CGRect?
+    var helpControlFrame: CGRect?
+
     /// The yellow traffic light's content-space frame. It has a semantic
     /// action owned by this panel's controller, so it cannot be inferred safely
     /// from the generic control-frame array.
     var minimizeControlFrame: CGRect?
 
-    /// Set between the yellow button's mouse-down and mouse-up. The panel owns
-    /// the gesture while it decides click versus drag; for this control the
-    /// existing SwiftUI Button cannot receive the held event reliably, so the
-    /// owning closure is fired on a completed click here.
-    private var isTrackingMinimizeClick = false
-
     /// The action that folds this panel away while leaving its runner alive.
     /// The controller owns the implementation; the panel only completes the
     /// click when AppKit has delivered the release.
     var onMinimize: (() -> Void)?
+
+    /// Actions for the title-bar controls that have to cross the same
+    /// window-level boundary as minimize. Keeping these callbacks here avoids
+    /// depending on the hosting view's hit-test result, which can be an inert
+    /// overlay even though the SwiftUI button is visible underneath.
+    var onEscapeHatch: (() -> Void)?
+    var onHelp: (() -> Void)?
+
+    private enum SemanticTitleBarControl {
+        case escapeHatch
+        case help
+        case minimize
+    }
+
+    private var semanticTitleBarControlBeingClicked: SemanticTitleBarControl?
 
     /// Whether a press lands on one of the terminal's interactive controls, so
     /// it must be delivered straight to SwiftUI rather than held for this
@@ -1002,6 +1025,41 @@ final class GuideAutopilotTakeoverTerminalPanel: NSPanel {
     ) -> Bool {
         let pressInContent = CGPoint(x: pressInWindow.x, y: windowHeight - pressInWindow.y)
         return controls.contains { $0.contains(pressInContent) }
+    }
+
+    private func semanticTitleBarControl(
+        at pressInWindow: CGPoint
+    ) -> SemanticTitleBarControl? {
+        let pressInContent = CGPoint(x: pressInWindow.x, y: frame.height - pressInWindow.y)
+        if escapeHatchControlFrame?.contains(pressInContent) == true { return .escapeHatch }
+        if helpControlFrame?.contains(pressInContent) == true { return .help }
+        if minimizeControlFrame?.contains(pressInContent) == true { return .minimize }
+        return nil
+    }
+
+    private func frameForSemanticTitleBarControl(
+        _ control: SemanticTitleBarControl
+    ) -> CGRect? {
+        switch control {
+        case .escapeHatch: return escapeHatchControlFrame
+        case .help: return helpControlFrame
+        case .minimize: return minimizeControlFrame
+        }
+    }
+
+    private func completeSemanticTitleBarControlClick(
+        _ control: SemanticTitleBarControl
+    ) {
+        switch control {
+        case .escapeHatch:
+            irisTrace("takeover: red escape hatch clicked")
+            onEscapeHatch?()
+        case .help:
+            onHelp?()
+        case .minimize:
+            irisTrace("takeover: yellow minimize clicked")
+            onMinimize?()
+        }
     }
 
     /// Which edges a press takes hold of, or an empty set for a press that is
@@ -1154,21 +1212,20 @@ final class GuideAutopilotTakeoverTerminalPanel: NSPanel {
     }
 
     override func sendEvent(_ event: NSEvent) {
-        // The yellow button is a SwiftUI control rendered inside an
-        // NSHostingView. A synthetic or hardware-shaped event can reach this
-        // panel while SwiftUI's own tracking loop is not the view AppKit
-        // resolves, so finish the semantic click at the panel boundary. Keep
-        // the action on mouse-up, and require the release to remain inside the
-        // hit target, matching a normal button click.
-        if event.type == .leftMouseUp, isTrackingMinimizeClick {
-            isTrackingMinimizeClick = false
+        // Title-bar controls are SwiftUI buttons rendered inside an
+        // NSHostingView. A hardware-shaped event can reach this panel while a
+        // SwiftUI/AppKit bridge (notably a tooltip) is the view AppKit resolves
+        // above the button. Complete the semantic click at the panel boundary,
+        // and require release to remain inside the same target like a normal
+        // button. This also keeps the red/help paths symmetric with minimize.
+        if event.type == .leftMouseUp, let semanticControl = semanticTitleBarControlBeingClicked {
+            semanticTitleBarControlBeingClicked = nil
             let releaseInWindow = Self.grabOffsetInWindow(of: event, in: self)
             let releaseInContent = CGPoint(
                 x: releaseInWindow.x, y: frame.height - releaseInWindow.y
             )
-            if minimizeControlFrame?.contains(releaseInContent) == true {
-                irisTrace("takeover: yellow minimize clicked")
-                onMinimize?()
+            if frameForSemanticTitleBarControl(semanticControl)?.contains(releaseInContent) == true {
+                completeSemanticTitleBarControlClick(semanticControl)
             }
             return
         }
@@ -1189,11 +1246,8 @@ final class GuideAutopilotTakeoverTerminalPanel: NSPanel {
         }
 
         let pressInWindow = Self.grabOffsetInWindow(of: event, in: self)
-        if let minimizeControlFrame,
-           Self.pressLandsOnAControl(
-               pressInWindow, windowHeight: frame.height, controls: [minimizeControlFrame]
-           ) {
-            isTrackingMinimizeClick = true
+        if let semanticControl = semanticTitleBarControl(at: pressInWindow) {
+            semanticTitleBarControlBeingClicked = semanticControl
             return
         }
 
@@ -1406,6 +1460,9 @@ private struct GuideAutopilotTakeoverView<Runner: AutopilotTerminalPresenting>: 
     /// the generic control list so the panel can invoke the existing minimize
     /// action without guessing which SwiftUI frame is which.
     let onMinimizeControlFrameChanged: (CGRect?) -> Void
+    /// Semantic title-bar frames for actions completed at the panel boundary.
+    let onEscapeHatchControlFrameChanged: (CGRect?) -> Void
+    let onHelpControlFrameChanged: (CGRect?) -> Void
 
     var body: some View {
         ZStack {
@@ -1490,6 +1547,12 @@ private struct GuideAutopilotTakeoverView<Runner: AutopilotTerminalPresenting>: 
         }
         .onPreferenceChange(TakeoverMinimizeControlFrameKey.self) { frame in
             onMinimizeControlFrameChanged(frame)
+        }
+        .onPreferenceChange(TakeoverEscapeHatchControlFrameKey.self) { frame in
+            onEscapeHatchControlFrameChanged(frame)
+        }
+        .onPreferenceChange(TakeoverHelpControlFrameKey.self) { frame in
+            onHelpControlFrameChanged(frame)
         }
     }
 }

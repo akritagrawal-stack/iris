@@ -839,7 +839,8 @@ struct GuidePanelView: View {
                         .foregroundColor(DS.Colors.warningText)
                         .fixedSize(horizontal: false, vertical: true)
                     if blocked.localizedCaseInsensitiveContains("source workspace")
-                        || blocked.localizedCaseInsensitiveContains("source folder") {
+                        || blocked.localizedCaseInsensitiveContains("source folder")
+                        || guideSessionController.guideHasPinnedSourceIdentity {
                         Button("Choose source folder") { chooseSourceFolder() }
                             .irisPrimaryPill(isFullWidth: false, isCompact: true)
                     }

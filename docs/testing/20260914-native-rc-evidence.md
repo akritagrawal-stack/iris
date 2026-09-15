@@ -334,3 +334,19 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 
 - The integrated source was packaged as `/Users/Shared/Iris-RC-20260914-v11/Iris Test.app` after the native spatial test correction. Strict code-signature verification passed using `Iris Local Code Signing`; executable SHA-256 is `2a0f47f584a95d582eddb5cf6b5a3618bac240b17796308fe54f8c191c2f643c`.
 - v11 is the current named candidate for subsequent native acceptance. The existing v10 artifact remains available for rollback.
+
+### 2026-09-14 focused native pointing lifecycle verification
+
+- Xcode GUI reran the three remaining Root cause C lifecycle guards directly
+  against the integrated tree, rather than trusting the navigator's stale
+  historical status. `going back into the same app on the same step does not
+  point all over again` passed in 3.220s with zero extra flights across three
+  settled activations; `leaving the app and coming back does not fly the eye
+  out all over again` passed in 3.400s with zero extra flights across three
+  out-and-back cycles; and `a step change still re-points — a debounce must not
+  turn the eye off` passed in 1.884s with the new step receiving its own flight.
+- These runs close the focused native lifecycle evidence for Root cause C. The
+  navigator can still display old failures until its historical aggregate is
+  refreshed; the direct results above are the authoritative post-change runs.
+  Live provider-backed screen capture, the remaining complex transfer journey,
+  and physical iPhone acceptance remain open gates.

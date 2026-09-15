@@ -460,3 +460,12 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   working directory and user dotfile behavior.
 - This closes the focused macOS retry continuity check. It does not prove the
   full phone handoff or physical-device install journey.
+
+### 2026-09-14 Kneecap stale-shell reproduction rerun
+
+- The native scheme ran `Bug3StaleShellPathReproTests`; both reproduction tests
+  passed (`2/2`). This confirms the retry refresh makes a tool installed during
+  a run discoverable without incorrectly relying on a stale shell path, while
+  the fresh-shell control remains explicit.
+- This is focused native shell evidence and does not prove the physical phone
+  installation or device handoff.

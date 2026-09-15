@@ -766,3 +766,8 @@ open/restart route. The mobile hub therefore correctly renders iPhone as
 unavailable and explains the publisher action required. This confirms the
 blocker is upstream catalog/distribution state, not a hidden browser test
 failure.
+
+The signed v20 candidate was launched from its shared RC path and produced a
+live `Iris Test` process, then was quit cleanly. This is a bounded startup
+smoke only; without native screen interaction it does not establish the
+Kneecap, spatial, or permission journeys.

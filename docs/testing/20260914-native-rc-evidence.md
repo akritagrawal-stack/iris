@@ -588,6 +588,15 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+### 2026-09-14 local mobile hub refresh smoke
+
+The integrated `iris-mobile/server.mjs` served the hub successfully at
+`http://127.0.0.1:4173/`; the live catalog endpoint returned the expected
+bounded app records and the HTML route returned `200`. This confirms the
+refresh path is wired in the integrated tree. It is local web evidence only;
+it does not establish an App Store/TestFlight destination or physical-phone
+installation.
+
 ### 2026-09-14 focused native setup and spatial rerun
 
 The Xcode `Iris Test` scheme reran `GuideSetupRecoveryTests` and

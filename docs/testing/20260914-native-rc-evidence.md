@@ -361,3 +361,8 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   `xcodebuild ... build CODE_SIGNING_ALLOWED=NO`. Existing Swift concurrency
   warnings remain in unrelated legacy paths; no new warning was introduced by
   the refresh hook.
+
+### 2026-09-14 RC v12 capability-refresh artifact
+
+- The capability-refresh change was packaged as `/Users/Shared/Iris-RC-20260914-v12/Iris.app` and signed with the local test identity. Strict verification passed; executable SHA-256 is `02cb4e858c52c10ae671247768a5acd5d9c7118060ebb804448b0264886a3628`.
+- v12 is a candidate artifact for the next native Ask acceptance pass. It does not close live screen capture, provider-backed transfer, or physical iPhone gates.

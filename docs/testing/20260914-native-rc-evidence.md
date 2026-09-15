@@ -741,6 +741,11 @@ This makes a stable permission-bearing candidate available without replacing
 the normal Iris installation; Screen Recording and Accessibility consent
 still need to be granted and exercised by a native UI operator.
 
+The signed candidate declares the required Screen Recording usage description,
+network client, user-selected file access, and screen-capture picker exception
+entitlements. This confirms the remaining permission gap is runtime consent
+on this Mac, rather than a missing declaration in the bundle.
+
 The fresh compile-gated feature-host run also completed successfully with its
 explicit scratch directory and `IRIS_HARNESS_SCRATCH` binding. It reported
 passing usage attribution, review-reserve, command-freshness, repair-window,

@@ -523,3 +523,7 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   selection behavior.
 - This is focused native routing evidence. It does not prove live provider
   execution or physical-device acceptance.
+
+### 2026-09-14 guide setup recovery regression rerun
+
+Ran the native Xcode `Iris Test` scheme against `leanring-buddyTests/GuideSetupRecoveryTests` with signing disabled. Swift Testing executed 7 tests in 1 suite and all passed. Coverage includes diversion into setup when prerequisites are missing, skip/setup branching, recheck failure staying in setup, successful recheck returning to the saved guide step, and setup progress preserving guide progress. This verifies the state transition contract in the harness; it does not establish live provider, installed-app, or physical-device acceptance.

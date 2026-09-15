@@ -2758,8 +2758,8 @@ final class CompanionManager: ObservableObject {
     // invokes Anthropic's structured computer-use tool. Keep coordinate
     // extraction out of the conversational guide prompt so a plain text model
     // cannot become an accidental second spatial implementation.
-    /// Ask the vision model where a guide step's control is, for the eye to fly
-    /// to. Returns an AppKit-global (bottom-left origin, points) rect — the same
+    /// Ask the dedicated spatial model where a guide step's control is, for the
+    /// eye to fly to. Returns an AppKit-global (bottom-left origin, points) rect — the same
     /// space `SystemGuideTargetLocator`'s accessibility locators return — or nil.
     /// Frames are ephemeral: a local `let`, never stored or logged as image data.
     private var guidePointingModelFailureMessage: String?

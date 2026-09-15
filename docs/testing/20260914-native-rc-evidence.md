@@ -796,3 +796,15 @@ The post-change native Kneecap subset was rerun against the integrated source:
 the stale subset evidence item for self-install, reader-installed-tool retry,
 shell continuity, and real-tool execution in the fixture workspace. It remains
 fixture/native evidence, not a live user-folder install or phone handoff.
+
+### 2026-09-14 native Ask smoke and screen-permission boundary
+
+After setup activation, the signed v20 overlay was summoned with the documented
+Control+Option gesture. A user-like prompt, `What app is currently visible?`,
+was entered and submitted through the live overlay. Iris returned the truthful
+message: `I can't see your screen. Connecting screen help is required for Iris
+to identify the app currently visible.` The native path therefore proves overlay
+input and submission, plus truthful refusal when screen access is unavailable;
+it does not prove screen capture, spatial targeting, or Kneecap guidance. The
+visible permission panel still requires runtime Screen Recording and
+Accessibility consent from macOS before those journeys can be accepted.

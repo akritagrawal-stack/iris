@@ -477,3 +477,12 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   identity refusal, and exact identity allowing Undo.
 - This is focused native UI decision evidence for safe version-history recovery;
   it does not prove live provider delivery or device continuity.
+
+### 2026-09-14 progress durability and cleanup rerun
+
+- The native scheme ran `Test6ProgressDurabilityReproTests`; all `6/6` tests
+  passed. This covered carrying versioned keys forward, cleaning obsolete
+  keys, rescuing stranded keys, keeping branches separate, preserving the
+  stopped step across republish, and restarting safely after a renamed step.
+- This is focused native persistence and cleanup evidence. Live provider
+  delivery and physical-device continuity remain separate gates.

@@ -736,3 +736,9 @@ passing usage attribution, review-reserve, command-freshness, repair-window,
 redaction, accepted-candidate, and pre-edit convergence checks. The host
 reported 303 compiler warnings but no compile or check failure; its synthetic
 byte reduction remains prompt-text accounting, not provider token savings.
+
+The same fresh host then ran the guide and spatial regression driver. Its
+bounded offline suites passed `72/72` across 5 suites in 19.267 seconds, with
+the spatial checks exiting successfully. This verifies the retry, shell,
+ownership, and spatial state-machine contracts in the integrated source; it
+still does not substitute for live screen interaction.

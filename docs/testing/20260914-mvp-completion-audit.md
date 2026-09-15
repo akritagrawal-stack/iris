@@ -47,6 +47,12 @@ headless, browser, or package tests.
 - The run covered focused-window preference, target identity staleness, duplicate refusal, coordinate transforms, negative monitor origins, bounded compatibility fallback, and one-line cues.
 - The launched test process reported `accessibility: false, screen: false, screenContent: true`; therefore live click-through remains permission-gated even though the semantic target suite passed.
 
+## Fresh native install and delivery rerun (2026-09-14)
+
+- The `Iris Test` scheme ran `Bug7MissingToolSelfInstallEndToEndTests`, `Bug3StaleShellPathEndToEndTests`, and `AppRelaunchInstalledDeliveryTests` together.
+- Result: **16/16** tests passed in 3 suites, covering missing-tool self-install and retry, shipped-shell continuity, real-tool execution, bundle replacement, backup identity, startup reconciliation, retry-record restoration, clone exclusion, and Undo recovery.
+- This strengthens source/native state-machine evidence; live user-workspace installation, provider execution, and phone handoff remain acceptance gates.
+
 ## Permission-pane recheck (2026-09-14)
 
 - macOS Accessibility settings visibly list both `Iris` and `Iris Test` as registered applications.

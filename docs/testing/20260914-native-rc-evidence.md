@@ -350,3 +350,14 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   refreshed; the direct results above are the authoritative post-change runs.
   Live provider-backed screen capture, the remaining complex transfer journey,
   and physical iPhone acceptance remain open gates.
+
+### 2026-09-14 Codex capability refresh
+
+- The native Ask bar now refreshes the published Codex login snapshot when it
+  appears and whenever another application activates. This keeps the connection
+  label, Send gate, and dispatch preflight aligned after an external
+  `codex login` or `codex logout` while Iris remains open.
+- The integrated `Iris Test` scheme compiled successfully with
+  `xcodebuild ... build CODE_SIGNING_ALLOWED=NO`. Existing Swift concurrency
+  warnings remain in unrelated legacy paths; no new warning was introduced by
+  the refresh hook.

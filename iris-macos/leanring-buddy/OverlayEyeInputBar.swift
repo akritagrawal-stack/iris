@@ -936,6 +936,15 @@ struct OverlayEyeInputBarView: View {
                 theTextFieldHasKeyboardFocus = true
             }
         }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didActivateApplicationNotification
+        )) { _ in
+            // A terminal logout/login can happen while this bar stays open.
+            // Refresh the same published snapshot used by the label and the
+            // send gate when the reader returns to Iris, so a cached
+            // "connected" state cannot survive an external credential change.
+            accountService.refreshCodexLoginState()
+        }
         .alert("Move this draft to another app?", isPresented: $projectSwitchConfirmationIsShowing) {
             Button("Cancel", role: .cancel) { pendingProjectSelection = nil }
                 .keyboardShortcut(.defaultAction)

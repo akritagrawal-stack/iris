@@ -430,3 +430,14 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   `ed4e29428dd4545cba99b7e05d709135c340c062be67c292dbe9c9d2e65de927`.
 - RC v14 is ready for the permission-restored native run; provider-backed
   transfer and physical-device acceptance remain open.
+
+### 2026-09-14 spatial regression discovery and rerun
+
+- Restored `SpatialGuidanceRegressionTests.swift` to the native Xcode test
+  target. The focused scheme then discovered and passed all `7/7` spatial
+  regression tests, covering semantic identity, process/window/tab changes,
+  duplicate evidence, coordinate transforms, focused-window selection, and
+  bounded fallback labels.
+- This strengthens source/native test coverage. It is not a substitute for
+  the permission-restored live screen-capture journey or physical-device
+  acceptance.

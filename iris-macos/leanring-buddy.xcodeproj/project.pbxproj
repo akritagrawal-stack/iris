@@ -56,7 +56,6 @@
 				KeychainReadPolicyTests.swift,
 				OverlayEyeDragTests.swift,
 				SettingsPanelBehaviorTests.swift,
-				SpatialGuidanceRegressionTests.swift,
 			);
 			target = 28F22CCB2F56440300A0FC59 /* leanring-buddyTests */;
 		};

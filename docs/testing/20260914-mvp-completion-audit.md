@@ -34,3 +34,9 @@ headless, browser, or package tests.
 - Compiled `GuideSourceWorkspace.swift` with `SourceWorkspaceChecks.swift` and ran the standalone executable successfully.
 - The check passed structural origin/path guards, bounded command output and child cancellation, dirty-source isolation into a detached worktree, preservation of the original checkout, common-directory recording, and cancellation recovery records.
 - This is local source-workspace evidence; it still does not replace the live Kneecap install and downstream phone handoff.
+
+## Fresh integrated host checks (2026-09-14)
+
+- Rebuilt the compile-gated host from the current source tree and ran `--checks` with an isolated scratch directory.
+- Result: **exit 0**. Usage attribution, review reserve, command freshness, repair-window, receipt, redaction, and accepted-candidate checks all passed.
+- The host remains an inert/headless verifier and does not close native provider execution or device acceptance.

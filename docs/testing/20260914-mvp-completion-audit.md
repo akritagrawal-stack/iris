@@ -69,3 +69,9 @@ headless, browser, or package tests.
 
 - macOS Accessibility settings visibly list both `Iris` and `Iris Test` as registered applications.
 - The current v23 process still reports `accessibility: false` and `screen: false`, so registration in the pane is not treated as consent. A user must enable the current test bundle's controls and relaunch before live click-through can be accepted.
+
+## Fresh native workspace probe (2026-09-14)
+
+- After activating v23, a full desktop capture showed the Iris eye affordances over the live Discord `LARPslayers` workspace and the active Canvas/Chrome windows.
+- Capture recorded at `/tmp/iris-live-recheck-20260914.png` (SHA-256 `e97efb4a6504aaca1497781afb1273d2f955daf63ecfeb6b139d628b66c56eae`).
+- This confirms the overlay remains present while the user changes applications; it is observational evidence only and does not claim a completed target click or edit delivery.

@@ -588,6 +588,15 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+### 2026-09-14 focused native setup and spatial rerun
+
+The Xcode `Iris Test` scheme reran `GuideSetupRecoveryTests` and
+`SpatialGuidanceRegressionTests` together. All `14/14` tests passed, covering
+setup diversion and return, saved progress, focused-window preference,
+semantic target staleness, duplicate refusal, coordinate transforms, and
+bounded cues. This remains native test evidence rather than live screen
+capture or physical-device acceptance.
+
 The post-routing full regression was rerun on the integration branch: Swift
 package tests passed `161/161` across 7 suites and the mobile install hub
 passed `20/20`. These results confirm no package-level regression after the

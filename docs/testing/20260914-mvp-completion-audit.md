@@ -10,7 +10,7 @@ Updated 2026-09-14 from the integration branch and recorded test artifacts.
 | Capability-correct routing and usage accounting | 161/161 package tests, 11 routing tests, host usage checks, per-route input/cache token telemetry | Source/package evidence covered; live provider pricing/execution remains open |
 | Meaningful complex feature through Iris | NitroAI transfer oracle 2/2 with import/export edge cases | Target-app oracle passes; Iris live generation, delivery, relaunch, and readback remain open |
 | Mobile install hub | 20/20 Node tests and local server/catalog smoke | Hub integration covered; no verified iPhone distribution route or physical-device journey |
-| Integrated release candidate | `/Users/Shared/Iris-RC-20260914-v16/Iris Test.app`, Xcode build succeeded | Artifact exists; acceptance is incomplete until live/native/device gates close |
+| Integrated release candidate | `/Users/Shared/Iris-RC-20260914-v19/Iris Test.app`, Xcode build succeeded | Artifact exists; acceptance is incomplete until live/native/device gates close |
 
 The unverified gates require actual provider-backed execution, Screen Recording
 and Accessibility consent for the test bundle, and a connected trusted iPhone

@@ -95,3 +95,19 @@ headless, browser, or package tests.
 - Through the real Iris overlay, the visible Chrome workspace was asked, “What is visible on my screen right now?” The submitted message and rendered response were captured at `/tmp/iris-ax-screen-result.png` (SHA-256 `af60a6b02f0311935a81814509f95d9024a151308cd2b970b4cb82f9e9e09d37`).
 - The response correctly followed the capability boundary: `I can’t see your screen. Connect screen help so Iris can inspect what’s visible.` The composer showed `Codex general help`, and settings showed `Answers only — editing apps runs on Codex (your ChatGPT login)`. This is a provider/account gate, not evidence that TCC consent is missing.
 - The real `Reconnect saved login` action opened the native Keychain authorization prompt for `com.publikhq.iris.test`; no password was entered during this run. Iris subsequently reported that macOS did not finish reconnecting and kept the saved login. A publik/Anthropic screen-help credential is still required before provider-backed screen capture and edit delivery can be accepted.
+
+## Fresh native screen-capture and provider Ask check (2026-09-14)
+
+- An independent ScreenCaptureKit probe, run outside Iris but on the same
+  desktop, captured a non-empty 320x240 image from one display (`displays=1`,
+  `windows=40`). This isolates the capture API and confirms that the current
+  macOS consent rows are sufficient for ScreenCaptureKit itself.
+- After the provider settled, the real Iris overlay rendered a screen-aware
+  answer to `What is visible on my screen right now?`: it identified ChatGPT,
+  the Mission Control chat, and the emulator at lower right. The final native
+  frame is `/tmp/iris-scroll-screen.png` (SHA-256
+  `1b14c8f9924ed0780eb3cea145fe8fa802db8b59a7de50d55b1c69d8619f9d32`).
+- This closes the live screen-capture plus provider Ask check for this build.
+  It does not close model-generated `[POINT]` click-through or a provider-backed
+  edit and delivery; the first targeted point request returned a descriptive
+  answer without a coordinate tag, so spatial click-through remains open.

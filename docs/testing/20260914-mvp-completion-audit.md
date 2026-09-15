@@ -40,3 +40,9 @@ headless, browser, or package tests.
 - Rebuilt the compile-gated host from the current source tree and ran `--checks` with an isolated scratch directory.
 - Result: **exit 0**. Usage attribution, review reserve, command freshness, repair-window, receipt, redaction, and accepted-candidate checks all passed.
 - The host remains an inert/headless verifier and does not close native provider execution or device acceptance.
+
+## Fresh focused native spatial rerun (2026-09-14)
+
+- `xcodebuild -project iris-macos/leanring-buddy.xcodeproj -scheme "Iris Test" -destination "platform=macOS" -only-testing:leanring-buddyTests/SpatialGuidanceRegressionTests test CODE_SIGNING_ALLOWED=NO` passed **7/7** tests.
+- The run covered focused-window preference, target identity staleness, duplicate refusal, coordinate transforms, negative monitor origins, bounded compatibility fallback, and one-line cues.
+- The launched test process reported `accessibility: false, screen: false, screenContent: true`; therefore live click-through remains permission-gated even though the semantic target suite passed.

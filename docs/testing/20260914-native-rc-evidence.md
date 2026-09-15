@@ -568,3 +568,13 @@ mobile suite passed `20/20`, including the route-label regression check. The
 live catalog still has no verified iPhone or Android destination, so this is
 handoff wording evidence only and does not establish a signed build or physical
 device acceptance.
+
+### 2026-09-14 failed review retention bound
+
+The headless harness native module compiled successfully after adding bounded
+failed-review archival: at most 256 records and 8 MiB of record bytes, with
+oversized or non-regular entries rejected before any write. The accompanying
+focused harness regression fills the archive and confirms the active
+review-held candidate remains on disk when the cap is reached. This protects failed-candidate
+continuity across restart; it does not establish installed-app or physical
+device behavior.

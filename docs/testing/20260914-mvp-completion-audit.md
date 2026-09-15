@@ -28,3 +28,9 @@ headless, browser, or package tests.
 - The signed v23 process was live (`Iris Test.app`, PID 35284) and displayed the real overlay over the active Canvas/Chrome workspace, including the current task context, model selector, edited-file receipt, and Ask input.
 - `hasScreenContentPermission=1` for the test bundle, and the captured frame was recorded at `/tmp/iris-current-native-20260914.png` (SHA-256 `28d4099d86fa239cdc718bec796b1089bed25589f6800dafc15fbe2ff1fbed18`).
 - This proves native overlay rendering and screen-context presentation for this run. It does not by itself prove a completed click-through action, provider-backed edit, or iPhone journey.
+
+## Fresh Kneecap workspace check (2026-09-14)
+
+- Compiled `GuideSourceWorkspace.swift` with `SourceWorkspaceChecks.swift` and ran the standalone executable successfully.
+- The check passed structural origin/path guards, bounded command output and child cancellation, dirty-source isolation into a detached worktree, preservation of the original checkout, common-directory recording, and cancellation recovery records.
+- This is local source-workspace evidence; it still does not replace the live Kneecap install and downstream phone handoff.

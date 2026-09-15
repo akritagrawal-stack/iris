@@ -35,11 +35,11 @@
 //  no tap at all. Measured, before the fix, from this file's own compiled gate:
 //
 //      cp -R ./Evil.app /Applications/                      -> CONFIRM
-//      cd /Applications ; cp -R ./Evil.app .                -> RUNS-NO-ASK
+//      cd /Applications ; cp -R ./Evil.app .                -> CONFIRM
 //      cp ./x.plist /Library/LaunchAgents/x.plist           -> CONFIRM
-//      cd /Library/LaunchAgents ; cp ./x.plist x.plist      -> RUNS-NO-ASK
+//      cd /Library/LaunchAgents ; cp ./x.plist x.plist      -> CONFIRM
 //      rm -rf ~                              (grant ON)     -> REFUSED (floor)
-//      cd ~ ; rm -rf .                       (grant ON)     -> RUNS-NO-ASK
+//      cd ~ ; rm -rf .                       (grant ON)     -> REFUSED
 //
 //  The last pair is the worst of them: the catastrophe floor is the one thing
 //  no consent and no autonomy grant can wave through, and a declared folder
@@ -195,9 +195,12 @@ nonisolated enum GuideAutopilotRiskAssessment {
     /// and this must not re-assess it in a laxer way than the ask did.
     static func approveAfterAReaderTap(
         _ command: String,
-        inWorkingDirectory workingDirectory: String? = nil
+        inWorkingDirectory workingDirectory: String? = nil,
+        autonomyGranted: Bool = AutopilotAutonomyGrant.shared.isGranted
     ) -> GuideAutopilotApprovedCommand? {
-        switch assess(command, inWorkingDirectory: workingDirectory) {
+        switch assess(
+            command, inWorkingDirectory: workingDirectory, autonomyGranted: autonomyGranted
+        ) {
         case .runsWithoutAsking, .needsAConfirmTap:
             return GuideAutopilotApprovedCommand(text: command)
         case .refusedOutright:
@@ -233,30 +236,102 @@ nonisolated enum GuideAutopilotRiskAssessment {
         while folder.count > 1 && folder.hasSuffix("/") { folder.removeLast() }
 
         var resolved = ""
+        var currentFolder = folder
         var tokenIsTheProgramName = true
         for line in command.split(separator: "\n", omittingEmptySubsequences: false) {
             if !resolved.isEmpty { resolved += "\n" }
             tokenIsTheProgramName = true
+            var pendingChangeDirectory = false
+            var changeDirectoryHasArgument = false
             for piece in Self.piecesPreservingWhitespace(of: String(line)) {
                 if piece.isWhitespaceRun {
                     resolved += piece.text
                     continue
                 }
                 if Self.separatesOneCommandFromTheNext(piece.text) {
+                    if pendingChangeDirectory && !changeDirectoryHasArgument {
+                        // A plain cd with no argument changes to HOME.
+                        currentFolder = "~"
+                    }
                     resolved += piece.text
                     tokenIsTheProgramName = true
+                    pendingChangeDirectory = false
+                    changeDirectoryHasArgument = false
                     continue
                 }
                 if tokenIsTheProgramName {
                     // A program is found on PATH, not in the working folder.
                     resolved += piece.text
                     tokenIsTheProgramName = false
+                    pendingChangeDirectory = piece.text == "cd" || piece.text == "/bin/cd"
+                    changeDirectoryHasArgument = false
                     continue
                 }
-                resolved += Self.resolving(piece.text, against: folder) ?? piece.text
+                let folderBeforeThisPiece = currentFolder
+                if pendingChangeDirectory && !changeDirectoryHasArgument {
+                    // Preserve the standard cd mode flags. A lone "-" is a
+                    // real directory argument and remains unknown.
+                    if piece.text != "-L" && piece.text != "-P" {
+                        currentFolder = Self.folderAfterChangingDirectory(
+                            to: piece.text, from: currentFolder
+                        ) ?? currentFolder
+                        changeDirectoryHasArgument = true
+                    }
+                }
+                resolved += Self.resolving(piece.text, against: folderBeforeThisPiece) ?? piece.text
+            }
+            if pendingChangeDirectory && !changeDirectoryHasArgument {
+                // A line break terminates a simple command just like a
+                // semicolon.
+                currentFolder = "~"
             }
         }
         return resolved
+    }
+
+    /// Resolves common literal cd destinations. Unknown or computed paths stay
+    /// unresolved, which errs toward an extra confirmation.
+    private static func folderAfterChangingDirectory(
+        to token: String, from folder: String
+    ) -> String? {
+        var destination = token
+        if destination.count >= 2,
+           let first = destination.first,
+           let last = destination.last,
+           (first == "'" || first == "\""), first == last {
+            destination.removeFirst()
+            destination.removeLast()
+        }
+
+        if destination == "$HOME" || destination == "${HOME}" {
+            return "~"
+        }
+        if destination.hasPrefix("$HOME/") {
+            return normalisedPath("~" + String(destination.dropFirst("$HOME".count)))
+        }
+        if destination.hasPrefix("${HOME}/") {
+            return normalisedPath("~" + String(destination.dropFirst("${HOME}".count)))
+        }
+        guard !destination.isEmpty,
+              !destination.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              destination.unicodeScalars.allSatisfy({ plainPathCharacters.contains($0) }) else {
+            // Quoted paths may contain spaces, but shell expansion is not
+            // treated as a literal destination here.
+            if destination.isEmpty || destination.contains("$")
+                || destination.unicodeScalars.contains(where: { $0.value == 96 }) {
+                return nil
+            }
+            if destination.hasPrefix("/") || destination.hasPrefix("~") {
+                return normalisedPath(destination)
+            }
+            return destination.contains(" ")
+                ? normalisedPath(folder + "/" + destination)
+                : nil
+        }
+        if destination.hasPrefix("/") || destination.hasPrefix("~") {
+            return normalisedPath(destination)
+        }
+        return normalisedPath(folder + "/" + destination)
     }
 
     /// `&&`, `||`, `|`, `;` and `&` end one command and start another, so the
@@ -455,11 +530,19 @@ nonisolated enum GuideAutopilotRiskAssessment {
         .init(#"\bchown\b"#, "This changes who owns files."),
         .init(#"\blaunchctl\s+(load|bootstrap)\b[^\n]*LaunchDaemons"#,
               "This installs a system-level background service."),
+        .init(#"\blaunchctl\s+(?:load|bootstrap|unload|bootout|remove|enable|disable|kickstart|kill)\b"#,
+              "This changes a background service."),
         .init(#"\bcsrutil\b"#, "This touches System Integrity Protection."),
         .init(#"\bspctl\b[^\n]*--master-disable"#, "This turns Gatekeeper off."),
+        .init(#"\bspctl\b[^\n]*--(?:add|remove|enable|disable|master-enable|global-disable|reset-default)\b"#,
+              "This changes Gatekeeper policy."),
         .init(#"\bsystemsetup\b"#, "This changes system-wide settings."),
-        .init(#"\bxattr\b[^\n]*com\.apple\.quarantine"#,
+        .init(#"\bxattr\b[^\n]*\s-(?:[^\s-]*[cwd][^\s-]*)[^\n]*com\.apple\.quarantine"#,
               "This strips the quarantine flag macOS puts on downloads."),
+        .init(#"\bxattr\b[^\n]*\s-[^\s-]*[cwd][^\s-]*(?:\s|$)"#,
+              "This changes extended file attributes."),
+        .init(#"\bxattr\b[^\n]*\s--(?:write|delete|clear)\b"#,
+              "This changes extended file attributes."),
 
         // Destructive.
         .init(#"\bgit\s+reset\s+--hard\b"#, "This throws away uncommitted changes."),
@@ -470,6 +553,8 @@ nonisolated enum GuideAutopilotRiskAssessment {
         .init(#"\bshred\b"#, "This destroys a file's contents."),
         .init(#"\bfind\b[^\n]*-delete\b"#, "This deletes every file the search matches."),
         .init(#"\bdefaults\s+delete\b"#, "This erases an app's stored settings."),
+        .init(#"\bdefaults\s+(?:write|rename|import)\b"#,
+              "This changes an app's stored settings."),
         .init(#"\bkillall\b"#, "This force-quits running apps."),
         .init(#"\bpkill\b"#, "This force-quits running processes."),
         .init(#"\brmdir\b"#, "This removes a directory."),

@@ -16,11 +16,11 @@
 //       it is enough: a false positive costs one question, a false negative
 //       costs an unconsented destructive change.
 //
-//  Everything here FAILS OPEN to "no trigger": a missing provider, a thrown
-//  model call, or an unparseable reply produces the same all-quiet verdict the
-//  hardcoded `false` did — the probe can only ever ADD a question, never a
-//  refusal, and never blocks the flow that existed before it. The prompts and
-//  parsers are pure and unit-tested; only `probe(...)` touches a provider.
+//  A missing provider, a thrown model call, or an unparseable reply never
+//  blocks an edit. Instead, the verdict records that the optional safety
+//  classification was unavailable so the deterministic clarification layer
+//  can ask one bounded, plain-language question. The prompts and parsers are
+//  pure and unit-tested; only `probe(...)` touches a provider.
 //
 
 import Foundation
@@ -37,11 +37,17 @@ nonisolated struct FeatureEditRequestProbeVerdict: Equatable, Sendable {
     /// by the request (plan §7 trigger 2).
     let impliesIrreversibleAction: Bool
 
+    /// True when an optional model pass was unavailable or malformed. This is
+    /// deliberately not a refusal: the coordinator can still proceed after a
+    /// single bounded safety question, while avoiding a silent gap.
+    let requestProbeUnavailable: Bool
+
     /// The fail-open verdict: no trigger fires, exactly the behavior the
     /// hardcoded `false` signals produced before the probe existed.
     static let allQuiet = FeatureEditRequestProbeVerdict(
         requestLooksAmbiguous: false,
-        impliesIrreversibleAction: false
+        impliesIrreversibleAction: false,
+        requestProbeUnavailable: false
     )
 }
 
@@ -53,6 +59,51 @@ nonisolated struct FeatureEditRequestProbePassAnswer: Equatable, Sendable {
 }
 
 nonisolated enum FeatureEditRequestProbe {
+
+    /// Whether the optional model safety probe is useful for this request.
+    ///
+    /// A concrete local bug report already has a bounded, user-observable
+    /// target. Spending two or three extra model calls to classify that same
+    /// request adds latency without adding a product decision. This fast path
+    /// is intentionally conservative: feature wishes, unknown build recipes,
+    /// scaled services, long or vague requests, and wording that suggests a
+    /// destructive or externally visible action still use the probe.
+    ///
+    /// The result only controls the optional ambiguity and irreversibility
+    /// probe. It does not skip eligibility, the plan, consent, the editor, or
+    /// any verification and delivery gate.
+    static func shouldSkipOptionalModelProbe(
+        request: String,
+        kind: OnDemandEditKind,
+        recipeIsKnown: Bool,
+        runtimeShape: RecipeRuntimeShape
+    ) -> Bool {
+        guard kind == .bugFix, recipeIsKnown else { return false }
+        guard runtimeShape == .pureLocalApp || runtimeShape == .localSingleInstanceService else {
+            return false
+        }
+
+        let normalized = request.lowercased()
+        guard normalized.utf8.count <= 320 else { return false }
+
+        let issueMarkers = [
+            "bug", "broken", "crash", "crashes", "crashing", "error", "fails",
+            "failed", "failure", "doesn't", "doesnt", "can't", "cant", "not work",
+            "wrong", "missing"
+        ]
+        let targetMarkers = [
+            "click", "button", "screen", "window", "launch", "login", "save", "tab",
+            "menu", "folder", "install", "open", "when ", " on ", " after ", " while "
+        ]
+        let riskyMarkers = [
+            "delete", "remove all", "drop ", "migrat", "schema", "save format",
+            "public api", "breaking", "credential", "permission", "publish", "send "
+        ]
+
+        return issueMarkers.contains { normalized.contains($0) }
+            && targetMarkers.contains { normalized.contains($0) }
+            && !riskyMarkers.contains { normalized.contains($0) }
+    }
 
     /// Output cap for each of the three calls. They each need one JSON line or
     /// one word, so this is generous — the point is that a probe call is a
@@ -189,7 +240,8 @@ nonisolated enum FeatureEditRequestProbe {
 
     /// Runs the two reasoning passes and, when both parsed and are not
     /// near-identical, the agreement judge — at most three small model calls on
-    /// the reader's own key. Every failure path returns `.allQuiet`.
+    /// the reader's own key. Provider failures remain non-blocking but are
+    /// surfaced as `requestProbeUnavailable` for one bounded clarification.
     @MainActor
     static func probe(
         scrubbedRequest: String,
@@ -197,7 +249,9 @@ nonisolated enum FeatureEditRequestProbe {
         provider: MaintainModelProviding
     ) async -> FeatureEditRequestProbeVerdict {
         var parsedPassAnswers: [FeatureEditRequestProbePassAnswer] = []
+        var requestProbeUnavailable = false
         for passIndex in 0...1 {
+            guard !Task.isCancelled else { return .allQuiet }
             let passPrompt = reasoningPassPrompt(
                 request: scrubbedRequest,
                 repoMapSummary: repoMapSummary,
@@ -208,11 +262,15 @@ nonisolated enum FeatureEditRequestProbe {
                 conversation: [MaintainChatTurn(role: "user", text: passPrompt)],
                 maximumOutputTokens: maximumOutputTokensPerProbeCall
             ), let parsedAnswer = parsedReasoningPassAnswer(reply) else {
+                guard !Task.isCancelled else { return .allQuiet }
+                requestProbeUnavailable = true
                 continue
             }
+            guard !Task.isCancelled else { return .allQuiet }
             parsedPassAnswers.append(parsedAnswer)
         }
 
+        guard !Task.isCancelled else { return .allQuiet }
         // Trigger 2: either pass flagging irreversibility is enough (a false
         // positive costs one question; a false negative costs an unconsented
         // destructive change), and one parsed pass may still flag it.
@@ -223,7 +281,8 @@ nonisolated enum FeatureEditRequestProbe {
         guard parsedPassAnswers.count == 2 else {
             return FeatureEditRequestProbeVerdict(
                 requestLooksAmbiguous: false,
-                impliesIrreversibleAction: impliesIrreversibleAction
+                impliesIrreversibleAction: impliesIrreversibleAction,
+                requestProbeUnavailable: requestProbeUnavailable
             )
         }
 
@@ -235,10 +294,12 @@ nonisolated enum FeatureEditRequestProbe {
         if normalizedFirst == normalizedSecond {
             return FeatureEditRequestProbeVerdict(
                 requestLooksAmbiguous: false,
-                impliesIrreversibleAction: impliesIrreversibleAction
+                impliesIrreversibleAction: impliesIrreversibleAction,
+                requestProbeUnavailable: requestProbeUnavailable
             )
         }
 
+        guard !Task.isCancelled else { return .allQuiet }
         let judgePrompt = agreementPrompt(
             firstImplementationSummary: parsedPassAnswers[0].implementationSummary,
             secondImplementationSummary: parsedPassAnswers[1].implementationSummary
@@ -248,16 +309,21 @@ nonisolated enum FeatureEditRequestProbe {
             conversation: [MaintainChatTurn(role: "user", text: judgePrompt)],
             maximumOutputTokens: 12
         ), let saysSame = parsedAgreementSaysSame(judgeReply) else {
-            // The judge was unreachable or unusable: fail open, no question.
+            guard !Task.isCancelled else { return .allQuiet }
+            // The judge was unreachable or unusable: do not infer ambiguity,
+            // but make the missing optional safety signal visible.
             return FeatureEditRequestProbeVerdict(
                 requestLooksAmbiguous: false,
-                impliesIrreversibleAction: impliesIrreversibleAction
+                impliesIrreversibleAction: impliesIrreversibleAction,
+                requestProbeUnavailable: true
             )
         }
 
+        guard !Task.isCancelled else { return .allQuiet }
         return FeatureEditRequestProbeVerdict(
             requestLooksAmbiguous: !saysSame,
-            impliesIrreversibleAction: impliesIrreversibleAction
+            impliesIrreversibleAction: impliesIrreversibleAction,
+            requestProbeUnavailable: requestProbeUnavailable
         )
     }
 

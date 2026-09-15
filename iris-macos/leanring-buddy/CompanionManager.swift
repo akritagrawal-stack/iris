@@ -24,9 +24,25 @@ enum CompanionAssistantState {
     case pointing
 }
 
+/// A semantically verified guide target that the overlay may outline. The
+/// overlay is visual-only and never receives mouse events, so it cannot turn
+/// a guide hint into an unintended click.
+struct GuideTargetOutline: Equatable {
+    let rectangle: CGRect
+    let fingerprint: GuideTargetFingerprint
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var assistantState: CompanionAssistantState = .idle
+    /// True only while the current general-chat request is still running.
+    ///
+    /// This is separate from `assistantState`, which is also used by guide and
+    /// onboarding pointing, and from `theLatestAnswerIsStillWaitingForTheReader`,
+    /// which means a completed answer has not been dismissed yet. The response
+    /// identifier guarding this flag is what prevents an older canceled task
+    /// from clearing the state of a newer request.
+    @Published private(set) var chatResponseIsPending = false
     /// The most recent message the user submitted from the panel text field.
     @Published private(set) var latestUserMessageText: String?
     /// The most recent assistant response (point tag stripped), shown in the
@@ -118,6 +134,10 @@ final class CompanionManager: ObservableObject {
     /// Custom speech bubble text for the pointing animation. When set,
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
+    /// Nil unless the latest guide lookup carries fresh semantic evidence.
+    /// Geometry-only and stale results can move the eye but cannot outline a
+    /// control, because a rectangle alone does not identify what it contains.
+    @Published var guideTargetOutline: GuideTargetOutline?
 
     // MARK: - Onboarding Video State (shared across all screen overlays)
 
@@ -141,6 +161,11 @@ final class CompanionManager: ObservableObject {
     /// eye morphs into it and back. Raised and dismissed from the guide's
     /// start/stop/completion hooks below.
     private let autopilotTakeoverController = GuideAutopilotTakeoverController()
+
+    /// Manual-gate copy is normally held by the takeover model. Keep the last
+    /// gate here as well so an install that starts minimized can replay the
+    /// blocking Continue control when the reader explicitly shows its terminal.
+    private var pendingAutopilotManualGate: (title: String, instruction: String)?
 
     /// Owns sign-in and the user's own Anthropic key. The panel observes it
     /// directly, and the request pipeline below asks it which route to take.
@@ -205,7 +230,8 @@ final class CompanionManager: ObservableObject {
     /// them has a newer release. It lives here rather than in the panel view so
     /// the scan it did survives the panel being closed and reopened — the
     /// alternative is a Spotlight query every time somebody glances at Iris.
-    let appInventoryService = AppInventoryService()
+    let appInventoryService = IrisTestEnvironment.isEnabled
+        ? IrisTestProjectRegistry.inventory() : AppInventoryService()
 
     /// Knows which publik apps are running *right now* and can ask them what
     /// they are doing. The inventory above answers "is it installed"; this
@@ -249,6 +275,13 @@ final class CompanionManager: ObservableObject {
     /// distinct instance — never overwriting an installed/signed bundle.
     private let appRelaunchService = AppRelaunchService()
 
+    /// The receipt store used by the Test-only saved-version panel. Keeping
+    /// this accessor on the manager ensures Settings and delivery share the
+    /// same durable records rather than showing a second, disconnected store.
+    var savedAppVersionsReceiptStore: AppDeliveryReceiptStore {
+        appRelaunchService.deliveryReceiptStore
+    }
+
     /// The USER-INITIATED on-demand editor: the reader picks an installed
     /// catalog app, says what to change (an explicit bug fix or feature), and
     /// Iris edits the local source, verifies it, and commits it on a branch —
@@ -258,15 +291,31 @@ final class CompanionManager: ObservableObject {
     /// throttle/mute machinery (that exists to stop AI nagging — wrong for an
     /// act the reader started). Lazy so it shares the one provenance store.
     lazy var onDemandEditCoordinator: OnDemandEditCoordinator = {
+        weak var coordinatorReference: OnDemandEditCoordinator?
         let coordinator = OnDemandEditCoordinator(
             installProvenanceStore: installProvenanceStore,
             patchQueue: PatchQueue(),
             topRequestsForApp: { [weak self] appSlug in
+                guard !IrisTestEnvironment.isEnabled else { return [] }
                 guard let self else { return [] }
                 return await self.maintainFeatureRequests
                     .topRequests(forAppSlug: appSlug)
                     .map(\.request)
-            }
+            },
+            appDeliveryReceiptStore: appRelaunchService.deliveryReceiptStore,
+            makeHarnessWorkflow: IrisTestEnvironment.isEnabled ? {
+                let workflow = try HarnessCodexAdapter.makeWorkflow(settings: .init(maxCalls: 18, maxInputBytes: 1_800_000),
+                    maximumDurationNanoseconds: 1_200_000_000_000, webSearchEnabled: true)
+                let usage = IrisTestRunUsage(implementationArm: workflow.modelSession.implementationArm)
+                workflow.modelSession.admissionDidSucceed = { reservation, inputCounts in
+                    usage.recordAdmission(reservation, inputCounts: inputCounts)
+                }
+                workflow.modelSession.ledgerDidChange = { usage.record($0) }
+                workflow.modelSession.routeTelemetryDidChange = { usage.recordRouteTelemetry($0) }
+                workflow.modelSession.lifecycleDidChange = { usage.recordLifecycle($0) }
+                coordinatorReference?.bindHarnessRunUsage(usage)
+                return workflow
+            } : nil
         )
         // FORK-ONLY backup — never `propagateFix`, which push-merges straight to
         // a third party's canonical repo when the reader has push rights. An
@@ -319,20 +368,28 @@ final class CompanionManager: ObservableObject {
             return await OnDemandEditPullRequestOpener.readerCanPushToTheRepo(behind: runner)
         }
 
+        coordinatorReference = coordinator
+
         // Rebuild → relaunch (Option A). Relaunch is offered only when the
-        // catalog supplies a REAL macBundleId (tri-state — never guessed) AND the
-        // stack produces a relaunchable macOS artifact. The two closures below
-        // package from the clone and then terminate+launch; the coordinator holds
-        // the per-clonePath lock across both so the incident path can't strip
-        // `.git` under the packaging build.
+        // catalog supplies a REAL macBundleId (tri-state — never guessed) AND
+        // this clone has a code-authored packaging route for a relaunchable
+        // macOS artifact. A generic Electron stack without a declared macOS
+        // packaging script therefore stays a truthful manual/source-only flow
+        // instead of offering a button that will fail after the click. The two
+        // closures below package from the clone and then terminate+launch; the
+        // coordinator holds the per-clonePath lock across both so the incident
+        // path can't strip `.git` under the packaging build.
         coordinator.relaunchIsAvailableForApp = { [weak self] appSlug in
             guard let self else { return false }
             let stack = self.appStack(forSlug: appSlug)
+            guard let clonePath = self.installProvenanceStore.provenance(forAppSlug: appSlug)?.clonePath else {
+                return false
+            }
             let macBundleId = self.appInventoryService.installedEntriesForDisplay
                 .first { $0.slug == appSlug }?.macBundleId
             let hasKnownBundleId = (macBundleId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
             return hasKnownBundleId
-                && AppRelaunchService.stackCanProduceARelaunchableMacArtifact(stack)
+                && AppRelaunchService.canPackageFreshMacArtifact(stack: stack, clonePath: clonePath)
         }
         // A STABLE signing identity for rebuilt apps (founder decision, Aug 22
         // 2026): the user's Developer ID when one is in the keychain, else a
@@ -388,7 +445,9 @@ final class CompanionManager: ObservableObject {
             }
             let stack = self.appStack(forSlug: appSlug)
             return await self.appRelaunchService.packageFreshBuildFromClone(
-                clonePath: clonePath, appStack: stack
+                clonePath: clonePath, appStack: stack,
+                expectedBundleIdentifier: self.appInventoryService.installedEntriesForDisplay
+                    .first(where: { $0.slug == appSlug })?.macBundleId
             )
         }
         coordinator.terminateAndRelaunchEditedApp = { [weak self] appSlug, artifactPath, allowForceQuit in
@@ -402,6 +461,32 @@ final class CompanionManager: ObservableObject {
                 macBundleId: macBundleId,
                 freshBuildArtifactPath: artifactPath,
                 allowForceQuit: allowForceQuit
+            )
+        }
+        coordinator.terminateEditedAppBeforeDelivery = { [weak self] appSlug, artifactPath, allowForceQuit in
+            guard let self,
+                  let macBundleId = self.appInventoryService.installedEntriesForDisplay
+                      .first(where: { $0.slug == appSlug })?.macBundleId,
+                  !macBundleId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .ineligible(reason: "Iris doesn't have a bundle id for this app")
+            }
+            return await self.appRelaunchService.terminateRunningInstanceBeforeDelivery(
+                macBundleId: macBundleId,
+                freshBuildArtifactPath: artifactPath,
+                allowForceQuit: allowForceQuit
+            )
+        }
+        coordinator.launchEditedAppAfterDelivery = { [weak self] appSlug, artifactPath, fallbackApplicationPath in
+            guard let self,
+                  let macBundleId = self.appInventoryService.installedEntriesForDisplay
+                      .first(where: { $0.slug == appSlug })?.macBundleId,
+                  !macBundleId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .ineligible(reason: "Iris doesn't have a bundle id for this app")
+            }
+            return await self.appRelaunchService.launchFreshBuildAfterTermination(
+                macBundleId: macBundleId,
+                freshBuildArtifactPath: artifactPath,
+                fallbackApplicationPath: fallbackApplicationPath
             )
         }
 
@@ -423,7 +508,7 @@ final class CompanionManager: ObservableObject {
         // output; a snapshot is taken first so `restoreInstalledAppFromBackup`
         // can undo it. Falls back to launching the build-dir artifact when there
         // is no separate installed copy or the swap fails.
-        coordinator.deliverEditedAppOverInstalledApp = { [weak self] appSlug, freshBuildArtifactPath in
+        coordinator.deliverEditedAppOverInstalledAppWithRecoveryContext = { [weak self] appSlug, freshBuildArtifactPath, sourceIdentity in
             guard let self,
                   let macBundleId = self.appInventoryService.installedEntriesForDisplay
                       .first(where: { $0.slug == appSlug })?.macBundleId,
@@ -434,7 +519,7 @@ final class CompanionManager: ObservableObject {
             return await self.appRelaunchService.installFreshBuildOverInstalledApp(
                 macBundleId: macBundleId,
                 freshBuildArtifactPath: freshBuildArtifactPath,
-                clonePath: clonePath
+                clonePath: clonePath, sourceIdentity: sourceIdentity
             )
         }
         coordinator.restoreInstalledAppFromBackup = { [weak self] installedPath, backupPath in
@@ -442,6 +527,25 @@ final class CompanionManager: ObservableObject {
             return await self.appRelaunchService.restoreInstalledAppFromBackup(
                 installedPath: installedPath, backupPath: backupPath
             )
+        }
+        coordinator.terminateEditedAppBeforeUndo = { [weak self] slug, installedPath in
+            guard let self, let identifier = self.appInventoryService.installedEntriesForDisplay
+                .first(where: { $0.slug == slug })?.macBundleId else {
+                return .ineligible(reason: "The app identity is unavailable for Undo.")
+            }
+            return await self.appRelaunchService.terminateRunningInstanceBeforeDelivery(
+                macBundleId: identifier, freshBuildArtifactPath: installedPath, allowForceQuit: false)
+        }
+        coordinator.launchRestoredAppAfterUndo = { [weak self] slug, installedPath in
+            guard let self, let identifier = self.appInventoryService.installedEntriesForDisplay
+                .first(where: { $0.slug == slug })?.macBundleId else {
+                return .ineligible(reason: "The app identity is unavailable for Undo.")
+            }
+            // A resumed Undo can find the restored app already running.
+            // Reuse graceful termination; never force-quit during recovery.
+            return await self.appRelaunchService.terminateRunningInstanceThenLaunchFreshBuild(
+                macBundleId: identifier, freshBuildArtifactPath: installedPath,
+                allowForceQuit: false)
         }
 
         // Runtime evidence for the edit agent: a screenshot of the picked
@@ -483,20 +587,10 @@ final class CompanionManager: ObservableObject {
             return "Posted to publik's public listing for \(canonicalRepo)"
         }
 
-        // A working FEATURE is changelogged to publik, not PR'd (founder ruling,
-        // Sep 3 2026). Automatic once the feature is confirmed working. This is a
-        // db record of what the app gained, plus the pooled request marked
-        // implemented — NOT the D6 public-listing post, which stays the separate,
-        // consented "Share to publik" button.
-        coordinator.pushFeatureChangelogToPublik = { [weak self] appSlug, summary in
-            guard let self else { return nil }
-            let canonicalRepo = self.installProvenanceStore.provenance(forAppSlug: appSlug)?.canonicalRepo
-            let recorded = await self.maintainPoolClient.recordChangelog(
-                appSlug: appSlug, summary: summary, repo: canonicalRepo, kind: "feature"
-            )
-            await self.maintainFeatureRequests.markPooledRequestImplemented(summary, forAppSlug: appSlug)
-            return recorded ? "Added to publik's changelog for this app." : nil
-        }
+        // A local success verdict is not permission to publish the request or
+        // mark public demand implemented. Keep the existing explicit Share to
+        // publik confirmation above as the owner of that network write.
+        coordinator.pushFeatureChangelogToPublik = nil
 
         // THE WIRE TO THE EYE, INSTALLED WHERE THE COORDINATOR IS BORN.
         //
@@ -508,6 +602,108 @@ final class CompanionManager: ObservableObject {
         // not see — which is the very silence this fixes, reintroduced through
         // a side door. Born with the coordinator, it cannot be missing while
         // there is a coordinator to be silent about.
+        if IrisTestEnvironment.isEnabled {
+            coordinator.backUpEditBranchToMyForkOnly = nil
+            coordinator.openPullRequestForTheKeptEdit = nil
+            coordinator.publishEditToPublik = nil
+            coordinator.pushFeatureChangelogToPublik = nil
+            coordinator.readerCanPushToTheAppsRepo = { _ in false }
+            coordinator.runMachineCommandOnThisMac = nil
+            // Capture one registry identity through quit, replacement and launch.
+            // No production app lookup is permitted in this route.
+            var deliveryProjects: [String: IrisTestProjectRegistry.Project] = [:]
+            coordinator.deliverEditedAppOverInstalledApp = nil
+            coordinator.deliverEditedAppOverInstalledAppWithRecoveryContext = { [weak self] slug, artifact, sourceIdentity in
+                guard let self, let project = deliveryProjects[slug],
+                      IrisTestProjectRegistry.project(slug: slug) == project else {
+                    return .deliveryFailed(reason: "The registered test app changed before delivery. No installed app was replaced.")
+                }
+                return await IrisTestAppDelivery.install(project: project, artifactPath: artifact, sourceIdentity: sourceIdentity,
+                                                        service: self.appRelaunchService)
+            }
+            coordinator.installedApplicationPathForApp = { slug in
+                IrisTestProjectRegistry.project(slug: slug)?.applicationPath
+            }
+            coordinator.terminateAndRelaunchEditedApp = { [weak self] slug, artifact, force in
+                guard let self, let project = IrisTestProjectRegistry.project(slug: slug),
+                      IrisTestProjectRegistry.permitsRunningApplication(URL(fileURLWithPath: artifact), for: project) else {
+                    return .ineligible(reason: "Iris Test refused an app outside its registered test copy.")
+                }
+                return await self.appRelaunchService.terminateRunningInstanceThenLaunchFreshBuild(
+                    macBundleId: project.bundleIdentifier, freshBuildArtifactPath: artifact, allowForceQuit: force,
+                    allowedApplicationURL: { url in
+                        IrisTestProjectRegistry.project(slug: slug) == project
+                            && IrisTestProjectRegistry.permitsRunningApplication(url, for: project)
+                    }, fallbackApplicationURL: URL(fileURLWithPath: project.applicationPath))
+            }
+            coordinator.terminateEditedAppBeforeDelivery = { [weak self] slug, artifact, force in
+                guard let self, let project = IrisTestProjectRegistry.project(slug: slug),
+                      IrisTestProjectRegistry.permitsArtifact(artifact, for: project) else {
+                    return .ineligible(reason: "Iris Test refused an app outside its registered test copy.")
+                }
+                if force, let captured = deliveryProjects[slug], captured != project {
+                    return .ineligible(reason: "The registered test app changed while waiting for quit approval.")
+                }
+                deliveryProjects[slug] = project
+                return await self.appRelaunchService.terminateRunningInstanceBeforeDelivery(
+                    macBundleId: project.bundleIdentifier,
+                    freshBuildArtifactPath: artifact,
+                    allowForceQuit: force,
+                    allowedApplicationURL: { url in
+                        IrisTestProjectRegistry.project(slug: slug) == project
+                            && IrisTestProjectRegistry.permitsRunningApplication(url, for: project)
+                    }
+                )
+            }
+            coordinator.launchEditedAppAfterDelivery = { [weak self] slug, artifact, fallback in
+                guard let self, let project = IrisTestProjectRegistry.project(slug: slug),
+                      deliveryProjects[slug].map({ $0 == project }) ?? true,
+                      IrisTestProjectRegistry.permitsRunningApplication(URL(fileURLWithPath: artifact), for: project),
+                      fallback.map({ IrisTestProjectRegistry.permitsRunningApplication(URL(fileURLWithPath: $0), for: project) }) ?? true else {
+                    return .ineligible(reason: "Iris Test refused an app outside its registered test copy.")
+                }
+                return await self.appRelaunchService.launchFreshBuildAfterTermination(
+                    macBundleId: project.bundleIdentifier,
+                    freshBuildArtifactPath: artifact,
+                    allowedApplicationURL: { url in
+                        IrisTestProjectRegistry.project(slug: slug) == project
+                            && IrisTestProjectRegistry.permitsRunningApplication(url, for: project)
+                    },
+                    fallbackApplicationPath: fallback
+                )
+            }
+            coordinator.restoreInstalledAppFromBackup = { [weak self] installed, backup in
+                guard let self else { return false }
+                return await IrisTestAppDelivery.restore(installedPath: installed, backupPath: backup,
+                                                        service: self.appRelaunchService)
+            }
+            coordinator.terminateEditedAppBeforeUndo = { [weak self] slug, installed in
+                guard let self, let project = IrisTestProjectRegistry.project(slug: slug),
+                      project.applicationPath == installed else {
+                    return .ineligible(reason: "Iris Test refused Undo outside its registered installed copy.")
+                }
+                return await self.appRelaunchService.terminateRunningInstanceBeforeDelivery(
+                    macBundleId: project.bundleIdentifier, freshBuildArtifactPath: installed, allowForceQuit: false,
+                    allowedApplicationURL: { url in
+                        IrisTestProjectRegistry.project(slug: slug) == project
+                            && IrisTestProjectRegistry.permitsRunningApplication(url, for: project)
+                    })
+            }
+            coordinator.launchRestoredAppAfterUndo = { [weak self] slug, installed in
+                guard let self, let project = IrisTestProjectRegistry.project(slug: slug),
+                      project.applicationPath == installed else {
+                    return .ineligible(reason: "Iris Test refused a restored app outside its registered copy.")
+                }
+                return await self.appRelaunchService.terminateRunningInstanceThenLaunchFreshBuild(
+                    macBundleId: project.bundleIdentifier, freshBuildArtifactPath: installed,
+                    allowForceQuit: false,
+                    allowedApplicationURL: { url in
+                        IrisTestProjectRegistry.project(slug: slug) == project
+                            && IrisTestProjectRegistry.permitsRunningApplication(url, for: project)
+                    })
+            }
+            appRelaunchService.resolveSigningIdentity = nil
+        }
         self.watchTheEditFlowSoTheEyeCanSpeakForIt(coordinator)
 
         return coordinator
@@ -523,6 +719,24 @@ final class CompanionManager: ObservableObject {
     /// explicit pick in the card always wins, because that choice drives the
     /// honesty label and the commit trailer and must never be silently inferred.
     @Published private(set) var onDemandEditPreselectedKind: OnDemandEditKind?
+
+    /// A settings-panel edit request may arrive while the eye overlay is being
+    /// created. Notifications are transient, so a newly mounted `BlueCursorView`
+    /// could miss `clickyOnDemandEditRaised` and leave the reader with a generic
+    /// Ask bar. This request id is the durable-for-this-turn handoff: the visible
+    /// eye consumes it once it is mounted and can present the edit composer.
+    @Published private(set) var onDemandEditPresentationRequestID: UUID?
+
+    /// Consumes the settings-to-eye edit handoff. The optional id lets a view
+    /// prove it is consuming the request it observed; an absent id is useful to
+    /// the direct eye-click path, which can clear a pending request as it opens.
+    @discardableResult
+    func consumeOnDemandEditPresentationRequest(_ requestID: UUID? = nil) -> Bool {
+        guard let pendingRequestID = onDemandEditPresentationRequestID,
+              requestID == nil || requestID == pendingRequestID else { return false }
+        onDemandEditPresentationRequestID = nil
+        return true
+    }
 
     /// WHAT THE EYE IS ALLOWED TO SAY WHEN THE BAR IS GONE.
     ///
@@ -592,22 +806,22 @@ final class CompanionManager: ObservableObject {
     /// nine-row list of every app anyone might install is not a thing that can
     /// be kept current, so an unknown slug is now LOOKED AT.
     func appStack(forSlug slug: String) -> BreakAppStack {
-        if let curated = Self.catalogAppStacksBySlug[slug] {
-            return curated
+        if IrisTestEnvironment.isEnabled {
+            guard let project = IrisTestProjectRegistry.project(slug: slug) else { return .other }
+            return AppRelaunchService.stackOfClone(atPath: project.clonePath)
         }
-        guard let clonePath = installProvenanceStore.provenance(forAppSlug: slug)?.clonePath else {
-            return .other
+        if let clonePath = installProvenanceStore.provenance(forAppSlug: slug)?.clonePath {
+            let derived = AppRelaunchService.stackOfClone(atPath: clonePath)
+            if derived != .other { return derived }
         }
-        let derived = AppRelaunchService.stackOfClone(atPath: clonePath)
-        irisTrace("stack: \(slug) not in the curated table — derived \(derived.rawValue) from \(clonePath)")
-        return derived
+        return Self.catalogAppStacksBySlug[slug] ?? .other
     }
 
     static let catalogAppStacksBySlug: [String: BreakAppStack] = [
         "cue": .electron,
         "whimprflow": .tauri,
         "hickeyfield": .tauri,
-        "plantgpt": .electron,
+        "plantgpt": .tauri,
         "publikclip": .tauri,
         "nutcracker": .nextjs,
         "openascii": .nextjs,
@@ -671,8 +885,139 @@ final class CompanionManager: ObservableObject {
             IrisOverlayModalAlert.liftAboveTheEyeOverlay(alert)
             return alert.runModal() == .alertFirstButtonReturn
         }
+        runner.openTheInstallGuideForApp = { [weak self] appNameOrSlug in
+            guard let self else {
+                return ChatActionGuideOpenReport(
+                    guideWasOpened: false,
+                    messageForTheModel: "Iris is shutting down, so no guide was opened."
+                )
+            }
+            return await self.openInstallGuideFromChat(matching: appNameOrSlug)
+        }
         return runner
     }()
+
+    // MARK: - Chat opening an install guide
+
+    /// The chat tool's body: turn what the reader called an app into a catalog
+    /// entry, open its guide at the eye, and say what happened in words the
+    /// model can pass on.
+    ///
+    /// Matching is deliberately forgiving in one direction only. An exact slug,
+    /// guide slug or name wins outright; failing that, a single entry whose
+    /// name or slug CONTAINS the text wins ("simplic" → Simplicity). Two or
+    /// more containing it is a miss, reported with the candidates, because
+    /// opening the wrong app's guide is worse than asking. On any miss the
+    /// report carries every app that has a guide, so the model's next sentence
+    /// can offer real options rather than a guess.
+    func openInstallGuideFromChat(matching appNameOrSlug: String) async -> ChatActionGuideOpenReport {
+        // The catalog is fetched lazily by the panel; chat may run first.
+        if appInventoryService.inventoryEntries.isEmpty {
+            await appInventoryService.refreshInventoryIfStale()
+        }
+        let catalogEntries = appInventoryService.inventoryEntries
+        let appsWithGuides = catalogEntries.filter { $0.hasAnInstallGuide }
+        let listOfAppsWithGuides = appsWithGuides
+            .map { "\($0.name) (\($0.slug))" }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            .joined(separator: ", ")
+
+        guard !catalogEntries.isEmpty else {
+            let reason = appInventoryService.lastRefreshFailureMessage ?? "publik's catalog has not loaded yet"
+            return ChatActionGuideOpenReport(
+                guideWasOpened: false,
+                messageForTheModel: "Iris could not read publik's app catalog (\(reason)), so no guide was opened. Ask the reader to try again in a moment."
+            )
+        }
+
+        guard let matchedEntry = Self.catalogEntry(matching: appNameOrSlug, in: catalogEntries) else {
+            let closeCandidates = Self.catalogEntries(containing: appNameOrSlug, in: catalogEntries)
+            let ambiguity = closeCandidates.count > 1
+                ? " It could mean any of: \(closeCandidates.map { "\($0.name) (\($0.slug))" }.joined(separator: ", ")) — ask which."
+                : ""
+            return ChatActionGuideOpenReport(
+                guideWasOpened: false,
+                messageForTheModel: "No publik app matches \"\(appNameOrSlug)\", so no guide was opened.\(ambiguity) Apps Iris has an install guide for right now: \(listOfAppsWithGuides.isEmpty ? "none" : listOfAppsWithGuides)."
+            )
+        }
+
+        guard let guideSlug = matchedEntry.guideSlug else {
+            return ChatActionGuideOpenReport(
+                guideWasOpened: false,
+                messageForTheModel: "publik lists \(matchedEntry.name) but has not published an install guide for it yet, so nothing was opened. The reader can read about it at https://publikhq.com/\(matchedEntry.slug). Apps Iris can install right now: \(listOfAppsWithGuides.isEmpty ? "none" : listOfAppsWithGuides)."
+            )
+        }
+
+        irisTrace("chat/guide: opening \(guideSlug) for the reader")
+        await guideSessionController.openLatestVersionOfGuide(slug: guideSlug)
+
+        switch guideSessionController.loadState {
+        case .guideIsOpen:
+            return ChatActionGuideOpenReport(
+                guideWasOpened: true,
+                messageForTheModel: """
+                Opened the install guide for \(matchedEntry.name) — it is on screen now, as a card at the \
+                eye. The reader can follow it step by step, or press "Let Iris run it" to have Iris do \
+                the install. Tell them it is open and where to look; do not repeat the steps in your reply.
+                """
+            )
+        case .guideCouldNotBeLoaded(_, let userFacingMessage):
+            return ChatActionGuideOpenReport(
+                guideWasOpened: false,
+                messageForTheModel: "Iris tried to open the guide for \(matchedEntry.name) and publik answered: \(userFacingMessage) Nothing is open. Tell the reader that, in those words."
+            )
+        case .guideIsLoading:
+            return ChatActionGuideOpenReport(
+                guideWasOpened: true,
+                messageForTheModel: "The guide for \(matchedEntry.name) is still loading at the eye. Tell the reader it is on its way."
+            )
+        case .noGuideIsOpen:
+            return ChatActionGuideOpenReport(
+                guideWasOpened: false,
+                messageForTheModel: "Iris could not open the guide for \(matchedEntry.name) and has no reason to give. Nothing is open."
+            )
+        }
+    }
+
+    /// Exact match first (slug, guide slug, or name, case- and
+    /// whitespace-insensitive), then a UNIQUE containing match. Nil when there
+    /// is no match or more than one.
+    nonisolated static func catalogEntry(
+        matching appNameOrSlug: String,
+        in catalogEntries: [CatalogAppInventoryEntry]
+    ) -> CatalogAppInventoryEntry? {
+        let wanted = Self.normalizedForMatching(appNameOrSlug)
+        guard !wanted.isEmpty else { return nil }
+        if let exactMatch = catalogEntries.first(where: { entry in
+            Self.normalizedForMatching(entry.slug) == wanted
+                || Self.normalizedForMatching(entry.name) == wanted
+                || entry.guideSlug.map(Self.normalizedForMatching) == wanted
+        }) {
+            return exactMatch
+        }
+        let containing = Self.catalogEntries(containing: appNameOrSlug, in: catalogEntries)
+        return containing.count == 1 ? containing[0] : nil
+    }
+
+    nonisolated static func catalogEntries(
+        containing appNameOrSlug: String,
+        in catalogEntries: [CatalogAppInventoryEntry]
+    ) -> [CatalogAppInventoryEntry] {
+        let wanted = Self.normalizedForMatching(appNameOrSlug)
+        guard !wanted.isEmpty else { return [] }
+        return catalogEntries.filter { entry in
+            Self.normalizedForMatching(entry.name).contains(wanted)
+                || Self.normalizedForMatching(entry.slug).contains(wanted)
+        }
+    }
+
+    /// Lowercased, diacritics stripped, and every run of spaces, hyphens and
+    /// underscores removed — so "Nut AI", "nut-ai" and "nutai" all meet.
+    nonisolated private static func normalizedForMatching(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .lowercased()
+            .filter { !$0.isWhitespace && $0 != "-" && $0 != "_" }
+    }
 
     /// Turns a failed request into what the panel says, and — when the funded
     /// tier reports the session is gone — into a refresh-or-sign-out on the
@@ -746,6 +1091,11 @@ final class CompanionManager: ObservableObject {
     /// privacy note at the top of `ChatTranscriptStore.swift`.
     let chatTranscriptStore = ChatTranscriptStore()
 
+    /// Non-nil only when the reader asked to clear history but the transcript
+    /// file could not be rewritten. The in-memory chat is still gone for this
+    /// run, but an old on-disk copy may return after Iris restarts.
+    @Published private(set) var chatHistoryClearFailureMessage: String?
+
     /// The reader's UNSENT draft in the bar's composer, kept across a dismissal
     /// so clicking off no longer throws away a half-typed request (Publik Test
     /// 2, 2026-09-03: "mid-prompt … it doesn't save my prompt if I click off").
@@ -767,7 +1117,7 @@ final class CompanionManager: ObservableObject {
     /// same size it has always been, so warming it costs the same as an
     /// ordinary conversation that has been going for a while.
     private func restoreConversationHistoryFromTheSavedChatTranscript() {
-        let savedExchanges = chatTranscriptStore.recentExchanges(
+        let savedExchanges = chatTranscriptStore.recentExchangesInCurrentConversation(
             limit: Self.maximumConversationHistoryExchanges
         )
         guard !savedExchanges.isEmpty else { return }
@@ -803,15 +1153,75 @@ final class CompanionManager: ObservableObject {
     /// model is being told about, it does not destroy the reader's record of
     /// what they asked. That is what the history view reads.
     func startANewChat() {
+        transientHideTask?.cancel()
+        transientHideTask = nil
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        currentChatResponseIdentifier = UUID()
+        chatResponseIsPending = false
+        chatTranscriptStore.startANewConversation()
         conversationHistory = []
+        inputBarDraftStore.clearGeneralHelp()
+        latestUserMessageText = nil
+        latestAssistantResponseText = nil
+        latestResponseWasAFailureMessage = false
+        theLatestAnswerIsStillWaitingForTheReader = false
+        clearDetectedElementLocation()
+        assistantState = .idle
         irisTrace("chat: reader started a new conversation")
+    }
+
+    /// Clears the chat archive and the model's live conversation window.
+    ///
+    /// Invalidation happens before the store is touched. A response that is
+    /// still in flight can therefore finish its network work, but its
+    /// response identifier no longer matches and it cannot repopulate the
+    /// cleared view or append the old answer to the newly empty archive.
+    func clearChatHistory() {
+        transientHideTask?.cancel()
+        transientHideTask = nil
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        currentChatResponseIdentifier = UUID()
+        chatResponseIsPending = false
+        chatActionToolRunner.beginANewChatMessage()
+
+        conversationHistory = []
+        inputBarDraftStore.clearGeneralHelp()
+        latestUserMessageText = nil
+        latestAssistantResponseText = nil
+        latestResponseWasAFailureMessage = false
+        theLatestAnswerIsStillWaitingForTheReader = false
+        clearDetectedElementLocation()
+        assistantState = .idle
+
+        switch chatTranscriptStore.clearAllHistory() {
+        case .persisted:
+            chatHistoryClearFailureMessage = nil
+            irisTrace("chat: reader cleared saved history")
+        case .inMemoryOnly:
+            chatHistoryClearFailureMessage =
+                "History was cleared for this session, but Iris could not remove its saved copy. It may return after restarting Iris."
+            irisTrace("chat: history clear could not be saved")
+        }
     }
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// submits a new message so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
+    private var currentChatResponseIdentifier = UUID()
+
+    private func isCurrentChatResponse(_ responseIdentifier: UUID) -> Bool {
+        currentChatResponseIdentifier == responseIdentifier && !Task.isCancelled
+    }
+
+    /// Cancellation makes `isCurrentChatResponse` false by design. Pending
+    /// state cleanup needs the identifier-only half so a canceled task can clear
+    /// its own flag, while a stale task cannot clear a newer request's flag.
+    private func clearChatResponsePending(for responseIdentifier: UUID) {
+        guard currentChatResponseIdentifier == responseIdentifier else { return }
+        chatResponseIsPending = false
+    }
 
     private var summonHotkeyTransitionCancellable: AnyCancellable?
     private var accountStateChangeCancellable: AnyCancellable?
@@ -877,6 +1287,9 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        if IrisTestEnvironment.isEnabled {
+            IrisTestProjectRegistry.installProvenance(into: installProvenanceStore)
+        }
         refreshAllPermissions()
 
         // An on-demand edit Iris was in the middle of when it last went away
@@ -908,7 +1321,7 @@ final class CompanionManager: ObservableObject {
         startPermissionPolling()
         // Discovery is a directory listing, so it can run on a timer and costs
         // nothing. Talking to an app is not, and only happens when asked.
-        appLinkService.startWatchingForRunningApps()
+        if !IrisTestEnvironment.isEnabled { appLinkService.startWatchingForRunningApps() }
         connectTheGuideToTheEye()
         bindSummonHotkeyTransitions()
         bindAccountStateChanges()
@@ -965,10 +1378,25 @@ final class CompanionManager: ObservableObject {
         detectedElementScreenLocation = nil
         detectedElementDisplayFrame = nil
         detectedElementBubbleText = nil
+        guideTargetOutline = nil
         // The buddy has flown back to the cursor — pointing is over.
         if assistantState == .pointing {
             assistantState = .idle
         }
+    }
+
+    /// Turn evidence into an outline only after the final foreground and
+    /// focused-window check. A resolver can return while the user is changing
+    /// tabs or windows; a failed final check must remove the old outline rather
+    /// than leave a rectangle from the previous target on screen.
+    static func freshGuideTargetOutline(from evidence: GuideTargetEvidence) -> GuideTargetOutline? {
+        guard GuidePointingFreshness.validateCurrentObservation(evidence) == .fresh else {
+            return nil
+        }
+        return GuideTargetOutline(
+            rectangle: evidence.rectangle,
+            fingerprint: evidence.fingerprint
+        )
     }
 
     /// Lets a guide step fly the eye without the guide controller knowing that
@@ -987,6 +1415,8 @@ final class CompanionManager: ObservableObject {
         guideSessionController.targetLocator = SystemGuideTargetLocator(askTheModel: { [weak self] stepTitle, stepBody in
             guard let self else { return nil }
             return await self.locateGuideTargetWithModel(stepTitle: stepTitle, stepBody: stepBody)
+        }, readModelFailureMessage: { [weak self] in
+            self?.guidePointingModelFailureMessage
         })
         guideSessionController.irisMayLookAtTheScreenForPointing = hasScreenRecordingPermission
 
@@ -1010,11 +1440,21 @@ final class CompanionManager: ObservableObject {
             self.detectedElementDisplayFrame = displayFrame
         }
 
+        guideSessionController.showGuideTargetOutline = { [weak self] evidence in
+            guard let self else { return }
+            self.guideTargetOutline = Self.freshGuideTargetOutline(from: evidence)
+        }
+
+        guideSessionController.clearGuideTargetOutline = { [weak self] in
+            self?.guideTargetOutline = nil
+        }
+
         guideSessionController.stopPointingTheEye = { [weak self] in
             guard let self else { return }
             self.detectedElementScreenLocation = nil
             self.detectedElementDisplayFrame = nil
             self.detectedElementBubbleText = nil
+            self.guideTargetOutline = nil
             // Only stand down if the eye was pointing *for the guide*. A model
             // answer mid-flight has its own reason to be pointing.
             if self.assistantState == .pointing { self.assistantState = .idle }
@@ -1120,7 +1560,12 @@ final class CompanionManager: ObservableObject {
         guideSessionController.onAutopilotDidStop = { [weak self] in
             // Ended mid-install (the reader closed the guide): fold the takeover
             // away with no completion follow-up.
-            self?.autopilotTakeoverController.dismiss(afterHold: false)
+            guard let self else { return }
+            self.pendingAutopilotManualGate = nil
+            self.guideSessionController.setAutopilotIsShownAsTakeover(false)
+            _ = self.autopilotTakeoverController.dismiss(
+                afterHold: false, onlyIfOwnedBy: .guideInstall
+            )
         }
 
         guideSessionController.onAutopilotWaitingForReaderAtGate = { [weak self] title, instruction in
@@ -1128,17 +1573,22 @@ final class CompanionManager: ObservableObject {
             // (already flying to the step's control) and the control are both in
             // the clear. The step's own text rides along so the parked card can
             // tell the reader exactly what to do before they tap continue.
-            self?.autopilotTakeoverController.parkForManualStep(title: title, instruction: instruction)
+            guard let self else { return }
+            self.pendingAutopilotManualGate = (title: title, instruction: instruction)
+            self.autopilotTakeoverController.parkForManualStep(title: title, instruction: instruction)
         }
 
         guideSessionController.onAutopilotResumedFromGate = { [weak self] in
             // The reader finished the manual step and Iris is running again —
             // bring the terminal back to center.
-            self?.autopilotTakeoverController.returnToCenter()
+            guard let self else { return }
+            self.pendingAutopilotManualGate = nil
+            self.autopilotTakeoverController.returnToCenter()
         }
 
         guideSessionController.onGuideCompleted = { [weak self] guide, branch in
             guard let self else { return }
+            self.pendingAutopilotManualGate = nil
             // The one moment provenance is knowable for certain: a guide
             // that cloned a repo produced a source build Iris may later
             // patch; a guide that only downloaded a signed app did not.
@@ -1147,21 +1597,99 @@ final class CompanionManager: ObservableObject {
             // the eye, and only then open the app — so it comes forward as the
             // eye returns, not on top of the terminal. If no takeover is up (a
             // manual guide), this opens immediately.
-            self.autopilotTakeoverController.dismiss(afterHold: true) { [weak self] in
+            let openTheFinishedApp = { [weak self] in
                 guard let self else { return }
                 self.openTheFreshlyInstalledApp(guide: guide, branch: branch)
                 // Refresh so the app the reader just installed shows up in
                 // "Your publik apps" without waiting for the next frontmost tick.
                 Task { await self.appInventoryService.refreshInventory() }
             }
+            // Only the guide's own visible terminal should be dismissed here.
+            // A concurrent edit may own the shared terminal, and its runner must
+            // remain visible and cancellable. When the guide was started
+            // minimized there is no panel, so completion runs immediately.
+            if self.autopilotTakeoverController.isPresented(for: .guideInstall) {
+                _ = self.autopilotTakeoverController.dismiss(
+                    afterHold: true,
+                    onlyIfOwnedBy: .guideInstall,
+                    thenRun: openTheFinishedApp
+                )
+            } else {
+                openTheFinishedApp()
+            }
+        }
+
+        guideSessionController.surfaceTheGuideCardAtTheEye = { [weak self] in
+            self?.bringTheEyeBarForwardToShowTheOpenGuide()
+        }
+    }
+
+    /// Bring the eye's overlay and bar forward so a just-opened guide's card is
+    /// in front of the reader, and drop the settings dropdown if it was up.
+    /// Mirrors `requestOnDemandEdit`'s surfacing: the guide card lives at the eye
+    /// (`OverlayEyeGuideCard`), so the overlay has to be visible and the bar has
+    /// to be open, whichever entry point opened the guide — the settings panel's
+    /// "Follow an install guide" picker, or an `iris://guide/…` link. The picker
+    /// used to surface nothing at all, so a successful load appeared to do
+    /// nothing; this is what makes it visible.
+    private func bringTheEyeBarForwardToShowTheOpenGuide() {
+        transientHideTask?.cancel()
+        transientHideTask = nil
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+        NotificationCenter.default.post(name: .clickySummonAskBar, object: nil)
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+    }
+
+    /// The reason the most recent `iris://` link was turned away, shown as a
+    /// small transient banner at the top of the eye bar, or nil when there is
+    /// nothing to say.
+    ///
+    /// Before this, `handleIncomingDeepLink`'s `.failure` case only printed
+    /// `rejection.rejectionMessage` to the console — real for a hand-typed or
+    /// stale link (a bookmark missing `?version=`, a copy-paste that dropped a
+    /// query parameter) and invisible to anyone not tailing logs: the tap
+    /// landed, nothing moved, and the reader was told nothing, which is the
+    /// exact silent-failure shape this codebase's own comments call out
+    /// elsewhere (`autopilotBlockedExplanation`). This mirrors that precedent
+    /// rather than the guide card's inline text, because a rejected link never
+    /// gets far enough to have a guide card to show it in.
+    @Published private(set) var deepLinkRejectionExplanation: String?
+    private var deepLinkRejectionDismissalTask: Task<Void, Never>?
+    private static let deepLinkRejectionVisibleDuration: Duration = .seconds(6)
+
+    /// Called for every `iris://` link `IrisDeepLinkParser.parse` refuses.
+    /// Brings the eye forward — a rejected link is otherwise invisible even to
+    /// a reader staring at their screen, since nothing else about to happen —
+    /// and shows the parser's own sentence for a few seconds.
+    func presentDeepLinkRejection(_ explanation: String) {
+        bringTheEyeBarForwardToShowTheOpenGuide()
+        deepLinkRejectionDismissalTask?.cancel()
+        deepLinkRejectionExplanation = explanation
+        deepLinkRejectionDismissalTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.deepLinkRejectionVisibleDuration)
+            guard !Task.isCancelled else { return }
+            self?.deepLinkRejectionExplanation = nil
         }
     }
 
     /// Raises the centered terminal takeover for the run autopilot just started.
-    private func presentAutopilotTakeover() {
-        guard let runner = guideSessionController.autopilotRunner else { return }
-        guideSessionController.setAutopilotIsShownAsTakeover(true)
-        autopilotTakeoverController.present(
+    @discardableResult
+    private func presentAutopilotTakeover(
+        honoringStartMinimizedPreference: Bool = true
+    ) -> Bool {
+        guard let runner = guideSessionController.autopilotRunner else { return false }
+        if honoringStartMinimizedPreference,
+           !TerminalStartMinimizedPolicy.shouldAutomaticallyPresent(
+               workflow: .guideInstall,
+               startsMinimized: EditTerminalStartMinimizedPreference.shared.startsMinimized
+           ) {
+            return false
+        }
+        let didPresent = autopilotTakeoverController.present(
             runner: runner,
             onApproveRiskyCommand: { [weak self] in self?.guideSessionController.approveThePendingRiskyCommand() },
             onSkipRiskyCommand: { [weak self] in self?.guideSessionController.skipThePendingRiskyCommand() },
@@ -1174,8 +1702,44 @@ final class CompanionManager: ObservableObject {
             // takeover is up — shows the rest of it.
             afterTheReaderMinimizesIt: { [weak self] in
                 self?.guideSessionController.setAutopilotIsShownAsTakeover(false)
-            }
+            },
+            owner: .guideInstall
         )
+        if didPresent {
+            guideSessionController.setAutopilotIsShownAsTakeover(true)
+            if let gate = pendingAutopilotManualGate {
+                // `parkForManualStep` defers safely until the entry morph has
+                // settled, so the Continue control is restored on reopen too.
+                autopilotTakeoverController.parkForManualStep(
+                    title: gate.title, instruction: gate.instruction
+                )
+            }
+        }
+        return didPresent
+    }
+
+    /// Reopens a minimized install terminal from the compact guide summary.
+    /// This is an explicit user action, so it bypasses the start-minimized
+    /// preference for this one presentation. If an edit terminal is visible,
+    /// its run stays alive while the user deliberately switches the visible
+    /// terminal to the install.
+    func reopenGuideAutopilotTerminal() {
+        guard guideSessionController.autopilotIsRunning,
+              guideSessionController.autopilotRunner != nil else { return }
+
+        if autopilotTakeoverController.isPresented(for: .onDemandEdit) {
+            _ = autopilotTakeoverController.dismiss(
+                afterHold: false,
+                onlyIfOwnedBy: .onDemandEdit
+            ) { [weak self] in
+                guard let self else { return }
+                self.onDemandEditTakeoverIsUp = false
+                _ = self.presentAutopilotTakeover(honoringStartMinimizedPreference: false)
+            }
+            return
+        }
+
+        _ = presentAutopilotTakeover(honoringStartMinimizedPreference: false)
     }
 
     /// Launches the desktop app a finished guide just installed, so the reader
@@ -1198,6 +1762,25 @@ final class CompanionManager: ObservableObject {
     /// `OnDemandEditInterruptedRunRecovery`, with the outcome traced. Called at
     /// launch and again at quit; both are cheap when there is nothing to do.
     func recoverAnyOnDemandEditIrisLeftUncommitted(at moment: String) {
+        if IrisTestEnvironment.isEnabled,
+           let record = OnDemandEditInterruptedRunRecovery.recordOnDisk(),
+           !IrisTestProjectRegistry.permitsEdit(slug: record.appSlug, clonePath: record.clonePath) {
+            irisTrace("Iris Test recovery refused an unregistered project")
+            return
+        }
+        // A delivered Undo can have stopped between a bundle swap and its
+        // acknowledgement. Startup must only expose information for review.
+        guard !DeliveredEditUndoRecoveryStore().load().requiresReview else {
+            irisTrace("on-demand recovery at \(moment): delivered Undo information requires review; automatic file recovery skipped")
+            return
+        }
+        if let record = OnDemandEditInterruptedRunRecovery.recordOnDisk(),
+           DeliveredEditUndoRecoveryStore().archivedProtection(
+               appSlug: record.appSlug, paths: [record.clonePath]
+           ).blocksChanges {
+            irisTrace("on-demand recovery at \(moment): saved Undo information protects these working files; automatic file recovery skipped")
+            return
+        }
         let outcome = OnDemandEditInterruptedRunRecovery.recoverNow()
         switch outcome {
         case .nothingToRecover:
@@ -1222,15 +1805,20 @@ final class CompanionManager: ObservableObject {
         hangProbeTimer = nil
         guideSessionController.sendTheEyeTo = nil
         guideSessionController.stopPointingTheEye = nil
+        guideSessionController.showGuideTargetOutline = nil
+        guideSessionController.clearGuideTargetOutline = nil
         guideSessionController.onGuideCompleted = nil
+        guideSessionController.surfaceTheGuideCardAtTheEye = nil
         guideSessionController.onAutopilotDidStart = nil
         guideSessionController.onAutopilotDidStop = nil
+        pendingAutopilotManualGate = nil
         autopilotTakeoverController.dismiss(afterHold: false)
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        chatResponseIsPending = false
         summonHotkeyTransitionCancellable?.cancel()
         accountStateChangeCancellable?.cancel()
         maintainAskCancellable?.cancel()
@@ -1280,6 +1868,7 @@ final class CompanionManager: ObservableObject {
         // pending ask appears, open the EYE's bar (the interface), where the
         // card renders above the ask field. Hard rate-limited (1/app/24h),
         // so this can never become a nag.
+        guard !IrisTestEnvironment.isEnabled else { return }
         maintainAskCancellable = maintainIncidentCoordinator.$pendingAsk
             .receive(on: DispatchQueue.main)
             .sink { ask in
@@ -1439,9 +2028,35 @@ final class CompanionManager: ObservableObject {
     /// Start the on-demand edit flow for a catalog app the reader chose from the
     /// settings panel's "Edit this app". Resolves the app's stack from the local
     /// table and hands off to the shared entry point below.
-    func requestOnDemandEdit(forEntry entry: CatalogAppInventoryEntry) {
+    @discardableResult
+    func requestOnDemandEdit(forEntry entry: CatalogAppInventoryEntry) -> Bool {
         let stack = self.appStack(forSlug: entry.slug)
-        requestOnDemandEdit(forSlug: entry.slug, name: entry.name, stack: stack, preselectedKind: nil)
+        return requestOnDemandEdit(
+            forSlug: entry.slug, name: entry.name, stack: stack, preselectedKind: nil
+        )
+    }
+
+    /// Retarget an idle composer without reopening the panel or clearing its draft.
+    func selectProjectForComposer(_ entry: CatalogAppInventoryEntry) -> Bool {
+        let coordinator = onDemandEditCoordinator
+        guard !coordinator.isAssessingRequest, !coordinator.undoNeedsRecovery,
+              coordinator.stoppedUndoRecoveryMessage == nil,
+              appInventoryService.installedEntriesForDisplay.contains(where: {
+                  $0.slug == entry.slug && $0.isLocallyEditable
+              }),
+              !(guideSessionController.autopilotIsRunning
+                && guideSessionController.guideBeingFollowed?.appSlug == entry.slug)
+        else { return false }
+        switch coordinator.phase {
+        case .pickApp, .describe, .done, .failed, .notEligible, .blockedByModel:
+            guard coordinator.pickApp(
+                slug: entry.slug, name: entry.name, stack: appStack(forSlug: entry.slug)
+            ) else { return false }
+            inputBarDraftStore.associateEditDraft(withAppSlug: entry.slug)
+            return coordinator.activeAppSlug == entry.slug
+        default:
+            return false
+        }
     }
 
     /// The shared on-demand edit entry point: pick the app in the coordinator
@@ -1449,19 +2064,80 @@ final class CompanionManager: ObservableObject {
     /// where the edit card renders, and leave the settings dropdown behind — the
     /// whole flow happens at the eye. `preselectedKind` only seeds the card's
     /// picker; the reader's explicit pick there is what binds.
+    @discardableResult
     func requestOnDemandEdit(
         forSlug slug: String,
         name: String,
         stack: BreakAppStack,
         preselectedKind: OnDemandEditKind?
-    ) {
+    ) -> Bool {
+        // Refuse the Apps-panel tap before changing the preselected kind,
+        // filing the current exchange, raising the eye, or dismissing the
+        // settings panel. The active assessment or edit keeps its owner.
+        guard onDemandEditCoordinator.canPickAnotherApp else {
+            irisTrace("on-demand edit: ignored Apps selection while the current flow is active")
+            return false
+        }
+        // Guide install and edit must not retarget the same app while the guide
+        // is using that app's clone. Other apps remain independently selectable.
+        guard !(guideSessionController.autopilotIsRunning
+                && guideSessionController.guideBeingFollowed?.appSlug == slug) else {
+            irisTrace("on-demand edit: ignored Apps selection for the app currently in guide autopilot")
+            return false
+        }
+        if inputBarDraftStore.editDraftConflicts(
+            withAppSlug: slug,
+            hasAttachments: OverlayEyePastedImageAttachment.shared.editModeHasAttachments
+        ) {
+            let alert = NSAlert()
+            alert.messageText = "Move your edit draft to \(name)?"
+            alert.informativeText = "Your unfinished edit and attachments belong to another app. Move them only if you want to make that change in \(name). Nothing runs until you send it."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Move draft")
+            IrisOverlayModalAlert.liftAboveTheEyeOverlay(alert)
+            guard alert.runModal() == .alertSecondButtonReturn else { return false }
+            guard onDemandEditCoordinator.canPickAnotherApp,
+                  !(guideSessionController.autopilotIsRunning
+                    && guideSessionController.guideBeingFollowed?.appSlug == slug) else { return false }
+        }
         onDemandEditPreselectedKind = preselectedKind
-        onDemandEditCoordinator.pickApp(slug: slug, name: name, stack: stack)
+        guard onDemandEditCoordinator.pickApp(slug: slug, name: name, stack: stack) else {
+            return false
+        }
+        inputBarDraftStore.switchMode(to: .edit, currentDraft: inputBarDraftStore.draft)
+        inputBarDraftStore.associateEditDraft(withAppSlug: slug)
+        OverlayEyePastedImageAttachment.shared.switchComposerMode(isAsking: false)
 
         // The card lives at the eye, so the overlay has to be up — it may be
         // hidden when the cursor is toggled off. Bring it back the same
         // transient way a chat message does, then open the bar and drop the
         // settings panel.
+        transientHideTask?.cancel()
+        transientHideTask = nil
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+        // Unlike a notification, this survives the newly-created SwiftUI eye
+        // view's mount. The mounted view consumes it from `onAppear`/`onChange`
+        // and opens the already-selected Edit composer exactly once.
+        onDemandEditPresentationRequestID = UUID()
+        NotificationCenter.default.post(name: .clickyOnDemandEditRaised, object: nil)
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        return true
+    }
+
+    func requestUndoSavedAppVersion(_ receipt: AppDeliveryReceipt) {
+        guard onDemandEditCoordinator.undoSavedAppVersion(receipt) else {
+            let alert = NSAlert()
+            alert.messageText = "This version could not be undone"
+            alert.informativeText = onDemandEditCoordinator.statusLine ?? "Iris could not confirm the saved version. No app files were changed."
+            alert.addButton(withTitle: "OK")
+            IrisOverlayModalAlert.liftAboveTheEyeOverlay(alert)
+            alert.runModal()
+            return
+        }
         transientHideTask?.cancel()
         transientHideTask = nil
         if !isOverlayVisible {
@@ -1497,9 +2173,9 @@ final class CompanionManager: ObservableObject {
     /// phrase — the live eligibility re-check at start is unchanged.
     func beginOnDemandEditFromTheComposer(request: String, kind: OnDemandEditKind) -> Bool {
         guard let target = frontmostEditableAppForTheComposer else { return false }
-        requestOnDemandEdit(
+        guard requestOnDemandEdit(
             forSlug: target.slug, name: target.name, stack: target.stack, preselectedKind: kind
-        )
+        ) else { return false }
         onDemandEditCoordinator.describeRequest(request, kind: kind)
         return true
     }
@@ -1520,10 +2196,9 @@ final class CompanionManager: ObservableObject {
               let preselectedKind = OverlayEyeSuggestions.editInstructionKind(forMessage: trimmed)
         else { return false }
         let stack = self.appStack(forSlug: entry.slug)
-        requestOnDemandEdit(
+        return requestOnDemandEdit(
             forSlug: entry.slug, name: entry.name, stack: stack, preselectedKind: preselectedKind
         )
-        return true
     }
 
     /// Raise or fold the edit run's terminal takeover as the flow moves in and
@@ -1537,13 +2212,123 @@ final class CompanionManager: ObservableObject {
             // be the surface. `onDemandEditTakeoverIsUp` is already false here, so
             // not presenting IS starting minimized. The edit runs exactly the
             // same; it just does not take over the screen.
-            if !EditTerminalStartMinimizedPreference.shared.startsMinimized {
-                presentOnDemandEditTakeover()
+            if TerminalStartMinimizedPolicy.shouldAutomaticallyPresent(
+                workflow: .onDemandEdit,
+                startsMinimized: EditTerminalStartMinimizedPreference.shared.startsMinimized
+            ) {
+                _ = presentOnDemandEditTakeover()
             }
         default:
             if onDemandEditTakeoverIsUp {
-                autopilotTakeoverController.dismiss(afterHold: false)
+                _ = autopilotTakeoverController.dismiss(
+                    afterHold: false, onlyIfOwnedBy: .onDemandEdit
+                )
                 onDemandEditTakeoverIsUp = false
+            }
+        }
+    }
+
+    /// The registered Test projects are exposed only for the Test Settings
+    /// picker. The picker makes the cleanup scope explicit instead of silently
+    /// sweeping every project behind one button.
+    var savedTestProjects: [IrisTestProjectRegistry.Project] {
+        IrisTestProjectRegistry.projects()
+    }
+
+    /// A read-only, deliberately conservative preview. It counts older,
+    /// restored records for the selected project whose payload is still
+    /// readable, but does not claim that any will be deleted: the cleanup
+    /// engine re-checks recovery references, identity, paths, and retention
+    /// rules under its exclusive store lock immediately before deletion.
+    @MainActor
+    func previewSavedTestBackups(
+        for project: IrisTestProjectRegistry.Project
+    ) async -> IrisTestAppDelivery.TestBackupCleanupPreview {
+        guard IrisTestEnvironment.isEnabled,
+              IrisTestProjectRegistry.project(slug: project.slug) == project else {
+            return .init(
+                summary: "This Test app is no longer registered. No files are eligible.",
+                eligibleBackupCount: 0, eligibleLogicalBytes: 0, eligibleAllocatedBytes: 0
+            )
+        }
+        let outcome = await IrisTestAppDelivery.previewObsoleteBackups(
+            project: project, service: appRelaunchService
+        )
+        switch outcome {
+        case .previewed(let inventory):
+            let allocatedBytes = inventory.previewEligibleBackupPaths.reduce(
+                into: UInt64(0)
+            ) { total, path in
+                guard let measured = AppDeliveryReceipt.allocatedByteCount(atPath: path),
+                      total <= UInt64.max - measured else {
+                    total = UInt64.max
+                    return
+                }
+                total += measured
+            }
+            guard allocatedBytes != UInt64.max else {
+                return .init(
+                    summary: "Retention preview could not measure eligible backup allocation. No data was changed.",
+                    eligibleBackupCount: 0, eligibleLogicalBytes: 0, eligibleAllocatedBytes: 0
+                )
+            }
+            let count = inventory.previewEligibleBackupPaths.count
+            if count == 0 {
+                return .init(
+                    summary: "No eligible obsolete restored backups for \(project.name). Logical bytes: 0. Allocated bytes: 0. Recent, newest, recovery-protected, changed, or unreadable copies are kept.",
+                    eligibleBackupCount: 0, eligibleLogicalBytes: 0, eligibleAllocatedBytes: 0
+                )
+            }
+            return .init(
+                summary: "Eligible obsolete backups for \(project.name): \(count). Logical bytes: \(formattedByteCount(inventory.previewEligibleLogicalBytes)). Allocated bytes: \(formattedByteCount(allocatedBytes)). A final safety check runs before any removal.",
+                eligibleBackupCount: count,
+                eligibleLogicalBytes: inventory.previewEligibleLogicalBytes,
+                eligibleAllocatedBytes: allocatedBytes
+            )
+        case .refused(let message):
+            return .init(
+                summary: "No cleanup preview is available. No data was changed. \(message)",
+                eligibleBackupCount: 0, eligibleLogicalBytes: 0, eligibleAllocatedBytes: 0
+            )
+        case .failed(let error):
+            return .init(
+                summary: "No cleanup preview is available. No data was changed. \(error.localizedDescription).",
+                eligibleBackupCount: 0, eligibleLogicalBytes: 0, eligibleAllocatedBytes: 0
+            )
+        }
+    }
+
+    private func formattedByteCount(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(min(bytes, UInt64(Int64.max))), countStyle: .file)
+    }
+
+    /// Explicit, Test-only cleanup for one selected saved app project. This is
+    /// opt-in from Settings; there is no background purge and no production-app
+    /// path through this method.
+    @MainActor
+    func cleanupSavedTestBackups(for project: IrisTestProjectRegistry.Project) async -> String {
+        guard IrisTestEnvironment.isEnabled else {
+            return "Saved-version cleanup is available only in Iris Test. No files were removed."
+        }
+        guard IrisTestProjectRegistry.project(slug: project.slug) == project else {
+            return "\(project.name) is no longer registered. No files were removed."
+        }
+        let outcome = await IrisTestAppDelivery.cleanupObsoleteBackups(
+            project: project, service: appRelaunchService
+        )
+        switch outcome {
+        case .cleaned(let result):
+            return "\(project.name): removed \(result.deletedPaths.count) obsolete restored backup(s). Protected and recent copies were kept."
+        case .refused(let message):
+            return "\(project.name): no files were removed. \(message)"
+        case .failed(let error):
+            switch error {
+            case .deletionFailed(_, let deletedPaths, _, _):
+                return "\(project.name): cleanup stopped after \(deletedPaths.count) backup(s) were removed; no completion was claimed. Review saved versions before trying again."
+            case .inventoryEntryLimitExceeded:
+                return "\(project.name): no files were removed. \(error.localizedDescription)"
+            default:
+                return "\(project.name): cleanup stopped safely; no completion was claimed. Review saved versions before trying again."
             }
         }
     }
@@ -1618,11 +2403,13 @@ final class CompanionManager: ObservableObject {
     /// the same takeover a guide install uses, presented over the on-demand
     /// runner instead. The guide-only callbacks are inert here: an edit has no
     /// manual steps and no per-command confirm loop.
-    private func presentOnDemandEditTakeover() {
-        // Never stack on a guide install's takeover; the two do not run at once
-        // in this slice, and the controller refuses a second present regardless.
-        guard !autopilotTakeoverController.isPresented else { return }
-        autopilotTakeoverController.present(
+    @discardableResult
+    private func presentOnDemandEditTakeover() -> Bool {
+        // Never replace a guide install's visible terminal from a background
+        // phase change. The compact card's explicit Show terminal action uses
+        // `reopenOnDemandEditTakeoverTerminal` when the reader asks to switch.
+        guard !autopilotTakeoverController.isPresented else { return false }
+        let didPresent = autopilotTakeoverController.present(
             runner: onDemandEditCoordinator.editRunner,
             onApproveRiskyCommand: {},
             onSkipRiskyCommand: {},
@@ -1641,16 +2428,22 @@ final class CompanionManager: ObservableObject {
                 // the eye bar's "Stopping…" card is the surface while it lands.
                 guard let self else { return }
                 self.onDemandEditCoordinator.stopRunningEdit()
-                self.autopilotTakeoverController.dismiss(afterHold: false)
+                _ = self.autopilotTakeoverController.dismiss(
+                    afterHold: false, onlyIfOwnedBy: .onDemandEdit
+                )
                 self.onDemandEditTakeoverIsUp = false
             },
             // The flag comes down with the window: the eye bar's whole body is
             // suppressed while this takeover covers the screen, so leaving it
             // set would fold the terminal away and give the reader nothing in
             // its place.
-            afterTheReaderMinimizesIt: { [weak self] in self?.onDemandEditTakeoverIsUp = false }
+            afterTheReaderMinimizesIt: { [weak self] in self?.onDemandEditTakeoverIsUp = false },
+            owner: .onDemandEdit
         )
-        onDemandEditTakeoverIsUp = true
+        if didPresent {
+            onDemandEditTakeoverIsUp = true
+        }
+        return didPresent
     }
 
     /// Brings the centered edit terminal back after the reader minimized it.
@@ -1667,10 +2460,30 @@ final class CompanionManager: ObservableObject {
     /// and the run itself never stopped — the same live `editRunner` streams
     /// straight back into the reopened terminal.
     func reopenOnDemandEditTakeoverTerminal() {
-        guard Self.aMinimizedOnDemandEditTerminalMayBeReopened(
+        guard !onDemandEditCoordinator.readerAskedToStopTheRun,
+              Self.aMinimizedOnDemandEditTerminalMayBeReopened(
             whileEditPhaseIs: onDemandEditCoordinator.phase
         ) else { return }
-        presentOnDemandEditTakeover()
+
+        if autopilotTakeoverController.raisePresentedTerminal(for: .onDemandEdit) {
+            return
+        }
+
+        if autopilotTakeoverController.isPresented(for: .guideInstall) {
+            _ = autopilotTakeoverController.dismiss(
+                afterHold: false,
+                onlyIfOwnedBy: .guideInstall
+            ) { [weak self] in
+                guard let self else { return }
+                self.guideSessionController.setAutopilotIsShownAsTakeover(false)
+                _ = self.presentOnDemandEditTakeover()
+                _ = self.autopilotTakeoverController.raisePresentedTerminal(for: .onDemandEdit)
+            }
+            return
+        }
+
+        _ = presentOnDemandEditTakeover()
+        _ = autopilotTakeoverController.raisePresentedTerminal(for: .onDemandEdit)
     }
 
     /// Whether a minimized on-demand-edit terminal may be reopened right now.
@@ -1812,9 +2625,12 @@ final class CompanionManager: ObservableObject {
 
     /// Receives the text the user typed in the panel — the same pipeline that
     /// previously received the final dictation transcript.
-    func sendUserMessage(_ messageText: String) {
+    func sendUserMessage(_ messageText: String, allowsEditRouting: Bool = true) {
         let trimmedMessageText = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedMessageText.isEmpty else { return }
+        // The panel and other callers share this dispatch entry. A CLI login
+        // may have changed since either surface last refreshed its snapshot.
+        accountService.refreshCodexLoginState()
 
         latestUserMessageText = trimmedMessageText
         // Asking the next thing is the reader saying they are done with the
@@ -1826,21 +2642,15 @@ final class CompanionManager: ObservableObject {
 
         // Door B: an explicit instruction to EDIT the frontmost editable catalog
         // app is not a question — it opens the on-demand edit flow instead of
-        // going to Claude. Checked FIRST, and before pooling, so an
-        // "add a feature to X" opener is not also counted as a wish, and so no
+        // going to Claude. Checked FIRST so no
         // chat answer is generated for it (the bar would otherwise wait on one).
-        if beginOnDemandEditIfMessageIsAnEditInstruction(trimmedMessageText) {
+        if allowsEditRouting && beginOnDemandEditIfMessageIsAnEditInstruction(trimmedMessageText) {
             return
         }
 
-        // A wish about the app in front is demand, not a question. Pool it as
-        // a signal (never interrupt — the answer pipeline runs as normal), so
-        // "most people who run this wanted X" can become true at scale.
-        if let frontmostSlug = appInventoryService.frontmostCatalogAppSlug,
-           MaintainFeatureRequests.messageLooksLikeAFeatureWish(trimmedMessageText) {
-            let featureRequests = maintainFeatureRequests
-            Task { await featureRequests.poolWish(trimmedMessageText, forAppSlug: frontmostSlug) }
-        }
+        // Asking privately is not consent to submit the request and install ID
+        // to the public demand pool. Do not pool messages as a side effect of
+        // chat; public sharing remains a separate explicit user action.
 
         // Cancel any pending transient hide so the overlay stays visible
         transientHideTask?.cancel()
@@ -1868,7 +2678,11 @@ final class CompanionManager: ObservableObject {
             }
         }
 
-        sendUserMessageToClaudeWithScreenshot(messageText: trimmedMessageText)
+        if accountService.canAnswerQuestions {
+            sendUserMessageToClaudeWithScreenshot(messageText: trimmedMessageText)
+        } else if accountService.canAnswerTypedQuestionsThroughCodex {
+            sendUserMessageToCodexWithoutScreenContext(messageText: trimmedMessageText)
+        }
     }
 
     // MARK: - Companion Prompt
@@ -1882,11 +2696,12 @@ final class CompanionManager: ObservableObject {
     WHAT YOU CAN DO — reach for these before telling anyone to do something by hand:
     - run_a_command_in_the_terminal runs ONE shell command on this mac and gives you its real exit code and real output. use it whenever the honest answer depends on what the machine actually says.
     - put_text_on_the_clipboard puts text on their clipboard. use it when something is more useful pasted than read.
+    - open_an_install_guide puts a publik app's install guide on screen, as a card at the eye. call it the moment they want to install, set up, get or try a publik app — pass the app as they named it, no slug needed. iris matches it against the live catalog; on a miss the result lists every app iris has a guide for, so offer those rather than guessing. never say a guide is open unless the result said so.
     - search the web when the answer would otherwise be stale or guessed — an install command, a version, an error you don't recognise.
     - point at anything on screen (see pointing, below).
 
-    WHAT IRIS DOES THAT YOU SHOULD HAND OFF TO. you can't install or edit apps from this conversation, but iris can, and the reader opened iris precisely so they wouldn't have to do it themselves. so name iris's own path FIRST, before any manual instructions:
-    - installing an app: on a publik page, "Install and customize" opens the guide IN THE BROWSER — it is a web button and it does not start iris. inside that guide, "Open in Iris" / "Let Iris install it" (before starting) or "Let Iris take over" (partway through) is what hands the install to iris. once iris has it, "let iris run it" runs the whole thing hands-off. name the one that matches where they actually are.
+    WHAT IRIS DOES THAT YOU SHOULD HAND OFF TO. you can open an install guide from this conversation (above); you can't edit apps from it, but iris can, and the reader opened iris precisely so they wouldn't have to do it themselves. so name iris's own path FIRST, before any manual instructions:
+    - installing an app: call open_an_install_guide. once the guide is at the eye, "let iris run it" runs the whole thing hands-off. if they are instead already inside a guide IN THE BROWSER on a publik page, "Open in Iris" / "Let Iris install it" (before starting) or "Let Iris take over" (partway through) hands that install to iris — "Install and customize" on the page itself is a web button and does not start iris.
     - changing an app they already have: "fix a bug in…" or "add a feature to…" on the eye bar. iris edits their local source itself.
     never walk someone through steps by hand when one of these would do it for them. if you genuinely can't tell which applies, say what you'd need to know.
 
@@ -1936,7 +2751,10 @@ final class CompanionManager: ObservableObject {
     /// to. Returns an AppKit-global (bottom-left origin, points) rect — the same
     /// space `SystemGuideTargetLocator`'s accessibility locators return — or nil.
     /// Frames are ephemeral: a local `let`, never stored or logged as image data.
+    private var guidePointingModelFailureMessage: String?
+
     private func locateGuideTargetWithModel(stepTitle: String, stepBody: String) async -> CGRect? {
+        guidePointingModelFailureMessage = nil
         irisTrace("pointing/model: asked for step=\(stepTitle)")
         do {
             // Pointing asks for the focused window rather than the whole
@@ -2023,9 +2841,12 @@ final class CompanionManager: ObservableObject {
             // These states are not transient: a budget that is spent and a
             // credential that is gone fail every subsequent point the same way,
             // so the log says so once, in words.
+            guard !Task.isCancelled else { return nil }
             if let transportError = error as? AssistantTransportError {
+                guidePointingModelFailureMessage = "Pointing is unavailable. " + transportError.userFacingMessage
                 irisTrace("pointing/model: no point — \(transportError.userFacingMessage)")
             } else {
+                guidePointingModelFailureMessage = "Pointing is unavailable. Iris could not capture the target or complete its model request."
                 irisTrace("pointing/model: capture/model error \(error.localizedDescription)")
             }
             return nil
@@ -2041,6 +2862,9 @@ final class CompanionManager: ObservableObject {
         screenNumber: Int?,
         in screenCaptures: [CompanionScreenCapture]
     ) -> (location: CGPoint, displayFrame: CGRect)? {
+        guard GuidePointingFreshness.explicitScreenNumberIsValid(
+            screenNumber, captureCount: screenCaptures.count
+        ) else { return nil }
         let targetScreenCapture: CompanionScreenCapture? = {
             if let screenNumber, screenNumber >= 1, screenNumber <= screenCaptures.count {
                 return screenCaptures[screenNumber - 1]
@@ -2065,10 +2889,11 @@ final class CompanionManager: ObservableObject {
         let displayWidth = CGFloat(capture.displayWidthInPoints)
         let displayHeight = CGFloat(capture.displayHeightInPoints)
         let displayFrame = capture.displayFrame
-        guard imageWidthInPixels > 0, imageHeightInPixels > 0 else { return nil }
-
-        let clampedX = max(0, min(pointCoordinate.x, imageWidthInPixels))
-        let clampedY = max(0, min(pointCoordinate.y, imageHeightInPixels))
+        guard GuidePointingFreshness.pointIsInsideScreenshot(
+            pointCoordinate,
+            width: capture.screenshotWidthInPixels,
+            height: capture.screenshotHeightInPixels
+        ) else { return nil }
 
         // Undo the crop first, if there was one. Cropping moved the origin, so
         // a coordinate in the cropped image is not a coordinate in the display
@@ -2081,13 +2906,13 @@ final class CompanionManager: ObservableObject {
             let cropRegion = windowCrop.regionInFullScreenshotPixels
             guard cropRegion.width > 0, cropRegion.height > 0 else { return nil }
             pointInFullScreenshotPixels = CGPoint(
-                x: cropRegion.minX + clampedX * (cropRegion.width / imageWidthInPixels),
-                y: cropRegion.minY + clampedY * (cropRegion.height / imageHeightInPixels)
+                x: cropRegion.minX + pointCoordinate.x * (cropRegion.width / imageWidthInPixels),
+                y: cropRegion.minY + pointCoordinate.y * (cropRegion.height / imageHeightInPixels)
             )
             fullScreenshotWidthInPixels = CGFloat(windowCrop.fullScreenshotWidthInPixels)
             fullScreenshotHeightInPixels = CGFloat(windowCrop.fullScreenshotHeightInPixels)
         } else {
-            pointInFullScreenshotPixels = CGPoint(x: clampedX, y: clampedY)
+            pointInFullScreenshotPixels = pointCoordinate
             fullScreenshotWidthInPixels = imageWidthInPixels
             fullScreenshotHeightInPixels = imageHeightInPixels
         }
@@ -2117,6 +2942,99 @@ final class CompanionManager: ObservableObject {
     private static let chatAnswerWhenNothingCameBack =
         "i didn't get an answer together for that one. ask me again?"
 
+    /// Codex can safely answer an ordinary typed question through the same
+    /// read-only CLI route used for app edits. It is not a substitute for the
+    /// screen-help transport: this explicit contract keeps it from claiming to
+    /// see a window, inspect local folders, run commands, or click anything.
+    private static let codexTextOnlyQuestionPromptBase = """
+    You are Iris answering a typed general question. You have no screenshot,
+    no access to the user's files, no terminal, and no ability to inspect the
+    current app or screen. Do not claim otherwise and do not ask the user to
+    run commands. If the request needs those facts, say that connecting screen
+    help is required for Iris to inspect them. Answer any general explanation
+    you can provide in plain language, briefly and directly.
+    """
+
+    /// General Ask may use a small description of work the reader has already
+    /// selected inside Iris. That makes questions such as "what should I check
+    /// next?" useful without silently making Ask an app-edit route or claiming
+    /// that Codex can inspect the selected project's files or current window.
+    static func codexTextOnlyQuestionPrompt(sessionContext: String?) -> String {
+        guard let sessionContext, !sessionContext.isEmpty else {
+            return codexTextOnlyQuestionPromptBase
+        }
+        return codexTextOnlyQuestionPromptBase + "\n\n" + sessionContext
+    }
+
+    /// The Codex-only fallback intentionally has no screenshot, client tools,
+    /// or local machine context. It lets an account that is already connected
+    /// for edits ask a normal question without silently broadening its access.
+    private func sendUserMessageToCodexWithoutScreenContext(messageText: String) {
+        currentResponseTask?.cancel()
+        let responseIdentifier = UUID()
+        currentChatResponseIdentifier = responseIdentifier
+        chatResponseIsPending = true
+
+        currentResponseTask = Task {
+            defer { self.clearChatResponsePending(for: responseIdentifier) }
+            guard self.isCurrentChatResponse(responseIdentifier) else { return }
+            self.assistantState = .thinking
+            do {
+                let taskKind: String?
+                switch self.onDemandEditCoordinator.classifiedKind {
+                case .bugFix: taskKind = "bug fix"
+                case .feature: taskKind = "feature"
+                case nil: taskKind = nil
+                }
+                let sessionContext = CodexTextOnlyAskContext.render(
+                    selectedProjectName: self.onDemandEditCoordinator.activeAppName,
+                    taskSummary: self.onDemandEditCoordinator.activeRequestText,
+                    taskKind: taskKind
+                )
+                let history = self.conversationHistory.flatMap { entry in
+                    [
+                        MaintainChatTurn(role: "user", text: entry.userMessage),
+                        MaintainChatTurn(role: "assistant", text: entry.assistantResponse),
+                    ]
+                }
+                let provider = CodexMaintainProvider(
+                    model: CodexEditModelSelection.selectedModel(),
+                    reasoningEffort: .low,
+                    webSearchEnabled: true,
+                    runPhase: .intake
+                )
+                let response = try await provider.respond(
+                    systemPrompt: Self.codexTextOnlyQuestionPrompt(sessionContext: sessionContext),
+                    conversation: history + [MaintainChatTurn(role: "user", text: messageText)],
+                    maximumOutputTokens: 900
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard self.isCurrentChatResponse(responseIdentifier) else { return }
+                let responseText = response.isEmpty ? Self.chatAnswerWhenNothingCameBack : response
+                self.conversationHistory.append((userMessage: messageText, assistantResponse: responseText))
+                if self.conversationHistory.count > Self.maximumConversationHistoryExchanges {
+                    self.conversationHistory.removeFirst(
+                        self.conversationHistory.count - Self.maximumConversationHistoryExchanges
+                    )
+                }
+                self.chatTranscriptStore.recordExchange(question: messageText, answer: responseText)
+                if self.chatTranscriptStore.theTranscriptIsBeingSavedToDisk {
+                    self.chatHistoryClearFailureMessage = nil
+                }
+                self.clearDetectedElementLocation()
+                self.publishAssistantResponse(responseText, isAFailureMessage: false)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.isCurrentChatResponse(responseIdentifier) else { return }
+                self.publishAssistantResponse(error.localizedDescription, isAFailureMessage: true)
+            }
+            if self.isCurrentChatResponse(responseIdentifier) {
+                self.assistantState = .idle
+                self.scheduleTransientHideIfNeeded()
+            }
+        }
+    }
+
     /// The chat request, carrying the action tools, with exactly one fallback.
     ///
     /// WHY THE FALLBACK EXISTS. Tools ride in the request BODY, and the funded
@@ -2133,8 +3051,10 @@ final class CompanionManager: ObservableObject {
     private func requestTheChatAnswer(
         labeledImages: [(data: Data, label: String)],
         conversationHistoryForTheAPI: [(userPlaceholder: String, assistantResponse: String)],
-        userPrompt: String
+        userPrompt: String,
+        responseIdentifier: UUID
     ) async throws -> (text: String, duration: TimeInterval) {
+        guard isCurrentChatResponse(responseIdentifier) else { throw CancellationError() }
         // Per-message budgets start here, not at app launch.
         chatActionToolRunner.beginANewChatMessage()
 
@@ -2150,7 +3070,12 @@ final class CompanionManager: ObservableObject {
                     // No streaming display — the bar shows the full answer when done
                 },
                 executeClientTool: { toolName, toolInputJSONText in
-                    await self.chatActionToolRunner.execute(
+                    guard self.isCurrentChatResponse(responseIdentifier) else {
+                        return ClaudeClientToolResult(
+                            contentText: "This chat request was canceled.", isError: true
+                        )
+                    }
+                    return await self.chatActionToolRunner.execute(
                         toolNamed: toolName,
                         inputJSONText: toolInputJSONText
                     )
@@ -2159,6 +3084,7 @@ final class CompanionManager: ObservableObject {
         } catch AssistantTransportError.requestFailed(let statusCode)
                     where (400..<500).contains(statusCode)
                     && !chatActionToolRunner.hasDoneAnythingForThisChatMessage {
+            guard isCurrentChatResponse(responseIdentifier) else { throw CancellationError() }
             print("⚠️ Chat tools were rejected (status \(statusCode)) — retrying this message without them")
             return try await claudeAPI.analyzeImageStreaming(
                 images: labeledImages,
@@ -2178,21 +3104,33 @@ final class CompanionManager: ObservableObject {
     /// the buddy to fly to that element on screen.
     private func sendUserMessageToClaudeWithScreenshot(messageText: String) {
         currentResponseTask?.cancel()
+        let responseIdentifier = UUID()
+        currentChatResponseIdentifier = responseIdentifier
+        chatResponseIsPending = true
+        // Claim this message's attachments before a mode switch can swap the
+        // active composer bucket. General chat never inherits a parked edit.
+        let attachedImages = OverlayEyePastedImageAttachment.shared.takeTheImagesForThisMessage()
 
         currentResponseTask = Task {
+            defer {
+                self.clearChatResponsePending(for: responseIdentifier)
+            }
+            guard isCurrentChatResponse(responseIdentifier) else { return }
             assistantState = .capturing
 
             do {
+                let applicationWhenCaptured = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                let displaysWhenCaptured = NSScreen.screens.map(\.frame)
                 // What this message looks at: every connected screen, exactly
                 // as before, plus whatever the reader attached to the bar
                 // (pasted, dropped, or picked). `takeTheImagesForThisMessage`
                 // spends the attachments, so they ride one message and one only.
                 let (labeledImages, screenCaptures) = try await CompanionScreenCaptureUtility
                     .imageryForOneChatMessage(
-                        theReaderAttached: OverlayEyePastedImageAttachment.shared.takeTheImagesForThisMessage()
+                        theReaderAttached: attachedImages
                     )
 
-                guard !Task.isCancelled else { return }
+                guard isCurrentChatResponse(responseIdentifier) else { return }
 
                 assistantState = .thinking
 
@@ -2222,7 +3160,7 @@ final class CompanionManager: ObservableObject {
                 // the reader-facing thing at once — see the helper.
                 let promptWithGuideOrEditContext: String = {
                     guard let selfStateContext = Self.assistantSelfStateContext(
-                        editContext: onDemandEditCoordinator.chatContextForTheAssistant(),
+                        editContext: nil,
                         guideContext: guideSessionController.chatContextForTheAssistant(),
                         aGuideIsOpenOnScreen: guideSessionController.aGuideIsOpenOnScreen
                     ) else {
@@ -2237,6 +3175,7 @@ final class CompanionManager: ObservableObject {
                 let iosSimulatorRuntimes = await Task.detached {
                     AssistantMachineFacts.installedIosSimulatorRuntimes()
                 }.value
+                guard isCurrentChatResponse(responseIdentifier) else { return }
 
                 // What this Mac actually has on it: the OS, the shell, and
                 // which tools are on the PATH and which are NOT. A model told
@@ -2247,6 +3186,7 @@ final class CompanionManager: ObservableObject {
                 // are the same for every image in the batch, and each one costs
                 // a PATH walk per tool.
                 let promptWithMachineFacts: String = {
+                    let platformContext = appInventoryService.macRecommendationContext
                     let installedCatalogApps = appInventoryService.installedEntriesForDisplay
                         .map(\.name)
                     guard let machineFacts = AssistantMachineFacts.summary(
@@ -2254,9 +3194,9 @@ final class CompanionManager: ObservableObject {
                         installedCatalogApps: installedCatalogApps,
                         iosSimulatorRuntimes: iosSimulatorRuntimes
                     ) else {
-                        return promptWithGuideOrEditContext
+                        return promptWithGuideOrEditContext + "\n\n" + platformContext
                     }
-                    return promptWithGuideOrEditContext + "\n\n" + machineFacts
+                    return promptWithGuideOrEditContext + "\n\n" + machineFacts + "\n\n" + platformContext
                 }()
 
                 // Which app the reader is actually in.
@@ -2292,10 +3232,11 @@ final class CompanionManager: ObservableObject {
                 let (fullResponseText, _) = try await requestTheChatAnswer(
                     labeledImages: labeledImages,
                     conversationHistoryForTheAPI: historyForAPI,
-                    userPrompt: promptWithFrontmostApp
+                    userPrompt: promptWithFrontmostApp,
+                    responseIdentifier: responseIdentifier
                 )
 
-                guard !Task.isCancelled else { return }
+                guard isCurrentChatResponse(responseIdentifier) else { return }
 
                 // Parse the [POINT:...] tag from Claude's response
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
@@ -2317,57 +3258,34 @@ final class CompanionManager: ObservableObject {
                 // Switch to pointing BEFORE setting the location so the triangle
                 // becomes visible and can fly to the target. Without this, the
                 // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
+                let pointingContextIsUnchanged = applicationWhenCaptured == NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                    && displaysWhenCaptured == NSScreen.screens.map(\.frame)
+                let resolvedPoint = pointingContextIsUnchanged ? parseResult.coordinate.flatMap {
+                    Self.globalScreenLocation(
+                        fromScreenshotPoint: $0,
+                        screenNumber: parseResult.screenNumber,
+                        in: screenCaptures
+                    )
+                } : nil
+                let hasPointCoordinate = resolvedPoint != nil
                 if hasPointCoordinate {
                     assistantState = .pointing
                 }
 
-                // Pick the screen capture matching Claude's screen number,
-                // falling back to the cursor screen if not specified.
-                let targetScreenCapture: CompanionScreenCapture? = {
-                    if let screenNumber = parseResult.screenNumber,
-                       screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                        return screenCaptures[screenNumber - 1]
-                    }
-                    return screenCaptures.first(where: { $0.isCursorScreen })
-                }()
-
-                if let pointCoordinate = parseResult.coordinate,
-                   let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
+                if let resolvedPoint {
+                    // The model's label is the only concise description of the
+                    // control the eye can say without inventing one. Keep it
+                    // short and single-line before handing it to the overlay;
+                    // a missing label must also clear the previous cue rather
+                    // than leave stale words beside a new point.
+                    detectedElementBubbleText = Self.sanitizedPointingBubbleText(
+                        from: parseResult.elementLabel
                     )
-
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
+                    detectedElementScreenLocation = resolvedPoint.location
+                    detectedElementDisplayFrame = resolvedPoint.displayFrame
                 } else {
-                    // Which of the four things happened, not just "no element":
-                    // the model declining to point and the model garbling its
-                    // tag are different problems and used to look the same.
-                    print("🎯 Element pointing: none — \(parseResult.outcome.rawValue)")
+                    clearDetectedElementLocation()
+                    irisTrace("pointing/chat: no usable current-screen coordinate")
                 }
 
                 // Save this exchange to conversation history (with the point tag
@@ -2392,6 +3310,9 @@ final class CompanionManager: ObservableObject {
                     question: messageText,
                     answer: responseText
                 )
+                if chatTranscriptStore.theTranscriptIsBeingSavedToDisk {
+                    chatHistoryClearFailureMessage = nil
+                }
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
@@ -2399,17 +3320,17 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User asked something else — response was interrupted
             } catch {
+                guard isCurrentChatResponse(responseIdentifier) else { return }
                 // Never the raw server body: `describeAndHandle` maps the
                 // failure to one of a fixed set of sentences, and takes care of
                 // signing the user out when the funded tier says the session
                 // is gone.
-                publishAssistantResponse(
-                    await describeAndHandle(assistantError: error),
-                    isAFailureMessage: true
-                )
+                let failureMessage = await describeAndHandle(assistantError: error)
+                guard isCurrentChatResponse(responseIdentifier) else { return }
+                publishAssistantResponse(failureMessage, isAFailureMessage: true)
             }
 
-            if !Task.isCancelled {
+            if isCurrentChatResponse(responseIdentifier) {
                 // Pointing keeps its state until the buddy flies back and
                 // clearDetectedElementLocation() resets it to idle.
                 if assistantState != .pointing {
@@ -2474,6 +3395,25 @@ final class CompanionManager: ObservableObject {
     }
 
     // MARK: - Point Tag Parsing
+
+    /// Keeps model-supplied pointing labels safe and useful beside the eye.
+    /// Labels are instructions for a reader, not a second response channel:
+    /// collapse whitespace, reject control characters, and bound the rendered
+    /// bubble so one malformed or verbose tag cannot take over the overlay.
+    static func sanitizedPointingBubbleText(from label: String?) -> String? {
+        guard let label else { return nil }
+        let oneLine = label
+            .components(separatedBy: .newlines)
+            .joined(separator: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !oneLine.isEmpty,
+              oneLine.rangeOfCharacter(from: .controlCharacters) == nil else {
+            return nil
+        }
+        return String(oneLine.prefix(40))
+    }
 
     /// How the [POINT:...] tag in one reply turned out.
     ///

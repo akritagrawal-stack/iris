@@ -99,6 +99,20 @@ enum IrisStepExpectation: Equatable, Sendable {
     case urlHost(host: String)
     case toolVersion(tool: String)
     case axElement(roleLabel: String)
+    /// A named Keychain secret's value changed since this step started being
+    /// watched — present now and different from whatever was (or was not)
+    /// there a moment ago. `secretKind` is the wire name of a
+    /// `KeychainSecretKind` case ("anthropic-api-key", "openai-api-key", …).
+    ///
+    /// Added for the Sep 2026 anthropic-api-key fix round: a "paste the
+    /// secret into Iris" step used to declare `foregroundApp: com.publikhq.iris`,
+    /// which a live run proved is satisfied by anything that brings Iris
+    /// frontmost — a click on an unrelated control, even an AppleScript
+    /// activation — with no credential ever written. Requiring the stored
+    /// value to have actually CHANGED (not merely be present) is what keeps a
+    /// key already sitting in Keychain from a previous session from silently
+    /// satisfying a step nobody actually did anything on.
+    case credentialWasSaved(secretKind: String)
     case visual(prompt: String)
 
     /// True for the one expectation that cannot be answered without pixels.
@@ -118,6 +132,7 @@ extension IrisStepExpectation: Codable {
         case tool
         case roleLabel
         case prompt
+        case secretKind
     }
 
     /// An expectation whose `type` this build does not recognize throws, and
@@ -136,6 +151,8 @@ extension IrisStepExpectation: Codable {
             self = .toolVersion(tool: try container.decode(String.self, forKey: .tool))
         case "axElement":
             self = .axElement(roleLabel: try container.decode(String.self, forKey: .roleLabel))
+        case "credentialWasSaved":
+            self = .credentialWasSaved(secretKind: try container.decode(String.self, forKey: .secretKind))
         case "visual":
             self = .visual(prompt: try container.decode(String.self, forKey: .prompt))
         default:
@@ -162,6 +179,9 @@ extension IrisStepExpectation: Codable {
         case .axElement(let roleLabel):
             try container.encode("axElement", forKey: .type)
             try container.encode(roleLabel, forKey: .roleLabel)
+        case .credentialWasSaved(let secretKind):
+            try container.encode("credentialWasSaved", forKey: .type)
+            try container.encode(secretKind, forKey: .secretKind)
         case .visual(let prompt):
             try container.encode("visual", forKey: .type)
             try container.encode(prompt, forKey: .prompt)
@@ -262,6 +282,57 @@ private struct LenientlyDecodedStepExpectation: Decodable {
     }
 }
 
+/// A structural directory declaration resolved only against a validated
+/// prepared-project binding. This metadata never rewrites the command string
+/// and intentionally has no HOME or shell fallback.
+struct IrisGuideStepWorkspace: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Equatable, Sendable {
+        case preparedProject = "prepared-project"
+    }
+
+    let kind: Kind
+    let relativePath: String
+
+    init(kind: Kind, relativePath: String) throws {
+        guard Self.isValidRelativePath(relativePath) else {
+            throw IrisGuideStepWorkspaceError.invalidRelativePath
+        }
+        self.kind = kind
+        self.relativePath = relativePath
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(Kind.self, forKey: .kind)
+        relativePath = try container.decode(String.self, forKey: .relativePath)
+        guard Self.isValidRelativePath(relativePath) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .relativePath,
+                in: container,
+                debugDescription: "workspace relativePath must be a safe nonempty relative path"
+            )
+        }
+    }
+
+    private static func isValidRelativePath(_ value: String) -> Bool {
+        guard !value.isEmpty,
+              !value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }),
+              !value.contains("\\"),
+              !value.hasPrefix("/"),
+              !value.hasPrefix("~") else { return false }
+        let components = value.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard !components.isEmpty,
+              !components.contains(where: { $0.isEmpty || $0 == ".." }) else { return false }
+        // `.` is the explicit root spelling. Reject it inside a path so the
+        // wire value is canonical before GuideSourceWorkspace resolves it.
+        return value == "." || !components.contains(".")
+    }
+}
+
+enum IrisGuideStepWorkspaceError: Error, Equatable, Sendable {
+    case invalidRelativePath
+}
+
 struct IrisGuideStep: Codable, Equatable, Sendable {
     let id: String
     let kind: IrisStepKind
@@ -284,6 +355,11 @@ struct IrisGuideStep: Codable, Equatable, Sendable {
     /// and the resolution ladder in `GuidePointing.swift`.
     let point: IrisStepPointTarget?
 
+    /// A prepared-project directory named structurally within the selected
+    /// staged workspace. It cannot coexist with the legacy absolute or home
+    /// relative `workingDirectory` field.
+    let workspace: IrisGuideStepWorkspace?
+
     /// The folder this step's command runs in, stated by the guide instead of
     /// inherited from a `cd` some earlier step left behind in the shell.
     ///
@@ -303,6 +379,10 @@ struct IrisGuideStep: Codable, Equatable, Sendable {
     /// Nil keeps the old behaviour exactly — run wherever the shell is — which
     /// every already-published guide relies on, so this stays optional forever
     /// rather than becoming required once the guides are backfilled.
+    /// An explicit `workspace: null` therefore leaves this legacy field
+    /// eligible. A malformed legacy value is ignored when no workspace field
+    /// exists for backward compatibility; if a workspace field is present,
+    /// that malformed value fails decoding as contradictory metadata.
     let workingDirectory: String?
 
     /// An unrecognized `kind` falls back to `terminal` rather than failing the
@@ -326,11 +406,40 @@ struct IrisGuideStep: Codable, Equatable, Sendable {
         // Same reasoning as `watch`: a target Iris cannot parse costs the step
         // its arrow, not its existence.
         point = try? container.decodeIfPresent(IrisStepPointTarget.self, forKey: .point)
+        let hasWorkspaceField = container.contains(.workspace)
+        // An explicit null means no prepared workspace was declared, so the
+        // legacy workingDirectory remains eligible. A present, malformed
+        // workspace is a guide error and must fail the step decode.
+        workspace = try container.decodeIfPresent(IrisGuideStepWorkspace.self, forKey: .workspace)
         // Same fallback reasoning again: a folder Iris cannot read costs the
         // step its declaration, not its existence — it falls back to the
         // inherited working directory, which is where it ran before the field
         // existed at all.
-        workingDirectory = try? container.decodeIfPresent(String.self, forKey: .workingDirectory)
+        let decodedWorkingDirectory: String?
+        do {
+            decodedWorkingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+        } catch {
+            // Preserve legacy behavior for old steps that carry only a bad
+            // workingDirectory value: it is ignored and does not become HOME
+            // text. Once a workspace field is present, however, a malformed
+            // legacy field is an explicit contradictory declaration.
+            guard !hasWorkspaceField else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .workingDirectory,
+                    in: container,
+                    debugDescription: "workingDirectory must be a string when workspace metadata is present"
+                )
+            }
+            decodedWorkingDirectory = nil
+        }
+        guard workspace == nil || decodedWorkingDirectory == nil else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .workspace,
+                in: container,
+                debugDescription: "workspace and workingDirectory are mutually exclusive"
+            )
+        }
+        workingDirectory = decodedWorkingDirectory
     }
 
     init(
@@ -345,7 +454,8 @@ struct IrisGuideStep: Codable, Equatable, Sendable {
         verifierLabel: String? = nil,
         watch: IrisStepWatch? = nil,
         point: IrisStepPointTarget? = nil,
-        workingDirectory: String? = nil
+        workingDirectory: String? = nil,
+        workspace: IrisGuideStepWorkspace? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -359,6 +469,7 @@ struct IrisGuideStep: Codable, Equatable, Sendable {
         self.watch = watch
         self.point = point
         self.workingDirectory = workingDirectory
+        self.workspace = workspace
     }
 }
 

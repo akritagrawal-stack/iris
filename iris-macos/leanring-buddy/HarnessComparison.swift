@@ -151,6 +151,13 @@ nonisolated public struct HarnessRouteTelemetry: Codable, Equatable, Sendable {
     public private(set) var deterministicOperations: UInt64
     public private(set) var modelCallsByClass: [String: UInt64]
     public private(set) var inputBytesByClass: [String: UInt64]
+    /// Provider-reported input token counts, kept separate from the admitted
+    /// byte budget. A missing provider field stays absent rather than being
+    /// inferred from UTF-8 bytes.
+    public private(set) var inputTokensByClass: [String: UInt64]
+    /// Provider-reported cache-read input tokens. These have different pricing
+    /// and must not be folded into ordinary input tokens.
+    public private(set) var cachedInputTokensByClass: [String: UInt64]
     public private(set) var outputTokensByClass: [String: UInt64]
     public private(set) var reasoningTokensByClass: [String: UInt64]
 
@@ -159,6 +166,8 @@ nonisolated public struct HarnessRouteTelemetry: Codable, Equatable, Sendable {
         self.deterministicOperations = 0
         self.modelCallsByClass = [:]
         self.inputBytesByClass = [:]
+        self.inputTokensByClass = [:]
+        self.cachedInputTokensByClass = [:]
         self.outputTokensByClass = [:]
         self.reasoningTokensByClass = [:]
     }
@@ -177,12 +186,16 @@ nonisolated public struct HarnessRouteTelemetry: Codable, Equatable, Sendable {
     public mutating func recordModelCall(
         routeClass: HarnessRouteClass,
         inputBytes: UInt64,
+        inputTokens: UInt64? = nil,
+        cachedInputTokens: UInt64? = nil,
         outputTokens: UInt64? = nil,
         reasoningTokens: UInt64? = nil
     ) {
         let key = routeClass.rawValue
         increment(&modelCallsByClass[key])
         increment(&inputBytesByClass[key], by: inputBytes)
+        if let inputTokens { increment(&inputTokensByClass[key], by: inputTokens) }
+        if let cachedInputTokens { increment(&cachedInputTokensByClass[key], by: cachedInputTokens) }
         if let outputTokens { increment(&outputTokensByClass[key], by: outputTokens) }
         if let reasoningTokens { increment(&reasoningTokensByClass[key], by: reasoningTokens) }
     }

@@ -53,6 +53,8 @@ func everyModelPhaseHasAnExplicitRouteClass(_ phase: HarnessRunTaskKind) {
     telemetry.recordModelCall(
         routeClass: .boundedExtraction,
         inputBytes: 120,
+        inputTokens: 7,
+        cachedInputTokens: 3,
         outputTokens: 14,
         reasoningTokens: 2
     )
@@ -69,6 +71,8 @@ func everyModelPhaseHasAnExplicitRouteClass(_ phase: HarnessRunTaskKind) {
     #expect(telemetry.modelCalls == 2)
     #expect(telemetry.modelCallsByClass[HarnessRouteClass.boundedExtraction.rawValue] == 1)
     #expect(telemetry.inputBytesByClass[HarnessRouteClass.planning.rawValue] == 300)
+    #expect(telemetry.inputTokensByClass[HarnessRouteClass.boundedExtraction.rawValue] == 7)
+    #expect(telemetry.cachedInputTokensByClass[HarnessRouteClass.boundedExtraction.rawValue] == 3)
     #expect(telemetry.outputTokensByClass[HarnessRouteClass.boundedExtraction.rawValue] == 14)
     #expect(telemetry.reasoningTokensByClass[HarnessRouteClass.planning.rawValue] == 20)
 }
@@ -121,6 +125,8 @@ func everyModelPhaseHasAnExplicitRouteClass(_ phase: HarnessRunTaskKind) {
     #expect(session.ledger.snapshot.settledCalls[0].reservation.routeClass == .boundedExtraction)
     #expect(routeSnapshots.last?.modelCalls == 1)
     #expect(routeSnapshots.last?.modelCallsByClass[HarnessRouteClass.boundedExtraction.rawValue] == 1)
+    #expect(routeSnapshots.last?.inputTokensByClass[HarnessRouteClass.boundedExtraction.rawValue] == 3)
+    #expect(routeSnapshots.last?.cachedInputTokensByClass[HarnessRouteClass.boundedExtraction.rawValue] == nil)
     #expect(lifecycleSnapshots.contains { $0.state == .running })
     #expect(session.taskLifecycle.snapshot.state == .running)
 

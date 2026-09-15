@@ -118,6 +118,8 @@ final class IrisTestRunUsage {
             "modelCallsAvoided": routeTelemetry.modelCallsAvoided,
             "modelCallsByRouteClass": routeTelemetry.modelCallsByClass,
             "inputBytesByRouteClass": routeTelemetry.inputBytesByClass,
+            "inputTokensByRouteClass": routeTelemetry.inputTokensByClass,
+            "cachedInputTokensByRouteClass": routeTelemetry.cachedInputTokensByClass,
             "outputTokensByRouteClass": routeTelemetry.outputTokensByClass,
             "reasoningTokensByRouteClass": routeTelemetry.reasoningTokensByClass,
             "taskLifecycle": lifecycleSnapshot.map { lifecycleDocument($0) } ?? NSNull(),

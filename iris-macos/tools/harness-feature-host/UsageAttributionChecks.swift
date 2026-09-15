@@ -65,6 +65,11 @@ func runUsageAttributionChecks() async throws {
     )
     try require(observedInputCounts == expectedCounts,
                 "request component counts did not use UTF-8 bytes")
+    try require(
+        successfulSession.routeTelemetry.inputTokensByClass[HarnessRouteClass.complexImplementation.rawValue] == 11
+            && successfulSession.routeTelemetry.cachedInputTokensByClass[HarnessRouteClass.complexImplementation.rawValue] == 2,
+        "route telemetry lost provider-reported input or cached-input tokens"
+    )
 
     let usageDocument = IrisTestRunUsage.callDocument(
         for: successfulCall,
@@ -94,6 +99,21 @@ func runUsageAttributionChecks() async throws {
                 "serialized reasoning output token count was missing")
     try require((usageDocument["elapsedNanoseconds"] as? UInt64) == 0,
                 "serialized monotonic latency was missing")
+
+    let routedUsageDocument = IrisTestRunUsage.snapshotDocument(
+        runID: "usage-check-routed",
+        startedAt: Date(timeIntervalSince1970: 0),
+        snapshot: successfulSession.ledger.snapshot,
+        calls: [usageDocument],
+        routeTelemetry: successfulSession.routeTelemetry
+    )
+    let routedInputTokens = routedUsageDocument["inputTokensByRouteClass"] as? [String: UInt64]
+    let routedCachedInputTokens = routedUsageDocument["cachedInputTokensByRouteClass"] as? [String: UInt64]
+    try require(
+        routedInputTokens?[HarnessRouteClass.complexImplementation.rawValue] == 11
+            && routedCachedInputTokens?[HarnessRouteClass.complexImplementation.rawValue] == 2,
+        "serialized route telemetry omitted provider-reported input token families"
+    )
 
     var aggregateLedger = HarnessRunLedger(
         settings: try HarnessRunLedgerSettings(maxCalls: 2, maxInputBytes: 100),

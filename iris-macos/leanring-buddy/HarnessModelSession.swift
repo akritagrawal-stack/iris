@@ -354,6 +354,8 @@ final class HarnessModelSession {
         routeTelemetry.recordModelCall(
             routeClass: routeClass,
             inputBytes: reservation.inputBytesReserved,
+            inputTokens: usage?.inputTokens,
+            cachedInputTokens: usage?.cachedInputTokens,
             outputTokens: usage?.outputTokens,
             reasoningTokens: usage?.reasoningOutputTokens
         )

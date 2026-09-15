@@ -742,3 +742,11 @@ bounded offline suites passed `72/72` across 5 suites in 19.267 seconds, with
 the spatial checks exiting successfully. This verifies the retry, shell,
 ownership, and spatial state-machine contracts in the integrated source; it
 still does not substitute for live screen interaction.
+
+The live Publik catalog was queried directly on 2026-09-14. It returned 27
+metadata-only app records with `macBundleId`, release-tag, and guide fields;
+it exposed no signed TestFlight/App Store destination, iOS package, or device
+open/restart route. The mobile hub therefore correctly renders iPhone as
+unavailable and explains the publisher action required. This confirms the
+blocker is upstream catalog/distribution state, not a hidden browser test
+failure.

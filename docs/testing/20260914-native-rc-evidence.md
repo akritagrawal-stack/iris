@@ -771,3 +771,10 @@ The signed v20 candidate was launched from its shared RC path and produced a
 live `Iris Test` process, then was quit cleanly. This is a bounded startup
 smoke only; without native screen interaction it does not establish the
 Kneecap, spatial, or permission journeys.
+
+The post-change native Kneecap subset was rerun against the integrated source:
+`Bug7MissingToolSelfInstallEndToEndTests` and
+`Bug3StaleShellPathEndToEndTests` passed `4/4` in 3.761 seconds. This closes
+the stale subset evidence item for self-install, reader-installed-tool retry,
+shell continuity, and real-tool execution in the fixture workspace. It remains
+fixture/native evidence, not a live user-folder install or phone handoff.

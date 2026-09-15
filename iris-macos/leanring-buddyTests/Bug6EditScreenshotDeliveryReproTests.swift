@@ -360,6 +360,7 @@ enum Bug6ReadersScreen {
 @MainActor
 struct Bug6WhimprflowClone {
     let path: String
+    let processPolicy: MaintainSandbox.ProcessPolicy
 
     /// A slug of its own rather than the field's bare "whimprflow": the
     /// coordinator READS and WRITES per-app memory under
@@ -378,7 +379,10 @@ struct Bug6WhimprflowClone {
                 atPath: clonePath + "/" + subdirectory, withIntermediateDirectories: true
             )
         }
-        let clone = Bug6WhimprflowClone(path: clonePath)
+        let processPolicy = try IrisTestFixtureSandbox.processPolicy(for: clonePath)
+        let clone = Bug6WhimprflowClone(
+            path: clonePath, processPolicy: processPolicy
+        )
 
         clone.write(".gitignore", "node_modules/\ntarget/\ndist/\n")
         clone.write("src-tauri/tauri.conf.json", """
@@ -698,6 +702,7 @@ final class Bug6CoordinatorRun {
                     .appendingPathComponent("iris-bug6-\(UUID().uuidString)")
             ),
             clonePathLock: MaintainClonePathLock(),
+            processPolicy: clone.processPolicy,
             topRequestsForApp: { _ in [] },
             probeRequestTriggers: { _, _ in .allQuiet },
             performOnDemandEdit: {
@@ -711,7 +716,8 @@ final class Bug6CoordinatorRun {
                     progressHandler: progressHandler, cancellationCheck: cancellationCheck,
                     runtimeEvidence: runtimeEvidence,
                     additionalPromptSections: additionalPromptSections,
-                    manifestChangeApproval: manifestChangeApproval
+                    manifestChangeApproval: manifestChangeApproval,
+                    processPolicy: clone.processPolicy
                 )
             }
         )
@@ -761,7 +767,8 @@ final class Bug6CoordinatorRun {
         cancellationCheck: @escaping MaintainTierCCancellationCheck,
         runtimeEvidence: OnDemandEditRuntimeEvidence,
         additionalPromptSections: [String],
-        manifestChangeApproval: @escaping MaintainTierCManifestChangeApproval
+        manifestChangeApproval: @escaping MaintainTierCManifestChangeApproval,
+        processPolicy: MaintainSandbox.ProcessPolicy
     ) async -> MaintainOnDemandEditResult {
         let fixer = MaintainTierCFixer(provider: provider)
         return await fixer.attemptOnDemandEdit(
@@ -788,6 +795,7 @@ final class Bug6CoordinatorRun {
             // The independent review is a second call on the same provider;
             // this test reads the ENGINE's conversation, so it stays off.
             runsAnIndependentReview: false
+            , processPolicy: processPolicy
         )
     }
 

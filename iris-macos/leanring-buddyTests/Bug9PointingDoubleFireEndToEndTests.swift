@@ -511,6 +511,18 @@ struct Bug9PointingDoubleFireEndToEndTests {
         }
         let whereTheStillWindowStarted = theOtherWindowOfTheSameApp.frame
 
+        // Xcode keeps its test runner frontmost while a native test is running.
+        // Put an already-running user app in front before checking the premise;
+        // otherwise this guard exits before the real activation/capture path is
+        // exercised. Finder is always available on a macOS test host and does
+        // not need a login, network, or a newly installed process.
+        if let userApp = NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.apple.finder"
+        ).first {
+            userApp.activate(options: [])
+            await Self.waitOutAnUncancellableRoundTrip(milliseconds: 150)
+        }
+
         // The correction reads the focused window of the FRONTMOST app, and
         // skips itself when there is no frontmost app to name — so a runner with
         // nothing frontmost would pass this test for the wrong reason.

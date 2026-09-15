@@ -32,7 +32,7 @@ struct GuideAutopilotRiskTests {
         ]
         for command in forbiddenExamples {
             #expect(
-                GuideAutopilotRiskAssessment.assess(command) != .runsWithoutAsking,
+                GuideAutopilotRiskAssessment.assess(command, autonomyGranted: false) != .runsWithoutAsking,
                 "the web repo forbids this in guides, so autopilot must never run it silently: \(command)"
             )
         }
@@ -53,12 +53,12 @@ struct GuideAutopilotRiskTests {
             ":(){ :|:& };:",
         ]
         for command in refused {
-            guard case .refusedOutright = GuideAutopilotRiskAssessment.assess(command) else {
+            guard case .refusedOutright = GuideAutopilotRiskAssessment.assess(command, autonomyGranted: false) else {
                 Issue.record("expected refusal for: \(command)")
                 continue
             }
             #expect(
-                GuideAutopilotRiskAssessment.approveAfterAReaderTap(command) == nil,
+                GuideAutopilotRiskAssessment.approveAfterAReaderTap(command, autonomyGranted: false) == nil,
                 "a reader tap must not mint an approval for: \(command)"
             )
         }
@@ -80,17 +80,98 @@ struct GuideAutopilotRiskTests {
             "launchctl bootstrap system /Library/LaunchDaemons/com.thing.plist",
         ]
         for command in needsATap {
-            guard case .needsAConfirmTap(let reason) = GuideAutopilotRiskAssessment.assess(command) else {
+            guard case .needsAConfirmTap(let reason) = GuideAutopilotRiskAssessment.assess(command, autonomyGranted: false) else {
                 Issue.record("expected a confirm tap for: \(command)")
                 continue
             }
             #expect(!reason.plainLanguageSummary.isEmpty)
             #expect(command.localizedCaseInsensitiveContains(reason.trippingSubstring)
                     || !reason.trippingSubstring.isEmpty)
-            #expect(GuideAutopilotRiskAssessment.approve(command) == nil,
+            #expect(GuideAutopilotRiskAssessment.approve(command, autonomyGranted: false) == nil,
                     "silent approval must refuse a confirm-tier command: \(command)")
-            #expect(GuideAutopilotRiskAssessment.approveAfterAReaderTap(command) != nil,
+            #expect(GuideAutopilotRiskAssessment.approveAfterAReaderTap(command, autonomyGranted: false) != nil,
                     "an explicit tap must mint one: \(command)")
+        }
+    }
+
+    @Test func inlineDirectoryChangesCannotHideRiskyTargets() {
+        for command in [
+            "cd /Applications ; cp -R ./Evil.app .",
+            "cd \"/Applications\" && cp -R ./Evil.app ."
+        ] {
+            guard case .needsAConfirmTap = GuideAutopilotRiskAssessment.assess(
+                command, inWorkingDirectory: "~", autonomyGranted: false
+            ) else {
+                Issue.record("a system-folder write hidden after cd must ask: \(command)")
+                continue
+            }
+        }
+
+        for command in [
+            "cd ~ ; rm -rf .",
+            "cd $HOME ; rm -rf *",
+            "cd / ; rm -rf ."
+        ] {
+            guard case .refusedOutright = GuideAutopilotRiskAssessment.assess(
+                command, inWorkingDirectory: "~", autonomyGranted: true
+            ) else {
+                Issue.record("a whole-home or whole-disk delete hidden after cd must refuse: \(command)")
+                continue
+            }
+            #expect(
+                GuideAutopilotRiskAssessment.approve(
+                    command, inWorkingDirectory: "~", autonomyGranted: true
+                ) == nil
+            )
+        }
+    }
+
+    @Test func mutatingMetadataAndServiceCommandsRequireExplicitConfirmation() {
+        let needsATap = [
+            "xattr -w user.test value ./file",
+            "xattr -d user.test ./file",
+            "xattr -c ./file",
+            "xattr -rc ./folder",
+            "xattr --write user.test value ./file",
+            "defaults write com.example.App Enabled -bool true",
+            "defaults rename com.example.App OldKey NewKey",
+            "defaults import com.example.App ./settings.plist",
+            "spctl --add /Applications/App.app",
+            "spctl --remove /Applications/App.app",
+            "spctl --enable",
+            "spctl --disable",
+            "launchctl unload ~/Library/LaunchAgents/app.plist",
+            "launchctl bootstrap gui/501 ~/Library/LaunchAgents/app.plist",
+            "launchctl remove com.example.App"
+        ]
+        for command in needsATap {
+            guard case .needsAConfirmTap = GuideAutopilotRiskAssessment.assess(
+                command, autonomyGranted: false
+            ) else {
+                Issue.record("a mutating command must ask: \(command)")
+                continue
+            }
+            #expect(
+                GuideAutopilotRiskAssessment.approve(command, autonomyGranted: false) == nil,
+                "silent approval must refuse: \(command)"
+            )
+            #expect(
+                GuideAutopilotRiskAssessment.approveAfterAReaderTap(command, autonomyGranted: false) != nil,
+                "an explicit tap should allow the reviewed command: \(command)"
+            )
+        }
+
+        for command in [
+            "xattr -p com.apple.quarantine ./file",
+            "defaults read com.example.App",
+            "spctl --assess /Applications/App.app",
+            "launchctl print gui/501/com.example.App"
+        ] {
+            #expect(
+                GuideAutopilotRiskAssessment.assess(command, autonomyGranted: false)
+                    == .runsWithoutAsking,
+                "a read-only metadata or service probe should stay quiet: \(command)"
+            )
         }
     }
 
@@ -103,7 +184,7 @@ struct GuideAutopilotRiskTests {
             "echo 'ls' | sh",
         ]
         for command in disguised {
-            #expect(GuideAutopilotRiskAssessment.assess(command) != .runsWithoutAsking,
+            #expect(GuideAutopilotRiskAssessment.assess(command, autonomyGranted: false) != .runsWithoutAsking,
                     "a command whose effect can't be read from its text must not auto-run: \(command)")
         }
     }
@@ -121,9 +202,9 @@ struct GuideAutopilotRiskTests {
             "cp .env.development.example .env.development",
         ]
         for command in ordinary {
-            #expect(GuideAutopilotRiskAssessment.assess(command) == .runsWithoutAsking,
+            #expect(GuideAutopilotRiskAssessment.assess(command, autonomyGranted: false) == .runsWithoutAsking,
                     "gate noise on an ordinary command breeds tap-through: \(command)")
-            #expect(GuideAutopilotRiskAssessment.approve(command) != nil)
+            #expect(GuideAutopilotRiskAssessment.approve(command, autonomyGranted: false) != nil)
         }
     }
 
@@ -145,7 +226,7 @@ struct GuideAutopilotRiskTests {
 
         for command in commands where !Self.knownFlaggedShippedCommands.contains(command) {
             #expect(
-                GuideAutopilotRiskAssessment.assess(command) == .runsWithoutAsking,
+                GuideAutopilotRiskAssessment.assess(command, autonomyGranted: false) == .runsWithoutAsking,
                 "shipped guide command trips the gate — either the gate is over-eager or a guide regressed past the web tests: \(command)"
             )
         }

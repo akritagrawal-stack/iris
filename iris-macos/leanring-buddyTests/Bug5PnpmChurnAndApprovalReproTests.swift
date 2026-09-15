@@ -365,6 +365,7 @@ struct Bug5DirtyCloneRefusalEndToEndTests {
 struct Bug5WhimprflowClone {
 
     let path: String
+    let processPolicy: MaintainSandbox.ProcessPolicy
     let runner: MaintainShellRunner
 
     /// The pnpm the fixture pins for itself, via `ui/package.json`'s
@@ -412,8 +413,13 @@ struct Bug5WhimprflowClone {
                 atPath: clonePath + "/" + subdirectory, withIntermediateDirectories: true
             )
         }
+        let processPolicy = try IrisTestFixtureSandbox.processPolicy(for: clonePath)
         let clone = Bug5WhimprflowClone(
-            path: clonePath, runner: try MaintainShellRunner(repoRootPath: clonePath)
+            path: clonePath,
+            processPolicy: processPolicy,
+            runner: try MaintainShellRunner(
+                repoRootPath: clonePath, processPolicy: processPolicy
+            )
         )
 
         // Build outputs and dependency trees are ignored the way a real project
@@ -613,6 +619,7 @@ final class Bug5CoordinatorRun {
                     .appendingPathComponent("iris-bug5-\(UUID().uuidString)")
             ),
             clonePathLock: MaintainClonePathLock(),
+            processPolicy: clone.processPolicy,
             topRequestsForApp: { _ in [] },
             probeRequestTriggers: { _, _ in .allQuiet },
             performOnDemandEdit: { _, _, _, _, _, _, _, _, _, _, _ in

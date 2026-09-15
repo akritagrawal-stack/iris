@@ -1,0 +1,10 @@
+# Fresh source and UI baseline, September 12
+
+These observations are before the new installation/spatial implementations. They are not acceptance of the new branch.
+
+- Public `GET https://publikhq.com/api/iris/apps`: HTTP 200, 3,011 bytes, SHA-256 `86437e01bd7f4120c262488bda19d9c4c25ffdf3875f787fe4d11311017a60bc`. Kneecap has `macBundleId: null`, `latestReleaseTag: null`, `guideSlug: kneecap`. No native distribution URL is established by these fields.
+- Public `GET https://publikhq.com/api/iris/guides/kneecap`: HTTP 200, 18,965 bytes, SHA-256 `5c5b9b2e5d8fac0a56192e4278ef4f3d868acf8a7c2121bef58e5507e2046af1`. Version 5, status `pilot`, owner/repo `Blueturboguy07/kneecap`, source pin `fc48ba487a1e0d0cd10b30d6600acd2895ffdbed`. This supersedes any inference that the public guide is DRAFT merely because a local design document is DRAFT. The guide's wording about unsigned iOS installation does not override Apple's signing requirements.
+- Real computer use opened Iris Test's eye, composer and Settings. Composer says Codex is connected for edits while screen help needs a separate connection. Settings reports saved-login Keychain access denied and login retained. No credential entry or permission change was performed.
+- Settings shows two registered fixture apps and saved app records, Test cleanup review and refresh controls. The catalog discovery empty state says all Mac apps are installed in this isolated profile. This is not evidence about all real installed user apps.
+- Entering `kneecap` through the real guide-name field and tapping Open cleared the field, but closing Settings returned to the general composer without a visible guide or error. Follow up the Test guide availability/feedback path; do not claim setup started. No guide command was run and no user source was changed.
+- Current source at the handoff already contains reverse-consumer review selection at both call sites and diagnostic compaction for source-like false/error output. These are preserved existing improvements, not new changes from this phase.

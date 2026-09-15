@@ -80,3 +80,12 @@ headless, browser, or package tests.
 
 - The user TCC database contains a `DocumentsFolder` record for `com.publikhq.iris.test`, but no `Accessibility` or `ScreenCapture` record for that bundle.
 - This independently confirms why the v23 process reports `accessibility: false` and `screen: false`; the missing records are the concrete external gate for live click-through.
+
+## TCC consent verified after native UI enablement (2026-09-14)
+
+- The macOS Privacy panes were opened and inspected with the actual desktop UI. `Iris Test` is visibly enabled in both Accessibility and Screen & System Audio Recording.
+- The authoritative system TCC database now contains:
+  `kTCCServiceAccessibility|com.publikhq.iris.test|auth_value=2|auth_reason=4` and
+  `kTCCServiceScreenCapture|com.publikhq.iris.test|auth_value=2|auth_reason=4`.
+- The signed v23 bundle was quit and relaunched after consent; the live process was observed as PID 46779. The post-consent desktop capture is `/tmp/iris-v23-after-tcc.png` (SHA-256 `d78e41dea2f6cb7b1b99d4f1c798a6d1328ec3af30b54e197c57845b63ab0f07`).
+- This closes the macOS consent gate for the test bundle. A fresh live click-through and provider-backed edit are still separate acceptance checks; the earlier `false` startup line predates this consent change.

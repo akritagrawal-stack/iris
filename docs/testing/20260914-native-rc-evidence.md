@@ -729,3 +729,10 @@ The post-fix regression pass also completed the Swift harness package at
 These checks cover the retained routing, lifecycle, review, storage, and hub
 contracts; they do not close native permission, live-provider, or physical
 phone acceptance.
+
+The fresh compile-gated feature-host run also completed successfully with its
+explicit scratch directory and `IRIS_HARNESS_SCRATCH` binding. It reported
+passing usage attribution, review-reserve, command-freshness, repair-window,
+redaction, accepted-candidate, and pre-edit convergence checks. The host
+reported 303 compiler warnings but no compile or check failure; its synthetic
+byte reduction remains prompt-text accounting, not provider token savings.

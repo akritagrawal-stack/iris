@@ -832,3 +832,9 @@ v20 identity appears enabled in System Settings. The app correctly stops at
 that gate instead of pretending screen capture is available. A native operator
 must grant the current v21 identity and restart it; only then can the new
 screen-help handshake and spatial journey be exercised.
+
+The setup panel was also corrected to keep the Screen Content permission row
+visible when Screen Recording is missing, with an explicit dependency message.
+The prior UI said “Grant all three” while rendering only two controls. The
+`Iris Test` scheme rebuilt successfully after this change; a native permission
+recheck remains required on the signed candidate.

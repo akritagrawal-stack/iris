@@ -547,9 +547,11 @@ struct CompanionPanelView: View {
 
             screenRecordingPermissionRow
 
-            if companionManager.hasScreenRecordingPermission {
-                screenContentPermissionRow
-            }
+            // Keep all three requirements visible. Hiding Screen Content until
+            // Screen Recording is granted made the card promise "all three"
+            // while exposing only two controls, and left users without a
+            // discoverable path to the ScreenCaptureKit handshake.
+            screenContentPermissionRow
 
         }
     }
@@ -683,9 +685,16 @@ struct CompanionPanelView: View {
                     .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
                     .frame(width: 16)
 
-                Text("Screen Content")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Screen Content")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                    Text(companionManager.hasScreenRecordingPermission
+                         ? "Connects the screen only when you ask"
+                         : "Grant Screen Recording first")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
             }
 
             Spacer()

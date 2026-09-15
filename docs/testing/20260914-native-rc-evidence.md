@@ -588,6 +588,15 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+### 2026-09-14 per-route token telemetry regression
+
+The routing lifecycle suite passed all 11 tests after adding provider-reported
+input and cached-input token retention for settled, failed, and cancelled
+calls. A fresh harness-feature-host build and `--checks` run exited
+successfully, including usage-attribution serialization of both token
+families. This improves cost and efficiency measurement but does not prove
+provider pricing or live-provider execution.
+
 The subsequent per-route token telemetry fix was rebuilt into
 `/Users/Shared/Iris-RC-20260914-v16/Iris Test.app`; the Xcode `Iris Test`
 scheme again completed successfully with signing disabled. Its executable

@@ -850,3 +850,8 @@ row in the permission card. Xcode reported `BUILD SUCCEEDED`; deep strict
 signature verification passed. The artifact is `/Users/Shared/Iris-RC-20260914-v23/Iris
 Test.app` with executable SHA-256
 `0fd55e4d4d468cc521dfa139aa4c5d3f320fbd3d1bcfc5364cebdcd77b037d5b`.
+
+The independent regression lanes were rerun from the v23 source: Swift
+harness `161/161` across 7 suites and mobile hub Node tests `20/20`. These
+remain source/package evidence and do not substitute for native permissions,
+live provider execution, or a physical phone journey.

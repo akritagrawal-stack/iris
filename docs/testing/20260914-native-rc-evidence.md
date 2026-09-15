@@ -486,3 +486,12 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   stopped step across republish, and restarting safely after a renamed step.
 - This is focused native persistence and cleanup evidence. Live provider
   delivery and physical-device continuity remain separate gates.
+
+### 2026-09-14 spend and usage accounting rerun
+
+- The native scheme ran `AssistantSpendLedgerTests`; all `10/10` tests passed.
+  They cover provider ownership, OAuth zero-cost handling, published model
+  pricing, unknown-model honesty, sub-cent precision, relaunch persistence,
+  empty usage, split stream usage, and duplicate-delta protection.
+- This is focused native accounting evidence. Live provider execution and
+  physical-device acceptance remain separate gates.

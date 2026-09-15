@@ -549,3 +549,7 @@ Ran the native Xcode `Iris Test` scheme against `leanring-buddyTests/GuideSetupR
 ### 2026-09-14 pre-edit reply convergence regression
 
 The harness feature host `--checks` run now covers four completed pre-edit reply classes: duplicate/read command, prose-only response, malformed edit block, and an inert shell write attempt. Each scenario is bounded to six model replies, emits one convergence nudge after three, restores the fixture cleanly, and reports the honest no-source-edit outcome. The affected harness build and command-freshness checks passed; this is headless executor evidence, not live provider or installed-app acceptance.
+
+### 2026-09-14 integrated package regression rerun
+
+The integrated harness package ran `swift test --package-path iris-macos/tools/harness-tests`: Swift Testing executed 161 tests in 7 suites and all passed. The mobile install hub ran `node --test iris-mobile/test/*.test.mjs`: 19/19 passed. These are source/package regressions; they do not establish live provider, installed-app, or physical-device acceptance.

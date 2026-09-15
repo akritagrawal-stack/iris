@@ -29,6 +29,12 @@ export const ROUTE_KINDS = Object.freeze([
   "unavailable",
 ]);
 
+export function routeActionLabel(kind) {
+  if (kind === "web") return "Open";
+  if (kind === "mac-assisted") return "Open guide";
+  return "Install";
+}
+
 /**
  * Keeps the reader's device choice across a browser restart without making
  * that choice part of the network manifest. A stale or forged value is

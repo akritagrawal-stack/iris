@@ -11,6 +11,7 @@ import {
   mapCatalogResponse,
   parseCatalogText,
   parseManifestText,
+  routeActionLabel,
   validateManifest,
 } from "../manifest.js";
 import { createCatalogProxy } from "../catalog-proxy.mjs";
@@ -61,6 +62,14 @@ test("persists only a supported device choice and ignores bad storage", () => {
   assert.equal(broken.read(), null);
   assert.equal(broken.write("android"), false);
   assert.equal(createDevicePreferenceStore(undefined).write("iphone"), false);
+});
+
+test("uses handoff wording for web and assisted routes", () => {
+  assert.equal(routeActionLabel("web"), "Open");
+  assert.equal(routeActionLabel("mac-assisted"), "Open guide");
+  assert.equal(routeActionLabel("app-store"), "Install");
+  assert.equal(routeActionLabel("testflight"), "Install");
+  assert.equal(routeActionLabel("android-package"), "Install");
 });
 
 function rawCatalog(overrides = {}) {

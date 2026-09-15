@@ -1,4 +1,4 @@
-import { createCatalogClient, createDevicePreferenceStore, createStorageCache, DEVICES } from "./manifest.js";
+import { createCatalogClient, createDevicePreferenceStore, createStorageCache, DEVICES, routeActionLabel } from "./manifest.js";
 
 const deviceLabels = { iphone: "iPhone", android: "Android", computer: "Computer" };
 const state = { device: "iphone", result: null };
@@ -53,7 +53,7 @@ function renderRoute(app) {
     link.href = route.destination;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.textContent = route.kind === "web" ? "Open" : "Install";
+    link.textContent = routeActionLabel(route.kind);
     routeBox.append(link);
   } else {
     if (app.setupGuide) {

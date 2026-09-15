@@ -557,3 +557,14 @@ The integrated harness package ran `swift test --package-path iris-macos/tools/h
 ### 2026-09-14 install and spatial focused rerun
 
 The native `Iris Test` scheme executed the combined `GuideSetupRecoveryTests` and `SpatialGuidanceRegressionTests` selection: 14 tests in 2 suites, all passed. This rerun confirms setup diversion/resume/recheck behavior and semantic spatial target freshness across the integrated source. It remains source/native test evidence only; live provider screen capture, permissions, and physical-device install are still open gates.
+
+### 2026-09-14 mobile handoff wording fix
+
+The mobile hub previously labeled every verified non-web destination “Install,”
+including the `mac-assisted` route kind whose contract is a guide handoff. The
+hub now labels that route “Open guide” while retaining “Open” for web routes and
+“Install” for App Store, TestFlight, and Android package routes. The focused
+mobile suite passed `20/20`, including the route-label regression check. The
+live catalog still has no verified iPhone or Android destination, so this is
+handoff wording evidence only and does not establish a signed build or physical
+device acceptance.

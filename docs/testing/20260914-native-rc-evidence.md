@@ -514,3 +514,12 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   never gets reported as behavior proof without the required evidence.
 - This is focused native verification-boundary evidence. Live provider
   delivery and physical-device acceptance remain separate gates.
+
+### 2026-09-14 model selection and routing regression rerun
+
+- The native scheme ran `CodexEditModelSelectionTests`; all `9/9` tests passed,
+  including catalog filtering, malformed or oversized cache rejection, safe
+  model identifier validation, honest runtime defaults, and persisted valid
+  selection behavior.
+- This is focused native routing evidence. It does not prove live provider
+  execution or physical-device acceptance.

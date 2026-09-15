@@ -49,7 +49,6 @@
 				CatalogAppIconTests.swift,
 				CatalogMacCompatibilityTests.swift,
 				ChatTranscriptResetTests.swift,
-				CodexEditModelSelectionTests.swift,
 				GuidePresentationRegressionTests.swift,
 				KeychainReadPolicyTests.swift,
 				OverlayEyeDragTests.swift,

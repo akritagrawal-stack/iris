@@ -587,3 +587,12 @@ the active candidate preserved, runtime-image retirement, clean-source retry
 gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
+
+### 2026-09-14 fresh integrated RC build
+
+The current integration branch built successfully with Xcode's `Iris Test`
+scheme and signing disabled. The resulting candidate is
+`/Users/Shared/Iris-RC-20260914-v15/Iris Test.app` (executable SHA-256
+`712dcf81f18c7bc024fa77fc9c5374a9d3ab3d88a6cae5239b5671e83db23a65`). This
+ties the latest source and test changes to a named artifact. It does not close
+the live-provider, macOS permission, or physical-iPhone acceptance gates.

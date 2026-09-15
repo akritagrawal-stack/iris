@@ -469,3 +469,11 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   the fresh-shell control remains explicit.
 - This is focused native shell evidence and does not prove the physical phone
   installation or device handoff.
+
+### 2026-09-14 saved-version Undo presentation rerun
+
+- The native scheme ran `SavedAppVersionsSectionTests`; all `4/4` tests passed.
+  They cover missing project identity, unregistered projects, changed project
+  identity refusal, and exact identity allowing Undo.
+- This is focused native UI decision evidence for safe version-history recovery;
+  it does not prove live provider delivery or device continuity.

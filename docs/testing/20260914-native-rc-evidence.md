@@ -390,3 +390,12 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 - This is fresh source-level NitroAI evidence. It does not claim Iris generated
   or delivered the feature through a live provider, nor does it replace the
   pending packaged relaunch/readback acceptance.
+
+### 2026-09-14 shared capability dispatch guard
+
+- Commit `67ecf9c` closes a route contradiction: Edit Send now requires the
+  resolved editing provider capability, and the shared `CompanionManager`
+  dispatch entry refreshes Codex login state for callers outside the overlay.
+- Focused `ComposerConnectionPresentationTests` passed `13/13`; Swift parsing
+  and diff checks passed. This is source and focused-test evidence. A rebuilt
+  native candidate still needs the live Ask/Edit interaction rerun.

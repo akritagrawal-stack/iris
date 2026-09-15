@@ -588,6 +588,11 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+The subsequent per-route token telemetry fix was rebuilt into
+`/Users/Shared/Iris-RC-20260914-v16/Iris Test.app`; the Xcode `Iris Test`
+scheme again completed successfully with signing disabled. Its executable
+hash is `712dcf81f18c7bc024fa77fc9c5374a9d3ab3d88a6cae5239b5671e83db23a65`.
+
 ### 2026-09-14 fresh integrated RC build
 
 The current integration branch built successfully with Xcode's `Iris Test`

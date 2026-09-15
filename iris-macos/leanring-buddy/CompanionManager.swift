@@ -856,6 +856,33 @@ final class CompanionManager: ObservableObject {
         return api
     }()
 
+    /// The dedicated spatial/computer-use model path. This is deliberately a
+    /// separate request from conversational vision: the computer tool gives
+    /// Anthropic's spatial model the pixel-counting behavior and structured
+    /// coordinates needed for a reliable pointer. The detector receives only
+    /// a transport-built request, so it cannot attach or redirect credentials.
+    private lazy var elementLocationDetector: ElementLocationDetector = {
+        let accountService = self.accountService
+        let publikBaseURL = self.publikBaseURL
+        let detector = ElementLocationDetector(
+            makeValidatedRequest: {
+                let transportResult = await accountService.currentAssistantTransport(
+                    publikBaseURL: publikBaseURL
+                )
+                let transport = try transportResult.get()
+                return try await transport.makeChatRequest()
+            },
+            model: selectedModel
+        )
+        let ledger = self.spendLedger
+        detector.reportSpend = { model, usage, route in
+            Task { @MainActor in
+                ledger.record(model: model, usage: usage, route: route)
+            }
+        }
+        return detector
+    }()
+
     /// The two things a chat message can actually DO — put text on the
     /// reader's clipboard, and run one command through the same gate the guide
     /// autopilot's commands pass.
@@ -1248,6 +1275,7 @@ final class CompanionManager: ObservableObject {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
+        elementLocationDetector.setModel(model)
     }
 
     /// User preference for whether the Iris cursor should be shown.
@@ -2721,32 +2749,15 @@ final class CompanionManager: ObservableObject {
     - reference what's actually on screen when it's relevant; if the screenshot has nothing to do with the question, just answer the question. with several images, the one labeled "primary focus" is where the cursor is.
     - an image whose label says the user ATTACHED it is not their screen — it's a picture they handed you (a screenshot from elsewhere, a photo, a mockup). when the question is about that picture, answer from it and use the screen only as context. never put a [POINT] inside an attached image; coordinates only ever refer to a screen image.
 
-    POINTING. you have a small blue triangle cursor that flies to things on screen. point whenever it would genuinely help — finding a button, a menu, a control they're hunting for, and especially at iris's own buttons when you're handing off to one. don't point at general-knowledge answers, at nothing to do with the screen, or at something obvious they're already looking at.
-
-    append the tag at the very END of your reply, after the visible text. images are labeled with their pixel dimensions — use those as the coordinate space, origin (0,0) at the image's TOP-LEFT, x rightward, y downward. read the coordinate off the image you were given, not off a guess about their monitor.
-
-    format: [POINT:x,y:label] — integer pixels, label 1-3 words. if the element is on a different screen than the cursor, append :screenN using the number from the image label (e.g. :screen2), or the cursor points at the wrong place. if pointing wouldn't help: [POINT:none]
-
-    examples:
-    - "you'll want the color inspector, top right of the toolbar — click that for the wheels and curves. [POINT:1100,42:color inspector]"
-    - "html is the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
-    - "don't do that by hand — the guide can run the whole install for you. [POINT:640,880:let iris run it]"
-    - "that's on your other monitor, the terminal window. [POINT:400,300:terminal:screen2]"
+    POINTING. you have a small blue triangle cursor that flies to things on screen. when the reader explicitly asks where to click, which control to use, or where to find something, iris invokes a dedicated computer-use spatial model with the captured screen and a structured computer tool. that model, not this conversational reply, decides the coordinate. do not invent coordinates or write [POINT] tags in your reply. don't point at general-knowledge answers, at nothing to do with the screen, or at something obvious they're already looking at.
     """
 
     // MARK: - Guide eye: model-based target location
 
-    /// The locator's focused prompt — find one control and answer with only the
-    /// coordinate tag, using the same [POINT] format the assistant pointing uses.
-    private static let guideTargetLocatorSystemPrompt = """
-    You are locating one on-screen UI control for a step of a software install guide. Find the single control the step refers to — a button, a toggle, a row in a list, a menu item, a link.
-
-    Each image carries a label saying what it is. Usually it is a single application window, cut out of the screen, and the label names the app and the window — in that case the whole image is that one window and there is nothing else in it. Sometimes the label says it is the WHOLE screen instead, which means several windows may be visible and may overlap: do not treat two overlapping windows as one, and only pick a control that belongs to the window the step is about. Every label also gives the image's pixel dimensions, and your coordinates must be in the pixel space of the image you found the control in.
-
-    Reply with ONLY a coordinate tag and nothing else.
-    format: [POINT:x,y:label] where x,y are integer pixel coordinates in that image's coordinate space — origin (0,0) is the top-left of the image, x increases rightward, y increases downward — and label is a 1-3 word name for the control. If the control is on a screen other than the first, append :screenN where N is the screen number from the image label. If the control is not visible on any screen, reply exactly [POINT:none].
-    """
-
+    // Guide fallback pointing is backed by `ElementLocationDetector`, which
+    // invokes Anthropic's structured computer-use tool. Keep coordinate
+    // extraction out of the conversational guide prompt so a plain text model
+    // cannot become an accidental second spatial implementation.
     /// Ask the vision model where a guide step's control is, for the eye to fly
     /// to. Returns an AppKit-global (bottom-left origin, points) rect — the same
     /// space `SystemGuideTargetLocator`'s accessibility locators return — or nil.
@@ -2757,70 +2768,43 @@ final class CompanionManager: ObservableObject {
         guidePointingModelFailureMessage = nil
         irisTrace("pointing/model: asked for step=\(stepTitle)")
         do {
-            // Pointing asks for the focused window rather than the whole
-            // desktop. The whole desktop, flattened and downscaled to 1280px,
-            // is what made a browser behind a terminal read as part of it —
-            // see the header of `CompanionScreenCaptureUtility` for the
-            // measurement this reuses. General chat still gets whole screens.
+            // The dedicated Computer Use model needs the actual display pixel
+            // space it will point into. Cropping here would require a second
+            // coordinate transform and would make a valid model answer look
+            // wrong when the focused window moves. The model still receives a
+            // focused-app label and the semantic AX ladder remains first.
             let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG(
-                croppingToTheFocusedWindow: true
+                croppingToTheFocusedWindow: false
             )
-            let numberOfCapturesCroppedToTheFocusedWindow = screenCaptures
-                .filter { $0.focusedWindowCrop != nil }.count
-            irisTrace("""
-                pointing/model: captured \(screenCaptures.count) screens, \
-                \(numberOfCapturesCroppedToTheFocusedWindow) cropped to the focused window
-                """)
             guard !screenCaptures.isEmpty else { return nil }
 
-            let labeledImages = screenCaptures.map { capture -> (data: Data, label: String) in
-                let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                return (data: capture.imageData, label: capture.label + dimensionInfo)
-            }
-            let userPrompt = "Guide step: \(stepTitle)\n\(stepBody)\n\nPoint at the one control the user should click or toggle for this step."
+            // Screen captures are sorted with the cursor display first. That
+            // is the common target and keeps the spatial call to one bounded
+            // model request. Semantic AX resolution handles app-specific
+            // windows on other displays before this fallback is reached.
+            let capture = screenCaptures.first(where: { $0.isCursorScreen }) ?? screenCaptures[0]
+            let focusContext = [capture.focusedApplicationName, capture.focusedWindowTitle]
+                .compactMap { $0 }
+                .joined(separator: " — ")
+            let userPrompt = "Guide step: \(stepTitle)\n\(stepBody)\n\nThe focused app/window is \(focusContext.isEmpty ? "the foreground window" : focusContext). Point at the one control the reader should click or toggle."
 
-            let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                images: labeledImages,
-                systemPrompt: Self.guideTargetLocatorSystemPrompt,
-                userPrompt: userPrompt,
-                onTextChunk: { _ in },
-                    // A pointing answer must not move between two identical asks.
-                    temperature: 0
-                )
-
-            let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
-            // `outcome` rather than the word "none". The model deciding not to
-            // point, the model garbling its tag, and the model never writing
-            // one used to print the same word here, which made a sixth of the
-            // pointing evidence unreadable — and they need three different
-            // fixes. The model's own name for what it pointed at is recorded
-            // beside the step title, because the eye announces the STEP TITLE:
-            // a model that points at the Dock while calling it "dock" tells the
-            // reader "Install Node LTS", and this is the only place that
-            // disagreement is visible afterwards.
-            irisTrace("""
-                pointing/model: outcome=\(parseResult.outcome.rawValue) \
-                coordinate=\(parseResult.coordinate.map { "\(Int($0.x)),\(Int($0.y))" } ?? "-") \
-                screen=\(parseResult.screenNumber.map(String.init) ?? "-") \
-                modelLabel=\(parseResult.elementLabel.map { String($0.prefix(40)) } ?? "-") \
-                eyeWillAnnounce=\(stepTitle)
-                """)
-
-            guard let pointCoordinate = parseResult.coordinate else {
-                irisTrace("pointing/model: nothing to fly to (\(parseResult.outcome.rawValue))")
-                return nil
-            }
-            guard let resolved = Self.globalScreenLocation(
-                fromScreenshotPoint: pointCoordinate,
-                screenNumber: parseResult.screenNumber,
-                in: screenCaptures
+            guard let pointInDisplay = await elementLocationDetector.detectElementLocation(
+                screenshotData: capture.imageData,
+                userQuestion: userPrompt,
+                displayWidthInPoints: capture.displayWidthInPoints,
+                displayHeightInPoints: capture.displayHeightInPoints
             ) else {
-                // A coordinate that exists but maps to no screen is a different
-                // failure from no coordinate at all: the model answered, and
-                // the conversion or the screen number is what went wrong.
-                irisTrace("pointing/model: coordinate could not be mapped onto any captured screen")
+                irisTrace("pointing/model: computer-use model returned no pointing action")
                 return nil
             }
+            let resolved = (
+                location: CGPoint(
+                    x: pointInDisplay.x + capture.displayFrame.origin.x,
+                    y: pointInDisplay.y + capture.displayFrame.origin.y
+                ),
+                displayFrame: capture.displayFrame
+            )
+            irisTrace("pointing/model: computer-use coordinate resolved on display \(Int(capture.displayFrame.origin.x)),\(Int(capture.displayFrame.origin.y))")
 
             let side: CGFloat = 44
             let rect = CGRect(
@@ -3134,6 +3118,36 @@ final class CompanionManager: ObservableObject {
 
                 assistantState = .thinking
 
+                // Explicit UI-location questions use the dedicated
+                // Computer Use spatial model. The conversational model below
+                // still answers the question, but its text is no longer the
+                // source of truth for the pointer. This keeps conceptual asks
+                // to one model call while preventing a vision-only `[POINT]`
+                // tag from deciding where the eye flies.
+                let dedicatedSpatialRequest = Self.shouldUseDedicatedSpatialModel(for: messageText)
+                var dedicatedSpatialTarget: (location: CGPoint, displayFrame: CGRect)?
+                if dedicatedSpatialRequest, !screenCaptures.isEmpty {
+                    let capture = screenCaptures.first(where: { $0.isCursorScreen }) ?? screenCaptures[0]
+                    if let pointInDisplay = await elementLocationDetector.detectElementLocation(
+                        screenshotData: capture.imageData,
+                        userQuestion: messageText,
+                        displayWidthInPoints: capture.displayWidthInPoints,
+                        displayHeightInPoints: capture.displayHeightInPoints
+                    ) {
+                        dedicatedSpatialTarget = (
+                            location: CGPoint(
+                                x: pointInDisplay.x + capture.displayFrame.origin.x,
+                                y: pointInDisplay.y + capture.displayFrame.origin.y
+                            ),
+                            displayFrame: capture.displayFrame
+                        )
+                        irisTrace("pointing/chat: dedicated computer-use model returned a coordinate")
+                    } else {
+                        irisTrace("pointing/chat: dedicated computer-use model returned no coordinate")
+                    }
+                }
+                guard isCurrentChatResponse(responseIdentifier) else { return }
+
                 // Pass conversation history so Claude remembers prior exchanges
                 let historyForAPI = conversationHistory.map { entry in
                     (userPlaceholder: entry.userMessage, assistantResponse: entry.assistantResponse)
@@ -3238,7 +3252,10 @@ final class CompanionManager: ObservableObject {
 
                 guard isCurrentChatResponse(responseIdentifier) else { return }
 
-                // Parse the [POINT:...] tag from Claude's response
+                // Parse the legacy tag for non-spatial replies. Explicit UI
+                // questions use the dedicated Computer Use result above; a
+                // conversational model's text tag is never allowed to outrank
+                // that structured spatial answer.
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
                 // A turn can now end with the model having ACTED and said
                 // nothing — it called a tool and stopped. The bar renders
@@ -3260,13 +3277,19 @@ final class CompanionManager: ObservableObject {
                 // spinner hides the triangle and the flight animation is invisible.
                 let pointingContextIsUnchanged = applicationWhenCaptured == NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                     && displaysWhenCaptured == NSScreen.screens.map(\.frame)
-                let resolvedPoint = pointingContextIsUnchanged ? parseResult.coordinate.flatMap {
-                    Self.globalScreenLocation(
-                        fromScreenshotPoint: $0,
-                        screenNumber: parseResult.screenNumber,
-                        in: screenCaptures
-                    )
-                } : nil
+                let resolvedPoint: (location: CGPoint, displayFrame: CGRect)? = {
+                    guard pointingContextIsUnchanged else { return nil }
+                    if dedicatedSpatialRequest {
+                        return dedicatedSpatialTarget
+                    }
+                    return parseResult.coordinate.flatMap {
+                        Self.globalScreenLocation(
+                            fromScreenshotPoint: $0,
+                            screenNumber: parseResult.screenNumber,
+                            in: screenCaptures
+                        )
+                    }
+                }()
                 let hasPointCoordinate = resolvedPoint != nil
                 if hasPointCoordinate {
                     assistantState = .pointing
@@ -3278,9 +3301,9 @@ final class CompanionManager: ObservableObject {
                     // short and single-line before handing it to the overlay;
                     // a missing label must also clear the previous cue rather
                     // than leave stale words beside a new point.
-                    detectedElementBubbleText = Self.sanitizedPointingBubbleText(
-                        from: parseResult.elementLabel
-                    )
+                    detectedElementBubbleText = dedicatedSpatialRequest
+                        ? nil
+                        : Self.sanitizedPointingBubbleText(from: parseResult.elementLabel)
                     detectedElementScreenLocation = resolvedPoint.location
                     detectedElementDisplayFrame = resolvedPoint.displayFrame
                 } else {
@@ -3500,6 +3523,29 @@ final class CompanionManager: ObservableObject {
             window as! AXUIElement, kAXTitleAttribute as CFString, &title
         ) == .success else { return nil }
         return title as? String
+    }
+
+    /// Whether this message asks for a spatial action. The dedicated
+    /// Computer Use model is intentionally invoked only for an explicit UI
+    /// target so ordinary conversation does not pay for the tool definition or
+    /// a second image pass. The normal chat model still receives the screen for
+    /// context in every message.
+    static func shouldUseDedicatedSpatialModel(for message: String) -> Bool {
+        let normalized = message
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .lowercased()
+        let actionPhrases = [
+            "point at", "point to", "where is", "where's", "where do i",
+            "which button", "which tab", "what should i click", "show me where",
+            "take me to", "find the", "help me find", "indicate", "highlight",
+            "which control", "where can i", "click the", "toggle the", "select the"
+        ]
+        let targetWords = [
+            "button", "tab", "field", "menu", "icon", "link", "toggle",
+            "control", "address bar", "screen", "settings", "install"
+        ]
+        return actionPhrases.contains(where: normalized.contains)
+            && targetWords.contains(where: normalized.contains)
     }
 
     static func parsePointingCoordinates(from fullResponseText: String) -> PointingParseResult {

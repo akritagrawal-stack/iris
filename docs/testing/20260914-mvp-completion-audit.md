@@ -125,3 +125,32 @@ headless, browser, or package tests.
   remains separate evidence; the next fix is to provide a supported test-host
   transport or an explicitly scoped test credential without copying secrets.
 - Raw result: `/tmp/iris-chat-prompt-live-derived/Logs/Test/Test-Iris Test-2026.09.14_23-15-03--0700.xcresult`.
+
+## Dedicated spatial-model wiring (2026-09-14)
+
+- `ElementLocationDetector` is now wired into both guide fallback pointing and
+  explicit chat requests such as “where is the install button?” The detector
+  sends Anthropic's structured Computer Use tool request; the conversational
+  vision prompt no longer owns the pointer coordinate.
+- Funded responses are parsed as SSE and direct Anthropic responses as JSON;
+  model-specific tool versions are selected (including Haiku's legacy tool),
+  scroll/drag coordinates are rejected, and OAuth beta headers are preserved.
+- The new `ElementLocationDetectorTests` plus the focused spatial suite passed
+  **12/12** native tests. This is source/native contract evidence. A fresh
+  provider-backed point request on the rebuilt signed artifact is still needed
+  to prove the server accepts Computer Use on the funded route and that the
+  overlay lands on the intended live control.
+
+## Signed spatial-model candidate (2026-09-15)
+
+- The actual `Iris Test` configuration was rebuilt and signed with the stable
+  `Iris Local Code Signing` identity. Candidate: `/Users/Shared/Iris-RC-20260914-v26/Iris Test.app`; bundle `com.publikhq.iris.test`; executable SHA-256 `5f9f83500b46638eace73df351cd7d9acdd18894b0c9d9e66a277b1b2d031cf0`.
+- A screenshot is the spatial model's visual input, not the spatial decision.
+  The decision now comes from Anthropic's structured Computer Use tool call;
+  conversational text and legacy `[POINT]` tags cannot supply or override a
+  coordinate for an explicit UI-location request.
+- The candidate launched, but Iris's setup panel still reports the runtime
+  screen-recording/accessibility state as unavailable even though the privacy
+  pane lists `Iris Test` enabled. Therefore no live provider-backed coordinate
+  is claimed from this launch; this remains a native permission/runtime gate,
+  not evidence that screenshot heuristics are the implementation.

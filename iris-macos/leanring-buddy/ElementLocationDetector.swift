@@ -33,8 +33,13 @@ class ElementLocationDetector {
     /// user's tier — funded or bring-your-own-key — instead of needing a key
     /// of its own.
     private let makeValidatedRequest: () async throws -> URLRequest
-    private let model: String
+    private var model: String
     private let session: URLSession
+
+    /// Called after a response settles so the dedicated spatial call appears
+    /// in Iris's existing token ledger. The detector remains route-agnostic;
+    /// the request's credential shape identifies whether the call is metered.
+    var reportSpend: @Sendable (String, AssistantTokenUsage, AssistantSpendRoute) -> Void = { _, _, _ in }
 
     /// Anthropic-recommended resolutions for Computer Use, paired with their aspect ratios.
     /// We pick the one closest to the actual display aspect ratio to avoid distortion.
@@ -60,6 +65,42 @@ class ElementLocationDetector {
         config.urlCache = nil
         config.httpCookieStorage = nil
         self.session = URLSession(configuration: config)
+    }
+
+    /// The spatial model follows the same model picker as chat. Keep this
+    /// mutable so changing the picker cannot silently leave the locator on a
+    /// different model (and, for Haiku, a different computer-tool version).
+    func setModel(_ model: String) {
+        self.model = model
+    }
+
+    /// Computer Use tool versions are model-specific. Anthropic rejects the
+    /// newer tool type when Haiku is selected, so this decision lives beside
+    /// the request rather than in a test-only harness.
+    static func computerUseVariant(forModel model: String) -> (toolType: String, betaHeader: String) {
+        if model.lowercased().contains("haiku") {
+            return (
+                toolType: "computer_20250124",
+                betaHeader: "computer-use-2025-01-24"
+            )
+        }
+        return (
+            toolType: "computer_20251124",
+            betaHeader: "computer-use-2025-11-24"
+        )
+    }
+
+    /// Only actions whose coordinate identifies a thing to point at count.
+    /// Scroll and drag coordinates describe an operation, not the requested
+    /// control, and accepting them is how a spatial model appears to point at
+    /// random places.
+    static func isPointingAction(_ action: String) -> Bool {
+        switch action {
+        case "left_click", "double_click", "triple_click", "right_click", "middle_click", "mouse_move":
+            return true
+        default:
+            return false
+        }
     }
 
     /// Detects the screen location of a UI element the user is asking about.
@@ -177,26 +218,49 @@ class ElementLocationDetector {
         request.timeoutInterval = 15
         // The beta header activates Computer Use capabilities and the specialized
         // pixel-counting training that makes coordinate detection accurate.
-        request.setValue("computer-use-2025-11-24", forHTTPHeaderField: "anthropic-beta")
+        // It is model-specific; a single hard-coded value makes Haiku fail with
+        // a 400 before it can ever answer.
+        let computerUseVariant = Self.computerUseVariant(forModel: model)
+        // Claude Code OAuth requests already carry Anthropic's OAuth beta. Keep
+        // it and add the Computer Use beta rather than replacing it, otherwise
+        // the spatial call is rejected even though ordinary chat works.
+        let existingBeta = request.value(forHTTPHeaderField: "anthropic-beta")
+        let betaHeader = [existingBeta, computerUseVariant.betaHeader]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: ",")
+        request.setValue(betaHeader, forHTTPHeaderField: "anthropic-beta")
 
         // Detect image media type (PNG vs JPEG)
         let mediaType = detectImageMediaType(for: resizedScreenshotData)
         let base64Screenshot = resizedScreenshotData.base64EncodedString()
 
         let userPrompt = """
-        The user asked this question while looking at their screen: "\(userQuestion)"
+        The image is a screenshot that has already been captured. Do not call the screenshot action.
 
-        Look at the screenshot. If there is a specific UI element (button, link, menu item, text field, icon, etc.) that the user should interact with or is asking about, click on that element.
+        The user asked: "\(userQuestion)"
 
-        If the question is purely conceptual (e.g., "what does HTML mean?") and there's no specific element to point to, just respond with text saying "no specific element".
+        If the requested control is visible, respond with one computer tool call using a
+        pointing action at the centre of that control. If it is not visible, respond with
+        the text "not found" and make no tool call. Do not use scroll or drag as a substitute
+        for a point, and do not invent a coordinate.
         """
 
-        let body: [String: Any] = [
-            "model": model,
-            "max_tokens": 256,
+        // The funded route pins the model server-side. Sending a model field to
+        // it is misleading and can make a strict proxy reject this otherwise
+        // valid computer-use request. Direct Anthropic requests must name the
+        // selected model.
+        let destinationIsAnthropic = request.url?.host?.lowercased() == AssistantTransport.anthropicAPIHost
+
+        var body: [String: Any] = [
+            // Haiku often writes a short preamble before its tool call. 256
+            // tokens truncates that preamble and produces a false "no point";
+            // the bounded 1024-token ceiling still keeps this one-purpose call
+            // small while leaving room for the structured action.
+            "max_tokens": 1024,
             "tools": [
                 [
-                    "type": "computer_20251124",
+                    "type": computerUseVariant.toolType,
                     "name": "computer",
                     "display_width_px": declaredDisplayWidth,
                     "display_height_px": declaredDisplayHeight
@@ -222,6 +286,9 @@ class ElementLocationDetector {
                 ]
             ]
         ]
+        if destinationIsAnthropic {
+            body["model"] = model
+        }
 
         do {
             let bodyData = try JSONSerialization.data(withJSONObject: body)
@@ -241,7 +308,9 @@ class ElementLocationDetector {
                 return nil
             }
 
-            return parseCoordinateFromResponse(data: data)
+            let parsed = Self.parseResponse(data: data)
+            reportSpend(model, parsed.usage, Self.spendRoute(for: request))
+            return parsed.coordinate
 
         } catch {
             print("⚠️ ElementLocationDetector: request failed: \(error.localizedDescription)")
@@ -249,34 +318,83 @@ class ElementLocationDetector {
         }
     }
 
-    /// Parses the Computer Use API response to extract click coordinates.
-    /// Claude returns a `tool_use` content block with `{"action": "left_click", "coordinate": [x, y]}`.
-    /// If Claude returns text instead (no element found), returns nil.
-    private func parseCoordinateFromResponse(data: Data) -> CGPoint? {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let contentBlocks = json["content"] as? [[String: Any]] else {
-            print("⚠️ ElementLocationDetector: could not parse response JSON")
-            return nil
+    /// Parses both response shapes used by the two supported transports:
+    /// direct Anthropic can return JSON, while publik's funded proxy streams
+    /// the identical Messages response as SSE. A plain JSON-only parser made
+    /// the dedicated spatial model look dead on the funded tier even when the
+    /// model had returned a valid computer tool call.
+    static func parseCoordinateFromResponse(data: Data) -> CGPoint? {
+        parseResponse(data: data).coordinate
+    }
+
+    private struct ParsedResponse {
+        let coordinate: CGPoint?
+        let usage: AssistantTokenUsage
+    }
+
+    private static func parseResponse(data: Data) -> ParsedResponse {
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let contentBlocks = json["content"] as? [[String: Any]] {
+            return ParsedResponse(
+                coordinate: coordinateFromContentBlocks(contentBlocks),
+                usage: usageFromJSON(json)
+            )
         }
 
-        // Look for a tool_use content block (Claude's Computer Use response format)
-        for block in contentBlocks {
-            guard let blockType = block["type"] as? String,
-                  blockType == "tool_use",
-                  let input = block["input"] as? [String: Any],
+        var accumulator = ClaudeSSEMessageAccumulator()
+        let body = String(decoding: data, as: UTF8.self)
+        for line in body.split(whereSeparator: \.isNewline) {
+            _ = accumulator.consume(line: String(line))
+        }
+        let streamedMessage = accumulator.finalize()
+        for toolUse in streamedMessage.toolUses {
+            guard let input = toolUse.inputObject,
+                  let action = input["action"] as? String,
+                  isPointingAction(action),
                   let coordinate = input["coordinate"] as? [NSNumber],
-                  coordinate.count == 2 else {
-                continue
-            }
-
-            let x = CGFloat(coordinate[0].doubleValue)
-            let y = CGFloat(coordinate[1].doubleValue)
-            print("🎯 ElementLocationDetector: raw coordinate (\(Int(x)), \(Int(y)))")
-            return CGPoint(x: x, y: y)
+                  coordinate.count == 2 else { continue }
+            let point = CGPoint(x: CGFloat(coordinate[0].doubleValue), y: CGFloat(coordinate[1].doubleValue))
+            print("🎯 ElementLocationDetector: raw coordinate (\(Int(point.x)), \(Int(point.y)))")
+            return ParsedResponse(coordinate: point, usage: accumulator.usage)
         }
 
-        // No tool_use block found — Claude responded with text (no element to point at)
-        print("🎯 ElementLocationDetector: no specific element detected (conceptual question)")
+        print("🎯 ElementLocationDetector: no pointing tool call in response")
+        return ParsedResponse(coordinate: nil, usage: accumulator.usage)
+    }
+
+    private static func usageFromJSON(_ json: [String: Any]) -> AssistantTokenUsage {
+        guard let usage = json["usage"] as? [String: Any] else { return AssistantTokenUsage() }
+        return AssistantTokenUsage(
+            inputTokens: usage["input_tokens"] as? Int ?? 0,
+            cacheWriteTokens: usage["cache_creation_input_tokens"] as? Int ?? 0,
+            cacheReadTokens: usage["cache_read_input_tokens"] as? Int ?? 0,
+            outputTokens: usage["output_tokens"] as? Int ?? 0
+        )
+    }
+
+    private static func spendRoute(for request: URLRequest) -> AssistantSpendRoute {
+        if request.value(forHTTPHeaderField: "x-api-key") != nil {
+            return .theReadersOwnAPIKey
+        }
+        if request.value(forHTTPHeaderField: "anthropic-beta")?.contains("oauth") == true {
+            return .aFlatRateSubscription
+        }
+        return .publiksFundedTier
+    }
+
+    private static func coordinateFromContentBlocks(_ contentBlocks: [[String: Any]]) -> CGPoint? {
+        for block in contentBlocks {
+            guard block["type"] as? String == "tool_use",
+                  let input = block["input"] as? [String: Any],
+                  let action = input["action"] as? String,
+                  isPointingAction(action),
+                  let coordinate = input["coordinate"] as? [NSNumber],
+                  coordinate.count == 2 else { continue }
+            let point = CGPoint(x: CGFloat(coordinate[0].doubleValue), y: CGFloat(coordinate[1].doubleValue))
+            print("🎯 ElementLocationDetector: raw coordinate (\(Int(point.x)), \(Int(point.y)))")
+            return point
+        }
+        print("🎯 ElementLocationDetector: no pointing tool call in response")
         return nil
     }
 

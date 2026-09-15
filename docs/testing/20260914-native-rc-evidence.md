@@ -815,3 +815,12 @@ rejected before writing. Its focused regression confirms that the active
 review-held candidate remains on disk when the archive cap is reached. This
 protects failed-candidate continuity across restart without retaining an
 unbounded history.
+
+### 2026-09-14 screen-help handshake fix
+
+The screen-help actions now invoke the one-time ScreenCaptureKit connection
+handshake before opening the Connections panel. Previously they only navigated
+to Settings, leaving `hasScreenContentPermission` false even when Screen
+Recording was already enabled. The `Iris Test` scheme rebuilt successfully
+with this change; the next native probe must verify that the picker/capture
+result changes the status and that a subsequent Ask includes a real screen.

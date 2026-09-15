@@ -1406,6 +1406,9 @@ struct OverlayEyeInputBarView: View {
             if let linkLabel = presentation.settingsLinkLabel {
                 HStack(spacing: 10) {
                     Button(linkLabel) {
+                        if case .screenHelp = composerConnectionContext {
+                            companionManager.requestScreenContentPermission()
+                        }
                         modelDetailsAreShowing = false
                         UserDefaults.standard.set("Connections", forKey: "irisSettingsSection")
                         NotificationCenter.default.post(name: .clickyShowPanel, object: nil)
@@ -2252,6 +2255,9 @@ struct OverlayEyeInputBarView: View {
     @ViewBuilder
     private var connectionAndAppActions: some View {
         Button {
+            // The user explicitly asked for screen help. Start the
+            // ScreenCaptureKit handshake instead of only opening Settings.
+            companionManager.requestScreenContentPermission()
             modelDetailsAreShowing = false
             UserDefaults.standard.set("Connections", forKey: "irisSettingsSection")
             NotificationCenter.default.post(name: .clickyShowPanel, object: nil)

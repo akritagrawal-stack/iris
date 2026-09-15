@@ -100,6 +100,7 @@ struct GuideAutopilotRunnerTests {
         sourceRepo: String? = nil,
         sourceCommit: String? = nil,
         workspaceBinding: GuideSourceWorkspaceBinding? = nil,
+        autonomyGranted: Bool = false,
         sourceMetadataReader: @escaping @Sendable (String) async -> GuideAutopilotSourceCheckoutMetadata = { _ in .unknown }
     ) -> GuideAutopilotRunner {
         let proposer = proposer ?? FakeFixProposer()
@@ -120,6 +121,7 @@ struct GuideAutopilotRunnerTests {
             // the suite must stay fast and deterministic. The pacing floor is
             // exercised on its own in `pacingHoldsAFastCommandButNotASlowOne`.
             pacing: .instant,
+            autonomyGranted: { autonomyGranted },
             sourceMetadataReader: sourceMetadataReader
         )
         if let workspaceBinding {

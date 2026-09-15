@@ -670,6 +670,9 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
     /// disposable metadata. Production uses the fixed probe above; tests do
     /// not run commands against the reader's repository.
     private let sourceMetadataReader: @Sendable (String) async -> GuideAutopilotSourceCheckoutMetadata
+    /// Injected so tests and alternate hosts do not inherit the process-wide
+    /// autonomy preference from another run.
+    private let autonomyGranted: @Sendable () -> Bool
     /// A prepared workspace is an explicit capability. The binding and its
     /// validator are installed by the controller after the reader's setup
     /// choice, and every command boundary revalidates them.
@@ -776,6 +779,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         guideContext: GuideAutopilotGuideContext,
         pacing: GuideAutopilotPacing = .humanPaced,
         fixLadderFunding: GuideAutopilotFixLadderFunding = .publiksFundedTier,
+        autonomyGranted: @escaping @Sendable () -> Bool = { AutopilotAutonomyGrant.shared.isGranted },
         sourceMetadataReader: @escaping @Sendable (String) async -> GuideAutopilotSourceCheckoutMetadata =
             GuideAutopilotSourceCheckoutRefusal.readFreshMetadata
     ) {
@@ -783,6 +787,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         self.longRunningSession = longRunningSession
         self.fixProposer = fixProposer
         self.fixLadderFunding = fixLadderFunding
+        self.autonomyGranted = autonomyGranted
         self.guideContext = guideContext
         self.pacing = pacing
         self.sourceMetadataReader = sourceMetadataReader
@@ -1083,7 +1088,9 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         _ command: String,
         inWorkingDirectory workingDirectory: String
     ) async -> GuideCommandOutcome {
-        switch GuideAutopilotRiskAssessment.assess(command, inWorkingDirectory: workingDirectory) {
+        switch GuideAutopilotRiskAssessment.assess(
+            command, inWorkingDirectory: workingDirectory, autonomyGranted: autonomyGranted()
+        ) {
         case .runsWithoutAsking:
             guard let approved = GuideAutopilotRiskAssessment.approve(
                 command, inWorkingDirectory: workingDirectory
@@ -1518,7 +1525,9 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
                 return .skippedByReader
             }
         }
-        switch GuideAutopilotRiskAssessment.assess(fixCommand, inWorkingDirectory: folder) {
+        switch GuideAutopilotRiskAssessment.assess(
+            fixCommand, inWorkingDirectory: folder, autonomyGranted: autonomyGranted()
+        ) {
         case .runsWithoutAsking:
             guard let approved = GuideAutopilotRiskAssessment.approve(
                 fixCommand, inWorkingDirectory: folder
@@ -1915,7 +1924,9 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             folder = step.workingDirectory ?? longRunningSession.currentWorkingDirectory
         }
         guard let approved = GuideAutopilotRiskAssessment.approve(
-            command, inWorkingDirectory: folder
+            command,
+            inWorkingDirectory: folder,
+            autonomyGranted: autonomyGranted()
         ) else {
             transcript.append(.explanation(
                 text: "Iris won't start this one automatically — run it yourself when you're ready."

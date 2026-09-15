@@ -588,6 +588,16 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+### 2026-09-14 NitroAI transfer oracle rerun
+
+Using NitroAI's pinned Vitest runtime and the explicitly approved
+`/Users/akrit/NitroAI` target, the transfer oracle passed `2/2` tests in 13.12
+seconds. The compound case still covers identity collisions, repeated import,
+malformed and unsupported envelopes, dangling relationships, atomic abort,
+restart persistence, and changed same-ID content. This remains direct target
+app evidence; Iris provider generation and delivered-app readback are still
+open.
+
 ### 2026-09-14 local mobile hub refresh smoke
 
 The integrated `iris-mobile/server.mjs` served the hub successfully at

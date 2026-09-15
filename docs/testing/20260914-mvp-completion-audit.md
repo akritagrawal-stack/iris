@@ -53,6 +53,12 @@ headless, browser, or package tests.
 - Result: **16/16** tests passed in 3 suites, covering missing-tool self-install and retry, shipped-shell continuity, real-tool execution, bundle replacement, backup identity, startup reconciliation, retry-record restoration, clone exclusion, and Undo recovery.
 - This strengthens source/native state-machine evidence; live user-workspace installation, provider execution, and phone handoff remain acceptance gates.
 
+## Fresh native routing, cancellation, and usage rerun (2026-09-14)
+
+- The `Iris Test` scheme ran `ChatActionCancellationTests`, `AssistantSpendLedgerTests`, `IrisTestRunUsageTests`, and `GuideAutopilotRunnerTests` together.
+- Result: **59/59** tests passed across 4 suites, including cancellation before command execution, late/failed usage settlement, dated-model pricing, cache tiers, unknown-cost honesty, relaunch persistence, stale metadata invalidation, and long-running ownership.
+- This is native accounting and safety evidence; live provider pricing and execution remain open.
+
 ## Permission-pane recheck (2026-09-14)
 
 - macOS Accessibility settings visibly list both `Iris` and `Iris Test` as registered applications.

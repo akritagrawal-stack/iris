@@ -410,3 +410,8 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   `946db8751918e8ce31d0acd9b8cd85b0945455a8ada47ebe2563605e6c784b50`.
 - This names a current integrated candidate. It does not substitute for the
   live Ask/Edit interaction rerun, provider-backed transfer, or device gates.
+- Computer-use launch of v13 reached Iris's native permissions panel and
+  reported Accessibility and Screen Recording as revoked. The disposable RC
+  was quit after observation; no permission state was changed. This is a live
+  native environment gate, so Ask/Edit and spatial acceptance remain pending
+  until the owner restores permissions through macOS settings.

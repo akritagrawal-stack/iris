@@ -111,3 +111,17 @@ headless, browser, or package tests.
   It does not close model-generated `[POINT]` click-through or a provider-backed
   edit and delivery; the first targeted point request returned a descriptive
   answer without a coordinate tag, so spatial click-through remains open.
+
+## Fresh grounded live prompt gate (2026-09-14)
+
+- The three-test `ChatPromptLiveTests` suite was run once with its documented
+  `IRIS_CHAT_PROMPT_LIVE=1` and `TEST_RUNNER_IRIS_CHAT_PROMPT_LIVE=1` gates and
+  one sample per scenario. The test host reported Accessibility and Screen
+  Recording as enabled, then each real-prompt case stopped at
+  `.noCredentialsAvailable` before a model call.
+- Result: **0/3 scenarios reached grading**. This is a credential propagation
+  failure in the isolated test host, not a permission failure and not a passing
+  live prompt result. The signed app's successful screen-aware Ask check above
+  remains separate evidence; the next fix is to provide a supported test-host
+  transport or an explicitly scoped test credential without copying secrets.
+- Raw result: `/tmp/iris-chat-prompt-live-derived/Logs/Test/Test-Iris Test-2026.09.14_23-15-03--0700.xcresult`.

@@ -588,6 +588,11 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+The post-routing full regression was rerun on the integration branch: Swift
+package tests passed `161/161` across 7 suites and the mobile install hub
+passed `20/20`. These results confirm no package-level regression after the
+telemetry change; they remain distinct from live-provider and device evidence.
+
 ### 2026-09-14 per-route token telemetry regression
 
 The routing lifecycle suite passed all 11 tests after adding provider-reported

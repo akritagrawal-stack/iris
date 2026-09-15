@@ -808,3 +808,10 @@ input and submission, plus truthful refusal when screen access is unavailable;
 it does not prove screen capture, spatial targeting, or Kneecap guidance. The
 visible permission panel still requires runtime Screen Recording and
 Accessibility consent from macOS before those journeys can be accepted.
+
+The integrated source also contains the bounded failed-review archive: at most
+256 records and 8 MiB of record bytes, with oversized or non-regular entries
+rejected before writing. Its focused regression confirms that the active
+review-held candidate remains on disk when the archive cap is reached. This
+protects failed-candidate continuity across restart without retaining an
+unbounded history.

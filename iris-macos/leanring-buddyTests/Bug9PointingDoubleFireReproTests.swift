@@ -187,7 +187,7 @@ struct Bug9PointingDoubleFireReproTests {
           "status": "pilot",
           "sourceOwner": "Blueturboguy07",
           "sourceRepo": "kneecap",
-          "sourceCommit": null,
+          "sourceCommit": "fc48ba487a1e0d0cd10b30d6600acd2895ffdbed",
           "outputType": "mobile_app",
           "estimatedMinutes": 40,
           "readmeSectionIds": [],
@@ -400,6 +400,70 @@ struct Bug9PointingDoubleFireReproTests {
             userDefaults: isolatedUserDefaults
         )
 
+        // Iris Test refuses marketplace guides unless this test owns a narrowly
+        // pinned disposable fixture. Keep the production refusal intact while
+        // allowing the repro to reach the real controller and drive loop.
+        let fixtureRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Caches/iris-native-guide-fixture-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        let offlineFixture = GuideOfflineNativeFixture(
+            guideID: "kneecap",
+            guideRevision: 2,
+            expectedOrigin: try #require(
+                GuideSourceWorkspaceOrigin.parse("https://github.com/Blueturboguy07/kneecap")
+            ),
+            expectedCommit: "fc48ba487a1e0d0cd10b30d6600acd2895ffdbed",
+            workspaceRoot: fixtureRoot
+        )
+        if IrisTestEnvironment.isEnabled {
+            _ = try #require(offlineFixture)
+        }
+        let stagedFixtureRoot = fixtureRoot.appendingPathComponent("kneecap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagedFixtureRoot, withIntermediateDirectories: true)
+        let fixtureOrigin = try #require(
+            GuideSourceWorkspaceOrigin.parse("https://github.com/Blueturboguy07/kneecap")
+        )
+        let fixtureIdentity = GuideSourceWorkspaceIdentity(
+            canonicalPath: fixtureRoot.path,
+            origin: fixtureOrigin,
+            head: offlineFixture?.expectedCommit ?? "fc48ba487a1e0d0cd10b30d6600acd2895ffdbed",
+            expectedCommitIsPresent: true,
+            porcelain: "",
+            commonGitDirectory: fixtureRoot.path,
+            workingTreeFingerprint: "bug9-offline-fixture"
+        )
+        let stagedFixtureIdentity = GuideSourceWorkspaceIdentity(
+            canonicalPath: stagedFixtureRoot.path,
+            origin: fixtureOrigin,
+            head: fixtureIdentity.head,
+            expectedCommitIsPresent: true,
+            porcelain: "",
+            commonGitDirectory: fixtureRoot.path,
+            workingTreeFingerprint: "bug9-offline-fixture-staged"
+        )
+        let fixtureBinding = GuideSourceWorkspaceBinding(
+            runID: UUID(),
+            guideID: "kneecap",
+            guideRevision: 2,
+            projectID: "kneecap",
+            original: fixtureIdentity,
+            staged: stagedFixtureIdentity,
+            originalPath: fixtureRoot.path,
+            stagedPath: stagedFixtureRoot.path,
+            expectedOrigin: fixtureOrigin,
+            expectedCommit: fixtureIdentity.head,
+            ownershipMarker: "bug9-offline-fixture",
+            commonGitDirectory: fixtureRoot.path,
+            linkedWorktreeGitDirectory: fixtureRoot.path,
+            isIsolated: true
+        )
+        let fixtureWorkspaceMemory = GuideSelectedWorkspaceMemory(userDefaults: isolatedUserDefaults)
+        fixtureWorkspaceMemory.save(fixtureBinding)
+
         let shell = TheShellTheInstallRunsIn()
         let controller = GuideSessionController(
             guideService: guideService,
@@ -418,7 +482,8 @@ struct Bug9PointingDoubleFireReproTests {
                     guideContext: context,
                     pacing: .instant
                 )
-            }
+            },
+            offlineNativeFixture: offlineFixture
         )
         // Over an isolated suite, so starting autopilot here never writes the
         // founder's real "Let Iris take control of your Mac?" preference.
@@ -445,6 +510,10 @@ struct Bug9PointingDoubleFireReproTests {
             branchKeyFromDeepLink: nil,
             stepIndexFromDeepLink: nil
         )
+        // This legacy fixture has no structural workspace steps, so opening it
+        // does not run source setup. Admit the already-created disposable bind
+        // only after openGuide has cleared stale workspace state.
+        controller.selectedWorkspaceMemory = fixtureWorkspaceMemory
         #expect(controller.loadState == .guideIsOpen)
         #expect(controller.currentStepIndex == 0)
 

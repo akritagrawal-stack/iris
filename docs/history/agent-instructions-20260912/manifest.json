@@ -1,0 +1,32 @@
+{
+  "baseCommit": "080ba93f74de78d7d64ca8c5d92887546d384973",
+  "originals": [
+    {
+      "source": "AGENTS.md",
+      "archive": "root-original.md",
+      "sha256": "215c92d988960a186aa5bb13994b0d5ccfaf48594f2a3b13b59d97b00a74a0eb",
+      "bytes": 2207,
+      "words": 299,
+      "activeBytes": 1968,
+      "activeWords": 244
+    },
+    {
+      "source": "iris-macos/AGENTS.md",
+      "archive": "macos-original.md",
+      "sha256": "94e5f7b74500707f3124cc01cef0b811aa91ceab2fc31fe8e1bea3d8d60cface",
+      "bytes": 102546,
+      "words": 14742,
+      "activeBytes": 7547,
+      "activeWords": 884
+    },
+    {
+      "source": "iris-macos/leanring-buddy/AGENTS.md",
+      "archive": "app-original.md",
+      "sha256": "047dd0d6b4d08ad09c06d31ddac8aabc7ceca9e65796d926faf8d335e903028c",
+      "bytes": 10764,
+      "words": 1366,
+      "activeBytes": 2512,
+      "activeWords": 298
+    }
+  ]
+}

@@ -17,7 +17,11 @@
 import Foundation
 import Testing
 // The module follows PRODUCT_NAME, which the fork renamed to Iris.
+#if IRIS_HARNESS_STANDALONE
+@testable import IrisHarnessNative
+#else
 @testable import Iris
+#endif
 
 /// Answers "is this tool installed?" from a table a test controls, and remembers
 /// what it was asked. The record is what proves the branch with no setup steps
@@ -372,5 +376,565 @@ struct GuideSetupRecoveryTests {
                 await toolChecker.checkToolVersion(toolName)
             }
         )
+    }
+}
+
+// MARK: - Source workspace admission and cancellation
+
+/// A fixed-output executor keeps source-workspace tests hermetic. It records
+/// every argv so the tests can prove that a rejected binding never probes or
+/// executes inside an unowned staged path.
+final class GuideSetupWorkspaceScriptedExecutor: GuideSourceWorkspaceCommandExecuting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let head: String
+    private let origin: String
+    private let commonGitDirectory: String
+    private let linkedGitDirectory: String
+    private let materializeDestination: @Sendable (URL) -> Void
+    private var shouldSuspendFirstRun: Bool
+    private var pendingCancellation: CheckedContinuation<GuideSourceWorkspaceCommandResult, Error>?
+    private var recordedArguments: [[String]] = []
+    private var recordedCancellationCount = 0
+
+    init(
+        head: String,
+        origin: String,
+        commonGitDirectory: String,
+        linkedGitDirectory: String,
+        suspendFirstRun: Bool = false,
+        materializeDestination: @escaping @Sendable (URL) -> Void = { _ in }
+    ) {
+        self.head = head
+        self.origin = origin
+        self.commonGitDirectory = commonGitDirectory
+        self.linkedGitDirectory = linkedGitDirectory
+        self.shouldSuspendFirstRun = suspendFirstRun
+        self.materializeDestination = materializeDestination
+    }
+
+    var arguments: [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedArguments
+    }
+
+    var cancellationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedCancellationCount
+    }
+
+    var hasPendingRun: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return pendingCancellation != nil
+    }
+
+    func run(
+        executable: URL,
+        arguments: [String],
+        workingDirectory: URL,
+        deadline: TimeInterval
+    ) async throws -> GuideSourceWorkspaceCommandResult {
+        _ = executable
+        _ = workingDirectory
+        _ = deadline
+        lock.lock()
+        recordedArguments.append(arguments)
+        let suspend = shouldSuspendFirstRun
+        shouldSuspendFirstRun = false
+        lock.unlock()
+
+        if suspend {
+            return try await withTaskCancellationHandler(operation: {
+                try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<GuideSourceWorkspaceCommandResult, Error>) in
+                    self.lock.lock()
+                    self.pendingCancellation = continuation
+                    self.lock.unlock()
+                }
+            }, onCancel: {
+                self.cancelRunningProcess()
+            })
+        }
+
+        if arguments.contains("worktree"),
+           let detachIndex = arguments.firstIndex(of: "--detach"),
+           detachIndex + 1 < arguments.count {
+            materializeDestination(URL(fileURLWithPath: arguments[detachIndex + 1], isDirectory: true))
+        }
+
+        let output: String
+        if arguments.contains("remote") {
+            output = origin + "\n"
+        } else if arguments.contains("status") {
+            output = ""
+        } else if arguments.contains("--git-common-dir") {
+            output = commonGitDirectory + "\n"
+        } else if arguments.contains("--git-dir") {
+            output = linkedGitDirectory + "\n"
+        } else {
+            output = head + "\n"
+        }
+        return GuideSourceWorkspaceCommandResult(
+            exitCode: 0, output: output, outputWasTruncated: false
+        )
+    }
+
+    func cancelRunningProcess() {
+        lock.lock()
+        recordedCancellationCount += 1
+        let continuation = pendingCancellation
+        pendingCancellation = nil
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
+    }
+}
+
+private final class GuideSetupWorkspaceRecordStore: GuideSourceWorkspaceRecording, GuideSourceWorkspaceRecordReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var records: [UUID: GuideSourceWorkspaceRecord] = [:]
+
+    func save(_ record: GuideSourceWorkspaceRecord) throws {
+        lock.lock()
+        records[record.runID] = record
+        lock.unlock()
+    }
+
+    func record(for runID: UUID) -> GuideSourceWorkspaceRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        return records[runID]
+    }
+}
+
+struct GuideSourceWorkspaceServiceTests {
+    private struct Fixture {
+        let source: URL
+        let ownedRoot: URL
+        let staged: URL
+        let commonGitDirectory: URL
+        let linkedGitDirectory: URL
+        let runID: UUID
+        let commit: String
+        let origin: GuideSourceWorkspaceOrigin
+        let store: GuideSetupWorkspaceRecordStore
+
+        var binding: GuideSourceWorkspaceBinding {
+            let identity = GuideSourceWorkspaceIdentity(
+                canonicalPath: source.path,
+                origin: origin,
+                head: commit,
+                expectedCommitIsPresent: true,
+                porcelain: "",
+                commonGitDirectory: commonGitDirectory.path,
+                workingTreeFingerprint: Self.emptyFingerprint
+            )
+            let stagedIdentity = GuideSourceWorkspaceIdentity(
+                canonicalPath: staged.path,
+                origin: origin,
+                head: commit,
+                expectedCommitIsPresent: true,
+                porcelain: "",
+                commonGitDirectory: commonGitDirectory.path,
+                workingTreeFingerprint: Self.emptyFingerprint
+            )
+            return GuideSourceWorkspaceBinding(
+                runID: runID,
+                guideID: "fixture",
+                guideRevision: 1,
+                projectID: "fixture",
+                original: identity,
+                staged: stagedIdentity,
+                originalPath: source.path,
+                stagedPath: staged.path,
+                expectedOrigin: origin,
+                expectedCommit: commit,
+                ownershipMarker: "marker",
+                commonGitDirectory: commonGitDirectory.path,
+                linkedWorktreeGitDirectory: linkedGitDirectory.path,
+                isIsolated: true
+            )
+        }
+
+        static let emptyFingerprint = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+
+    private static func fixture() throws -> Fixture {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .standardizedFileURL
+            .appendingPathComponent("iris-guide-workspace-test-\(UUID().uuidString)", isDirectory: true)
+        let source = base.appendingPathComponent("source", isDirectory: true)
+        let ownedRoot = base.appendingPathComponent("owned", isDirectory: true)
+        let runID = UUID()
+        let staged = ownedRoot.appendingPathComponent(
+            "fixture-\(runID.uuidString)", isDirectory: true
+        )
+        let commonGitDirectory = base.appendingPathComponent("common.git", isDirectory: true)
+        let linkedGitDirectory = commonGitDirectory
+            .appendingPathComponent("worktrees", isDirectory: true)
+            .appendingPathComponent(staged.lastPathComponent, isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: linkedGitDirectory, withIntermediateDirectories: true)
+        return Fixture(
+            source: source,
+            ownedRoot: ownedRoot,
+            staged: staged,
+            commonGitDirectory: commonGitDirectory,
+            linkedGitDirectory: linkedGitDirectory,
+            runID: runID,
+            commit: String(repeating: "a", count: 40),
+            origin: GuideSourceWorkspaceOrigin(host: "github.com", path: "example/project"),
+            store: GuideSetupWorkspaceRecordStore()
+        )
+    }
+
+    private static func service(
+        fixture: Fixture,
+        executor: GuideSetupWorkspaceScriptedExecutor,
+        ownedRoot: URL? = nil
+    ) -> GuideSourceWorkspaceService {
+        let expectedRoot = (ownedRoot ?? fixture.ownedRoot).standardizedFileURL.path
+        return GuideSourceWorkspaceService(
+            executor: executor,
+            store: fixture.store,
+            destinationIsOwned: { candidate in
+                candidate.standardizedFileURL.path == expectedRoot
+            }
+        )
+    }
+
+    private static func readyRecord(for binding: GuideSourceWorkspaceBinding) -> GuideSourceWorkspaceRecord {
+        GuideSourceWorkspaceRecord(
+            runID: binding.runID,
+            guideID: binding.guideID,
+            guideRevision: binding.guideRevision,
+            projectID: binding.projectID,
+            originalPath: binding.originalPath,
+            stagedPath: binding.stagedPath,
+            expectedOrigin: "https://\(binding.expectedOrigin.host)/\(binding.expectedOrigin.path)",
+            expectedCommit: binding.expectedCommit,
+            ownershipMarker: binding.ownershipMarker,
+            state: .ready
+        )
+    }
+
+    @Test func revalidationRejectsAnIsolatedPathOutsideTheOwnedRoot() async throws {
+        let fixture = try Self.fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }
+        let outsideRoot = fixture.source.deletingLastPathComponent()
+            .appendingPathComponent("unowned", isDirectory: true)
+        let outsideStage = outsideRoot.appendingPathComponent(
+            fixture.staged.lastPathComponent, isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: outsideStage, withIntermediateDirectories: true)
+        var binding = fixture.binding
+        binding = GuideSourceWorkspaceBinding(
+            runID: binding.runID, guideID: binding.guideID, guideRevision: binding.guideRevision,
+            projectID: binding.projectID, original: binding.original, staged: binding.staged,
+            originalPath: binding.originalPath, stagedPath: outsideStage.path,
+            expectedOrigin: binding.expectedOrigin, expectedCommit: binding.expectedCommit,
+            ownershipMarker: binding.ownershipMarker, commonGitDirectory: binding.commonGitDirectory,
+            linkedWorktreeGitDirectory: binding.linkedWorktreeGitDirectory, isIsolated: true
+        )
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: fixture.commit,
+            origin: "https://github.com/example/project",
+            commonGitDirectory: fixture.commonGitDirectory.path,
+            linkedGitDirectory: fixture.linkedGitDirectory.path
+        )
+        let service = Self.service(fixture: fixture, executor: executor)
+        try fixture.store.save(Self.readyRecord(for: binding))
+
+        let result = await service.revalidate(binding)
+        guard case .failure(.destinationNotOwned) = result else {
+            Issue.record("an isolated workspace outside the owned root must be rejected: \(result)")
+            return
+        }
+        #expect(executor.arguments.allSatisfy { arguments in
+            guard let index = arguments.firstIndex(of: "-C"), index + 1 < arguments.count else {
+                return false
+            }
+            return arguments[index + 1] == fixture.source.path
+        })
+    }
+
+    @Test func isolatedPreparationUsesTheOwnedWorktreeAndPersistsReadyState() async throws {
+        let fixture = try Self.fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }
+        try FileManager.default.removeItem(at: fixture.staged)
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: fixture.commit,
+            origin: "https://github.com/example/project",
+            commonGitDirectory: fixture.commonGitDirectory.path,
+            linkedGitDirectory: fixture.linkedGitDirectory.path,
+            materializeDestination: { destination in
+                try? FileManager.default.createDirectory(
+                    at: destination, withIntermediateDirectories: true
+                )
+            }
+        )
+        let service = Self.service(fixture: fixture, executor: executor)
+        let request = GuideSourceWorkspaceRequest(
+            runID: fixture.runID,
+            guideID: "fixture",
+            guideRevision: 1,
+            projectID: "fixture",
+            sourcePath: fixture.source.path,
+            expectedOrigin: "https://github.com/example/project",
+            expectedCommit: fixture.commit,
+            ownedProjectsRoot: fixture.ownedRoot
+        )
+        let inspection = GuideSourceWorkspaceInspection.existingClean(fixture.binding.original)
+
+        let binding = try await service.prepare(
+            request, from: inspection, choice: .createIsolatedWorktree
+        )
+
+        #expect(binding.isIsolated)
+        #expect(binding.stagedPath == fixture.staged.path)
+        #expect(binding.linkedWorktreeGitDirectory == fixture.linkedGitDirectory.path)
+        #expect(fixture.store.record(for: fixture.runID)?.state == .ready)
+        let worktreeArguments = try #require(
+            executor.arguments.first(where: { $0.contains("worktree") })
+        )
+        #expect(worktreeArguments.contains("worktree"))
+        #expect(worktreeArguments.contains("add"))
+        #expect(worktreeArguments.contains("--detach"))
+        #expect(worktreeArguments.contains(fixture.staged.path))
+        #expect(worktreeArguments.contains(fixture.commit))
+        #expect(!executor.arguments.contains(where: { $0.contains("clone") }))
+    }
+
+    @Test func retryResumesARecordedOwnedWorktreeWithoutCreatingADuplicate() async throws {
+        let fixture = try Self.fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: fixture.commit,
+            origin: "https://github.com/example/project",
+            commonGitDirectory: fixture.commonGitDirectory.path,
+            linkedGitDirectory: fixture.linkedGitDirectory.path
+        )
+        let service = Self.service(fixture: fixture, executor: executor)
+        let request = GuideSourceWorkspaceRequest(
+            runID: fixture.runID,
+            guideID: "fixture",
+            guideRevision: 1,
+            projectID: "fixture",
+            sourcePath: fixture.source.path,
+            expectedOrigin: "https://github.com/example/project",
+            expectedCommit: fixture.commit,
+            ownedProjectsRoot: fixture.ownedRoot
+        )
+        let inspection = GuideSourceWorkspaceInspection.existingClean(fixture.binding.original)
+        try fixture.store.save(GuideSourceWorkspaceRecord(
+            runID: fixture.runID,
+            guideID: request.guideID,
+            guideRevision: request.guideRevision,
+            projectID: request.projectID,
+            originalPath: request.sourcePath,
+            stagedPath: fixture.staged.path,
+            expectedOrigin: request.expectedOrigin,
+            expectedCommit: request.expectedCommit,
+            ownershipMarker: "cancelled-stage-marker",
+            state: .cancelled
+        ))
+
+        let binding = try await service.prepare(
+            request, from: inspection, choice: .createIsolatedWorktree
+        )
+
+        #expect(binding.stagedPath == fixture.staged.path)
+        #expect(binding.ownershipMarker == "cancelled-stage-marker")
+        #expect(fixture.store.record(for: fixture.runID)?.state == .ready)
+        #expect(!executor.arguments.contains(where: { $0.contains("worktree") }),
+                "a retry must validate and resume the recorded worktree instead of adding another one")
+    }
+
+    @Test func existingCheckoutBindingRecordsItsActualGitDirectory() async throws {
+        let fixture = try Self.fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: fixture.commit,
+            origin: "https://github.com/example/project",
+            commonGitDirectory: fixture.commonGitDirectory.path,
+            linkedGitDirectory: fixture.linkedGitDirectory.path
+        )
+        let service = Self.service(fixture: fixture, executor: executor)
+        let request = GuideSourceWorkspaceRequest(
+            runID: fixture.runID,
+            guideID: "fixture",
+            guideRevision: 1,
+            projectID: "fixture",
+            sourcePath: fixture.source.path,
+            expectedOrigin: "https://github.com/example/project",
+            expectedCommit: fixture.commit,
+            ownedProjectsRoot: fixture.ownedRoot
+        )
+        let inspection = GuideSourceWorkspaceInspection.existingClean(fixture.binding.original)
+
+        let binding = try await service.prepare(
+            request, from: inspection, choice: .useExistingCleanCheckout
+        )
+
+        #expect(binding.isIsolated == false)
+        #expect(binding.ownershipMarker == "existing-user-checkout")
+        #expect(binding.linkedWorktreeGitDirectory == fixture.linkedGitDirectory.path)
+        #expect(executor.arguments.contains(where: { $0.contains("--git-dir") }))
+        #expect(!executor.arguments.contains(where: { $0.contains("worktree") }))
+    }
+
+    @Test func revalidationRejectsAChangedLinkedWorktreeIdentity() async throws {
+        let fixture = try Self.fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: fixture.commit,
+            origin: "https://github.com/example/project",
+            commonGitDirectory: fixture.commonGitDirectory.path,
+            linkedGitDirectory: fixture.linkedGitDirectory.path
+        )
+        let service = Self.service(fixture: fixture, executor: executor)
+        var binding = fixture.binding
+        binding = GuideSourceWorkspaceBinding(
+            runID: binding.runID, guideID: binding.guideID, guideRevision: binding.guideRevision,
+            projectID: binding.projectID, original: binding.original, staged: binding.staged,
+            originalPath: binding.originalPath, stagedPath: binding.stagedPath,
+            expectedOrigin: binding.expectedOrigin, expectedCommit: binding.expectedCommit,
+            ownershipMarker: binding.ownershipMarker, commonGitDirectory: binding.commonGitDirectory,
+            linkedWorktreeGitDirectory: fixture.commonGitDirectory.path, isIsolated: true
+        )
+        try fixture.store.save(Self.readyRecord(for: binding))
+
+        let result = await service.revalidate(binding)
+        guard case .failure(.stagedWorkspaceVerificationFailed(let reason)) = result else {
+            Issue.record("a changed linked worktree admin path must be rejected: \(result)")
+            return
+        }
+        #expect(reason == "linked worktree identity changed")
+    }
+
+    @Test func revalidationRefreshesIgnoredFileFingerprintForAStableCleanWorktree() async throws {
+        let fixture = try Self.fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: fixture.commit,
+            origin: "https://github.com/example/project",
+            commonGitDirectory: fixture.commonGitDirectory.path,
+            linkedGitDirectory: fixture.linkedGitDirectory.path
+        )
+        let service = Self.service(fixture: fixture, executor: executor)
+        let staleStaged = GuideSourceWorkspaceIdentity(
+            canonicalPath: fixture.binding.staged.canonicalPath,
+            origin: fixture.binding.staged.origin,
+            head: fixture.binding.staged.head,
+            expectedCommitIsPresent: true,
+            porcelain: "",
+            commonGitDirectory: fixture.binding.staged.commonGitDirectory,
+            workingTreeFingerprint: "stale-ignored-file-fingerprint"
+        )
+        let binding = GuideSourceWorkspaceBinding(
+            runID: fixture.binding.runID, guideID: fixture.binding.guideID,
+            guideRevision: fixture.binding.guideRevision, projectID: fixture.binding.projectID,
+            original: fixture.binding.original, staged: staleStaged,
+            originalPath: fixture.binding.originalPath, stagedPath: fixture.binding.stagedPath,
+            expectedOrigin: fixture.binding.expectedOrigin, expectedCommit: fixture.binding.expectedCommit,
+            ownershipMarker: fixture.binding.ownershipMarker, commonGitDirectory: fixture.binding.commonGitDirectory,
+            linkedWorktreeGitDirectory: fixture.binding.linkedWorktreeGitDirectory, isIsolated: true
+        )
+        try fixture.store.save(Self.readyRecord(for: binding))
+
+        let result = await service.revalidate(binding)
+        guard case .success(let refreshed) = result else {
+            Issue.record("a clean reviewed worktree should survive ignored-file fingerprint drift: \(result)")
+            return
+        }
+        #expect(refreshed.staged.workingTreeFingerprint != "stale-ignored-file-fingerprint")
+        #expect(refreshed.staged.head == fixture.commit)
+    }
+
+    @Test func cancellationStopsTheActiveProbeBeforeTheNextGitCommand() async throws {
+        let fixture = try Self.fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: fixture.commit,
+            origin: "https://github.com/example/project",
+            commonGitDirectory: fixture.commonGitDirectory.path,
+            linkedGitDirectory: fixture.linkedGitDirectory.path,
+            suspendFirstRun: true
+        )
+        let service = Self.service(fixture: fixture, executor: executor)
+        let request = GuideSourceWorkspaceRequest(
+            runID: fixture.runID,
+            guideID: "fixture",
+            guideRevision: 1,
+            projectID: "fixture",
+            sourcePath: fixture.source.path,
+            expectedOrigin: "https://github.com/example/project",
+            expectedCommit: fixture.commit,
+            ownedProjectsRoot: fixture.ownedRoot
+        )
+        let inspectionTask = Task { await service.inspect(request) }
+        for _ in 0..<200 where !executor.hasPendingRun {
+            await Task.yield()
+        }
+        #expect(executor.hasPendingRun)
+        service.cancel(runID: fixture.runID)
+
+        let result = await inspectionTask.value
+        #expect(result == .failure(.cancelled))
+        #expect(executor.cancellationCount == 1)
+        #expect(executor.arguments.count == 1)
+    }
+
+    @Test func anImmediateRetryWaitsForCancelledSetupToFinishUnwinding() async throws {
+        let fixture = try Self.fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.source.deletingLastPathComponent()) }
+        let executor = GuideSetupWorkspaceScriptedExecutor(
+            head: fixture.commit,
+            origin: "https://github.com/example/project",
+            commonGitDirectory: fixture.commonGitDirectory.path,
+            linkedGitDirectory: fixture.linkedGitDirectory.path,
+            suspendFirstRun: true
+        )
+        let service = Self.service(fixture: fixture, executor: executor)
+        let firstRequest = GuideSourceWorkspaceRequest(
+            runID: fixture.runID,
+            guideID: "fixture",
+            guideRevision: 1,
+            projectID: "fixture",
+            sourcePath: fixture.source.path,
+            expectedOrigin: "https://github.com/example/project",
+            expectedCommit: fixture.commit,
+            ownedProjectsRoot: fixture.ownedRoot
+        )
+        let secondRequest = GuideSourceWorkspaceRequest(
+            runID: UUID(),
+            guideID: firstRequest.guideID,
+            guideRevision: firstRequest.guideRevision,
+            projectID: firstRequest.projectID,
+            sourcePath: firstRequest.sourcePath,
+            expectedOrigin: firstRequest.expectedOrigin,
+            expectedCommit: firstRequest.expectedCommit,
+            ownedProjectsRoot: firstRequest.ownedProjectsRoot
+        )
+
+        let firstInspection = Task { await service.inspect(firstRequest) }
+        for _ in 0..<200 where !executor.hasPendingRun {
+            await Task.yield()
+        }
+        #expect(executor.hasPendingRun)
+        service.cancel(runID: firstRequest.runID)
+
+        let secondInspection = Task { await service.inspect(secondRequest) }
+        let firstResult = await firstInspection.value
+        let secondResult = await secondInspection.value
+        #expect(firstResult == .failure(.cancelled))
+        guard case .success(.existingClean(let identity)) = secondResult else {
+            Issue.record("a retry after cancellation should run the fresh inspection: \(secondResult)")
+            return
+        }
+        #expect(identity.canonicalPath == fixture.source.path)
+        #expect(executor.arguments.count == 6)
     }
 }

@@ -26,7 +26,7 @@ struct OnDemandEditInterruptedRunRecoveryTests {
         var path: String { root.path }
 
         func git(_ arguments: [String]) -> OnDemandEditInterruptedRunRecovery.GitResult {
-            OnDemandEditInterruptedRunRecovery.runGit(arguments, in: path)
+            OnDemandEditInterruptedRunRecoveryTests.fixtureGit(arguments, in: path)
         }
 
         func write(_ relativePath: String, _ text: String) throws {
@@ -50,6 +50,39 @@ struct OnDemandEditInterruptedRunRecoveryTests {
         func tearDown() {
             try? FileManager.default.removeItem(at: root.deletingLastPathComponent())
         }
+    }
+
+    /// These fixtures create their own disposable repository before the Iris
+    /// Test registry can bind an edit to it. The production recovery path is
+    /// deliberately registry/sandbox-bound; the injected runner below keeps
+    /// this suite focused on recovery decisions while still using real git on
+    /// the fixture's own files.
+    private static func fixtureGit(
+        _ arguments: [String], in repoRootPath: String
+    ) -> OnDemandEditInterruptedRunRecovery.GitResult {
+        let candidates = ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"]
+        guard let gitPath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            return .init(exitCode: 127, output: "git not found")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: gitPath)
+        process.arguments = arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: repoRootPath)
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        process.environment = environment
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+        } catch {
+            return .init(exitCode: 126, output: "\(error)")
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return .init(exitCode: process.terminationStatus, output: String(decoding: data, as: UTF8.self))
     }
 
     private func aScratchRepo() throws -> ScratchRepo {
@@ -104,7 +137,9 @@ struct OnDemandEditInterruptedRunRecoveryTests {
             recordPath: repo.recordPath
         )
 
-        let outcome = OnDemandEditInterruptedRunRecovery.recoverNow(recordPath: repo.recordPath)
+        let outcome = OnDemandEditInterruptedRunRecovery.recoverNow(
+            recordPath: repo.recordPath, gitRunner: Self.fixtureGit
+        )
 
         #expect(outcome == .revertedIrisOwnEdits(clonePath: repo.path, paths: ["src-tauri/src/lib.rs", "src-tauri/src/mic.rs"]))
         #expect(repo.porcelain.isEmpty, "the clone is not clean after recovery: \(repo.porcelain)")
@@ -131,7 +166,9 @@ struct OnDemandEditInterruptedRunRecoveryTests {
         let record = aRecord(for: repo, paths: ["src-tauri/src/lib.rs"])
         OnDemandEditInterruptedRunRecovery.remember(record, recordPath: repo.recordPath)
 
-        let outcome = OnDemandEditInterruptedRunRecovery.recoverNow(recordPath: repo.recordPath)
+        let outcome = OnDemandEditInterruptedRunRecovery.recoverNow(
+            recordPath: repo.recordPath, gitRunner: Self.fixtureGit
+        )
 
         guard case .leftAlone(let clonePath, let reason, let pathsIrisEdited) = outcome else {
             Issue.record("expected .leftAlone, got \(outcome)")
@@ -194,7 +231,9 @@ struct OnDemandEditInterruptedRunRecoveryTests {
         #expect(repo.git(["commit", "-q", "-m", "On-demand fix"]).exitCode == 0)
         try repo.write("src-tauri/src/lib.rs", "fn main() { the_readers_later_work(); }\n")
 
-        let outcome = OnDemandEditInterruptedRunRecovery.recoverNow(recordPath: repo.recordPath)
+        let outcome = OnDemandEditInterruptedRunRecovery.recoverNow(
+            recordPath: repo.recordPath, gitRunner: Self.fixtureGit
+        )
 
         #expect(outcome == .theRunHadAlreadyCommitted(clonePath: repo.path))
         #expect(OnDemandEditInterruptedRunRecovery.recordOnDisk(recordPath: repo.recordPath) == nil)
@@ -206,7 +245,9 @@ struct OnDemandEditInterruptedRunRecoveryTests {
         defer { repo.tearDown() }
         OnDemandEditInterruptedRunRecovery.remember(aRecord(for: repo, paths: ["src-tauri/src/lib.rs"]), recordPath: repo.recordPath)
 
-        #expect(OnDemandEditInterruptedRunRecovery.recoverNow(recordPath: repo.recordPath) == .theTreeWasAlreadyClean(clonePath: repo.path))
+        #expect(OnDemandEditInterruptedRunRecovery.recoverNow(
+            recordPath: repo.recordPath, gitRunner: Self.fixtureGit
+        ) == .theTreeWasAlreadyClean(clonePath: repo.path))
         #expect(OnDemandEditInterruptedRunRecovery.recordOnDisk(recordPath: repo.recordPath) == nil)
     }
 
@@ -246,5 +287,18 @@ struct OnDemandEditInterruptedRunRecoveryTests {
             .init(path: "renamed.rs", isUntracked: false),
             .init(path: "with space.rs", isUntracked: false),
         ])
+    }
+
+    // MARK: - 5. Failed native-review retention gates
+
+    @Test func failedReviewRetentionAcceptsOnlySafeRelativeSourcePaths() {
+        #expect(MaintainTierCFixer.isSafeRetainedPath("src/feature.swift"))
+        #expect(MaintainTierCFixer.isSafeRetainedPath("Sources/My File.swift"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath("/tmp/foreign.swift"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath("../foreign.swift"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath("src/../foreign.swift"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath(".git/index"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath("src/\nforeign.swift"))
+        #expect(!MaintainTierCFixer.isSafeRetainedPath(""))
     }
 }

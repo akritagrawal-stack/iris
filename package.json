@@ -4,6 +4,8 @@
   "description": "Iris \u2014 the publik desktop assistant. Three clients; this root holds only the cross-client checks.",
   "scripts": {
     "test": "vitest run",
+    "test:mobile": "node --test iris-mobile/test/*.test.mjs",
+    "mobile:serve": "node iris-mobile/server.mjs",
     "iris:deploy:macos": "scripts/deploy-iris-local.sh",
     "iris:build:windows": "cd iris-windows && npm run make",
     "tauri:dev": "cd iris-desktop && pnpm tauri dev",

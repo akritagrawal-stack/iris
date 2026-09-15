@@ -394,6 +394,7 @@ enum Bug6E2EReadersScreen {
 @MainActor
 struct Bug6E2EWhimprflowClone {
     let path: String
+    let processPolicy: MaintainSandbox.ProcessPolicy
 
     /// A slug of this guard's own: the coordinator READS and WRITES per-app
     /// memory under ~/Library/Logs/Iris/edit-runs, and a test must neither mine
@@ -411,7 +412,10 @@ struct Bug6E2EWhimprflowClone {
                 atPath: clonePath + "/" + subdirectory, withIntermediateDirectories: true
             )
         }
-        let clone = Bug6E2EWhimprflowClone(path: clonePath)
+        let processPolicy = try IrisTestFixtureSandbox.processPolicy(for: clonePath)
+        let clone = Bug6E2EWhimprflowClone(
+            path: clonePath, processPolicy: processPolicy
+        )
 
         clone.write(".gitignore", "node_modules/\ntarget/\ndist/\n")
         clone.write("src-tauri/tauri.conf.json", """
@@ -833,6 +837,7 @@ final class Bug6E2EReaderSession {
             // sibling test, would refuse the run for a reason with nothing to
             // do with Bug 6.
             clonePathLock: MaintainClonePathLock(),
+            processPolicy: clone.processPolicy,
             topRequestsForApp: { _ in [] },
             probeRequestTriggers: { _, _ in .allQuiet },
             performOnDemandEdit: {
@@ -869,7 +874,8 @@ final class Bug6E2EReaderSession {
                             + " crates/whimpr-core/src/settings.rs",
                         testCommand: nil,
                         commandSubdirectory: nil
-                    )
+                    ),
+                    processPolicy: clone.processPolicy
                 )
             }
         )

@@ -92,6 +92,43 @@ private final class ScriptedProbeProvider: MaintainModelProviding {
 @MainActor
 @Suite struct FeatureEditRequestProbeOrchestrationTests {
 
+    @Test func aClearLocalBugSkipsTheOptionalProbe() {
+        #expect(FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+            request: "the save button crashes when I click it",
+            kind: .bugFix,
+            recipeIsKnown: true,
+            runtimeShape: .pureLocalApp
+        ))
+    }
+
+    @Test func theFastPathKeepsFeaturesUnknownRecipesScaledAppsAndRiskyChangesOnTheProbe() {
+        let request = "the save button crashes when I click it"
+        #expect(!FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+            request: request,
+            kind: .feature,
+            recipeIsKnown: true,
+            runtimeShape: .pureLocalApp
+        ))
+        #expect(!FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+            request: request,
+            kind: .bugFix,
+            recipeIsKnown: false,
+            runtimeShape: .pureLocalApp
+        ))
+        #expect(!FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+            request: request,
+            kind: .bugFix,
+            recipeIsKnown: true,
+            runtimeShape: .builtForScale
+        ))
+        #expect(!FeatureEditRequestProbe.shouldSkipOptionalModelProbe(
+            request: "the save button crashes, then delete all old records",
+            kind: .bugFix,
+            recipeIsKnown: true,
+            runtimeShape: .pureLocalApp
+        ))
+    }
+
     private func passAnswer(_ implementation: String, irreversible: Bool = false) -> String {
         #"{"implementation": "\#(implementation)", "irreversible": \#(irreversible)}"#
     }
@@ -145,12 +182,14 @@ private final class ScriptedProbeProvider: MaintainModelProviding {
         #expect(verdict.impliesIrreversibleAction)
     }
 
-    @Test func aThrowingProviderFailsOpenToAllQuiet() async {
+    @Test func aThrowingProviderStaysNonBlockingButMarksProbeUnavailable() async {
         let provider = ScriptedProbeProvider([], throwing: AssistantTransportError.bringYourOwnKeyRejected)
         let verdict = await FeatureEditRequestProbe.probe(
             scrubbedRequest: "anything", repoMapSummary: "", provider: provider
         )
-        #expect(verdict == .allQuiet)
+        #expect(!verdict.requestLooksAmbiguous)
+        #expect(!verdict.impliesIrreversibleAction)
+        #expect(verdict.requestProbeUnavailable)
     }
 
     @Test func oneUnusablePassStillCarriesTheOthersIrreversibleFlagButNeverAmbiguity() async {
@@ -165,6 +204,7 @@ private final class ScriptedProbeProvider: MaintainModelProviding {
         // both passes — but a parsed irreversibility flag is still real.
         #expect(!verdict.requestLooksAmbiguous)
         #expect(verdict.impliesIrreversibleAction)
+        #expect(verdict.requestProbeUnavailable)
     }
 
     @Test func anUnusableJudgeFailsOpenToNotAmbiguous() async {
@@ -177,6 +217,7 @@ private final class ScriptedProbeProvider: MaintainModelProviding {
             scrubbedRequest: "add export", repoMapSummary: "", provider: provider
         )
         #expect(!verdict.requestLooksAmbiguous)
+        #expect(verdict.requestProbeUnavailable)
     }
 }
 

@@ -24,6 +24,41 @@ import Testing
 
 @Suite struct OnDemandEditEvidenceDisciplineTests {
 
+    @Test("a source-only request does not request a whole-screen fallback")
+    func sourceOnlyRequestsDoNotNeedWholeScreenEvidence() {
+        for request in [
+            "Add export and import for notes and folders",
+            "Fix screen rendering after relaunch",
+            "Add image import and export",
+            "Export photos to a folder",
+            "Rename screenshot.png when saving",
+            "Fix the settings command so it persists after relaunch",
+            "Make the build finish without the missing dependency",
+            "Add a keyboard shortcut for opening the project picker",
+        ] {
+            #expect(
+                !OnDemandEditCoordinator.requestExplicitlyReferencesVisualContext(request),
+                "source-only request should not attach an irrelevant screen: \(request)"
+            )
+        }
+    }
+
+    @Test("explicit visual wording keeps the whole-screen fallback")
+    func visualRequestsKeepWholeScreenEvidence() {
+        for request in [
+            "Can you do what the image says?",
+            "The screenshot shows the bug",
+            "Why is this wrong on screen?",
+            "Fix what is visible in the current view",
+            "Can you change what you see here?",
+        ] {
+            #expect(
+                OnDemandEditCoordinator.requestExplicitlyReferencesVisualContext(request),
+                "visual request should keep the screen fallback: \(request)"
+            )
+        }
+    }
+
     // MARK: - A repro may not be a look at its own diff
 
     @Test("the repro that shipped five false verifications is rejected")
@@ -252,7 +287,8 @@ import Testing
             directoryPath: directory
         )
         #expect(OnDemandEditRunLog.priorAttemptsDidNotCureTheComplaint(
-            forAppSlug: "whimprflow", directoryPath: directory
+            forAppSlug: "whimprflow", request: "perms already granted", kind: .bugFix,
+            directoryPath: directory
         ))
     }
 
@@ -274,7 +310,8 @@ import Testing
             directoryPath: directory
         )
         #expect(!OnDemandEditRunLog.priorAttemptsDidNotCureTheComplaint(
-            forAppSlug: "whimprflow", directoryPath: directory
+            forAppSlug: "whimprflow", request: "perms already granted", kind: .bugFix,
+            directoryPath: directory
         ))
     }
 
@@ -296,7 +333,8 @@ import Testing
             directoryPath: directory
         )
         #expect(OnDemandEditRunLog.priorAttemptsDidNotCureTheComplaint(
-            forAppSlug: "whimprflow", directoryPath: directory
+            forAppSlug: "whimprflow", request: "perms already granted", kind: .bugFix,
+            directoryPath: directory
         ))
     }
 
@@ -324,7 +362,8 @@ import Testing
             )
         }
         #expect(!OnDemandEditRunLog.priorAttemptsDidNotCureTheComplaint(
-            forAppSlug: "whimprflow", directoryPath: directory
+            forAppSlug: "whimprflow", request: "perms already granted", kind: .bugFix,
+            directoryPath: directory
         ))
     }
 

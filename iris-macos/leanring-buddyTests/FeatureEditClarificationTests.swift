@@ -2,7 +2,7 @@
 //  FeatureEditClarificationTests.swift
 //  leanring-buddyTests
 //
-//  The §10.3 table for the clarification protocol: each of the four §7
+//  The §10.3 table for the clarification protocol: each of the five §7
 //  triggers fires exactly its one question, and — just as load-bearing — the
 //  PROCEED cases return no questions at all, because an engine that over-asks
 //  is the nagging §7 was designed to prevent. Pure logic, no processes.
@@ -12,7 +12,35 @@ import Foundation
 import Testing
 @testable import Iris
 
-@Suite struct FeatureEditClarificationTests {
+@MainActor @Suite struct FeatureEditClarificationTests {
+
+    // MARK: - Nontechnical destination gap
+
+    @Test("a vague paste destination gets one bounded product choice")
+    func vaguePasteDestinationIsRecognizedWithoutGuessingTheTab() {
+        #expect(HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "I want Whisper Flow to paste into the right tab"
+        ))
+        #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "Paste into Gmail"
+        ))
+        #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "Add a paste button to the current note"
+        ))
+        #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "Make the settings screen brighter"
+        ))
+    }
+
+    @Test("destination wording does not treat an existing explicit choice as missing")
+    func explicitDestinationSelectionNeedsNoExtraQuestion() {
+        #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "Paste into the app I choose each time"
+        ))
+        #expect(!HarnessFeatureWorkflow.requestNeedsDestinationChoice(
+            "Send the transcript to the currently focused tab"
+        ))
+    }
 
     // MARK: - Proceed cases (the anti-over-asking half of the table)
 
@@ -59,6 +87,24 @@ import Testing
         #expect(questions.first?.prompt.contains(readerRequest) == true)
     }
 
+    @Test func describeMoreChoiceReturnsToRequestInsteadOfChoosingAPlan() {
+        let question = FeatureEditClarificationLogic.questions(
+            forRequest: "make search better",
+            requestLooksAmbiguous: true,
+            recipeIsUnknown: false,
+            runtimeShape: .pureLocalApp,
+            impliesIrreversibleAction: false
+        )[0]
+        #expect(FeatureEditClarificationLogic.answerRequiresRequestRevision(
+            question: question,
+            answer: "Let me describe it more specifically"
+        ))
+        #expect(!FeatureEditClarificationLogic.answerRequiresRequestRevision(
+            question: question,
+            answer: "Pick the approach you think is best and show me the plan first"
+        ))
+    }
+
     // MARK: - Trigger 2: irreversible or costly action
 
     @Test func anImpliedIrreversibleActionAsksExactlyOneIrreversibilityQuestion() {
@@ -73,6 +119,20 @@ import Testing
         #expect(questions.first?.trigger == .irreversibleOrCostlyAction)
         // A hard-to-undo act must offer a way OUT, not only ways forward.
         #expect(questions.first?.options.contains(where: { $0.lowercased().contains("stop") }) == true)
+    }
+
+    @Test func anUnavailableSafetyProbeAsksOneReversiblePostureQuestion() {
+        let questions = FeatureEditClarificationLogic.questions(
+            forRequest: "make the storage better",
+            requestLooksAmbiguous: false,
+            recipeIsUnknown: false,
+            runtimeShape: .pureLocalApp,
+            impliesIrreversibleAction: false,
+            requestProbeUnavailable: true
+        )
+        #expect(questions.count == 1)
+        #expect(questions.first?.trigger == .safetyClassificationUnavailable)
+        #expect(questions.first?.options.first?.lowercased().contains("additive") == true)
     }
 
     // MARK: - Trigger 3: required info absent from the repo (unknown recipe)

@@ -319,6 +319,7 @@ final class Bug5EndToEndReaderSession {
             pinnedCommit: nil,
             canonicalRepo: nil
         )
+        let fixtureProcessPolicy = clone.processPolicy
         let scriptedEditModel = Bug5EndToEndScriptedEditModel()
         let engineEntry = self.engineEntry
         self.coordinator = OnDemandEditCoordinator(
@@ -331,6 +332,7 @@ final class Bug5EndToEndReaderSession {
             // sibling test, would refuse the run for a reason with nothing to
             // do with Bug 5.
             clonePathLock: MaintainClonePathLock(),
+            processPolicy: fixtureProcessPolicy,
             topRequestsForApp: { _ in [] },
             probeRequestTriggers: { _, _ in .allQuiet },
             performOnDemandEdit: {
@@ -355,7 +357,8 @@ final class Bug5EndToEndReaderSession {
                     runtimeLogContext: runtimeEvidence.runtimeLogText,
                     appWindowScreenshotPNG: runtimeEvidence.appWindowScreenshotPNG,
                     additionalPromptSections: additionalPromptSections,
-                    manifestChangeApproval: manifestChangeApproval
+                    manifestChangeApproval: manifestChangeApproval,
+                    processPolicy: fixtureProcessPolicy
                 )
             }
         )
@@ -510,6 +513,7 @@ final class Bug5EndToEndEngineEntryFlag: @unchecked Sendable {
 struct Bug5EndToEndWhimprflowClone {
 
     let path: String
+    let processPolicy: MaintainSandbox.ProcessPolicy
     let runner: MaintainShellRunner
 
     /// Deliberately NOT the real "whimprflow" slug. The engine injects a
@@ -543,8 +547,13 @@ struct Bug5EndToEndWhimprflowClone {
                 atPath: clonePath + "/" + subdirectory, withIntermediateDirectories: true
             )
         }
+        let processPolicy = try IrisTestFixtureSandbox.processPolicy(for: clonePath)
         let clone = Bug5EndToEndWhimprflowClone(
-            path: clonePath, runner: try MaintainShellRunner(repoRootPath: clonePath)
+            path: clonePath,
+            processPolicy: processPolicy,
+            runner: try MaintainShellRunner(
+                repoRootPath: clonePath, processPolicy: processPolicy
+            )
         )
 
         // Ignored the way a real project ignores them, so the dirt a build

@@ -5,8 +5,9 @@
 //  The only tests in this repo that spawn a real process — deliberately.
 //  Fakes prove the runner's state machine; nothing but a live pty proves the
 //  sentinel protocol, job control, and cwd tracking against an actual shell.
-//  Commands are harmless (pwd, cd, sleep) and everything runs inside the
-//  scratch home the initialiser is given. Set IRIS_SKIP_PTY_TESTS=1 to skip
+//  Commands stay inside the disposable working directory (pwd, cd, sleep, and
+//  explicit self-termination of that shell). The login shell's normal dotfiles
+//  are only read, never modified. Set IRIS_SKIP_PTY_TESTS=1 to skip
 //  on a box where spawning is unwelcome.
 //
 //  Serialized, and each test ends its session before returning: concurrent
@@ -16,7 +17,11 @@
 
 import Foundation
 import Testing
+#if IRIS_HARNESS_STANDALONE
+@testable import IrisHarnessNative
+#else
 @testable import Iris
+#endif
 
 private let ptyTestsAreEnabled =
     ProcessInfo.processInfo.environment["IRIS_SKIP_PTY_TESTS"] != "1"
@@ -74,6 +79,116 @@ struct GuideAutopilotShellSessionTests {
                 workingDirectory: session.currentWorkingDirectory
             ))
         }
+    }
+
+    @Test func anOrganicShellExitRecoversWithoutReplayingTheCommand() async throws {
+        try await Self.withStartedSession { session in
+            let command = try Self.approved("kill -9 $$")
+            let outcome = await session.run(command)
+            #expect(outcome == .terminalSessionRestarted,
+                    "a dead shell should report a ready replacement, not pretend the command succeeded")
+
+            // The replacement shell restores the last known cwd and is usable
+            // for a later, explicit command. The killed command itself appears
+            // only once because recovery never replays it.
+            let recovered = await session.run(try Self.approved("echo recovered"))
+            guard case .succeeded = recovered else {
+                Issue.record("expected the replacement shell to accept a later explicit command, got \(recovered)")
+                return
+            }
+        }
+    }
+
+    @Test func staleOutputAndExitCallbacksFromAnOldTerminalCannotTouchItsReplacement() async throws {
+        try await Self.withStartedSession { session in
+            let outcome = await session.run(try Self.approved("printf 'old-terminal-output\\n'; exit 23"))
+            #expect(outcome == .terminalSessionRestarted)
+
+            // The old reader may still have queued bytes when recovery starts.
+            // A command on the replacement must still receive its own marker.
+            let replacement = await session.run(try Self.approved("printf 'replacement-output\\n'"))
+            guard case .succeeded = replacement else {
+                Issue.record("stale old-terminal callbacks affected the replacement: \(replacement)")
+                return
+            }
+            try await Task.sleep(nanoseconds: 200_000_000)
+            #expect(session.tailForTheModel().contains("replacement-output"))
+        }
+    }
+
+    @Test func aRecoveredShellReestablishesTheLastKnownWorkingDirectory() async throws {
+        try await Self.withStartedSession { session in
+            let changedDirectory = await session.run(try Self.approved("cd /tmp"))
+            guard case .succeeded = changedDirectory else {
+                Issue.record("expected the cwd setup command to succeed, got \(changedDirectory)")
+                return
+            }
+
+            #expect(await session.run(try Self.approved("kill -9 $$")) == .terminalSessionRestarted)
+            let outcome = await session.run(try Self.approved("pwd"))
+            guard case .succeeded(let workingDirectory) = outcome else {
+                Issue.record("expected pwd to run after recovery, got \(outcome)")
+                return
+            }
+            #expect(workingDirectory == "/tmp" || workingDirectory == "/private/tmp",
+                    "recovery must restore the prior cwd before the next real command")
+        }
+    }
+
+    @Test func repeatedOrganicShellExitsStopAtTheBoundedRecoveryAllowance() async throws {
+        try await Self.withStartedSession { session in
+            for attempt in 0..<GuideAutopilotShellSession.maximumAutomaticShellRecoveryAttempts {
+                let outcome = await session.run(try Self.approved("kill -9 $$"))
+                #expect(outcome == .terminalSessionRestarted,
+                        "recovery attempt \(attempt + 1) should be the last bounded replacement")
+            }
+
+            let exhausted = await session.run(try Self.approved("kill -9 $$"))
+            #expect(exhausted == .sessionFailed,
+                    "a repeatedly dying shell must become unavailable instead of respawning forever")
+            #expect(await session.run(try Self.approved("echo should-not-run")) == .sessionFailed)
+        }
+    }
+
+    @Test func explicitEndDoesNotRespawnTheTerminal() async throws {
+        let session = GuideAutopilotShellSession(startingDirectory: NSTemporaryDirectory())
+        #expect(await session.start())
+        await session.endSession()
+        try await Task.sleep(nanoseconds: 700_000_000)
+
+        let outcome = await session.run(try Self.approved("echo should-not-run"))
+        #expect(outcome == .sessionFailed,
+                "endSession is final for this run and must not let a stale exit callback respawn a shell")
+    }
+
+    @Test func cancellingDuringStartupResolvesTheOriginalStartAndInvalidatesItsReadyTimer() async throws {
+        let session = GuideAutopilotShellSession(
+            startingDirectory: NSTemporaryDirectory(),
+            startupPreambleDelayForTesting: 1
+        )
+        let startTask = Task { @MainActor in await session.start() }
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        await session.cancelTheRunningCommand()
+        #expect(await startTask.value == false,
+                "cancelling before the ready marker must resolve the original start")
+        await session.endSession()
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+
+        let outcome = await session.run(try Self.approved("echo should-not-run"))
+        #expect(outcome == .sessionFailed,
+                "a delayed ready callback from a cancelled startup must not revive the session")
+    }
+
+    @Test func theGeneratedZshrcIgnoresEndOfInput() throws {
+        try #require(GuideAutopilotShellSession.loginShellIsZsh())
+        let zdotdir = try #require(GuideAutopilotShellSession.privateZdotdir())
+        let rc = try String(
+            contentsOfFile: (zdotdir as NSString).appendingPathComponent(".zshrc"),
+            encoding: .utf8
+        )
+        #expect(rc.contains("ignoreeof"),
+                "deadline Ctrl-D must not kill an otherwise idle persistent shell")
     }
 
     @Test func workingDirectoryCarriesAcrossCommands() async throws {
@@ -163,6 +278,54 @@ struct GuideAutopilotShellSessionTests {
             }
             #expect(recovered, "the session should be usable again after the escape hatch")
         }
+    }
+
+    @Test func aShellThatExitsOnItsOwnIsAutomaticallyRebuilt() async throws {
+        // Unlike the escape hatch (which SIGKILLs and then explicitly
+        // rebuilds) or a normal timeout's last-resort kill+rebuild, a shell
+        // that exits ON ITS OWN — a real crash, or (before the `ignoreeof`
+        // fix) the deadline escalation's Ctrl-D reaching an already-idle
+        // shell — used to leave `shellHasExited` permanently true with no
+        // rebuild: every command after it failed instantly with
+        // `.sessionFailed`, and "Try again" could never recover. This kills
+        // the shell from WITHIN a running command (no cancel, no timeout) to
+        // exercise `noteShellExited`'s own organic-exit path directly.
+        try await Self.withStartedSession { session in
+            let startedAt = Date()
+            let outcome = await session.run(try Self.approved("kill -9 $$"))
+            #expect(outcome == .sessionFailed || outcome == .terminalSessionRestarted,
+                    "the shell died without a truthful failure or restart result")
+            #expect(Date().timeIntervalSince(startedAt) < 15)
+
+            var recovered = false
+            for _ in 0..<20 where !recovered {
+                if case .succeeded = await session.run(try Self.approved("echo recovered")) {
+                    recovered = true
+                } else {
+                    try await Task.sleep(nanoseconds: 300_000_000)
+                }
+            }
+            #expect(recovered, "a shell that died on its own must still rebuild automatically")
+        }
+    }
+
+    @Test func theGeneratedZshrcTurnsOffExitOnEndOfInput() throws {
+        // The deadline escalation's second rung writes a raw Ctrl-D believing
+        // a command is still in the foreground. When the command has, in
+        // fact, already returned control to the shell — exactly the case
+        // when its own completion marker was simply missed — that Ctrl-D
+        // lands on an otherwise-idle interactive login shell, and a plain
+        // zsh exits on EOF at an empty prompt unless `ignoreeof` is set.
+        // Without it, the escalation meant to make a wedged command stop
+        // could instead kill the shell the guide depends on for every step
+        // after it. Only meaningful when the login shell is zsh, exactly the
+        // condition `privateZdotdir()` itself requires.
+        try #require(GuideAutopilotShellSession.loginShellIsZsh(),
+                      "this Mac's login shell is not zsh; the ZDOTDIR trick — and this guard — do not apply")
+        let zdotdir = try #require(GuideAutopilotShellSession.privateZdotdir())
+        let rc = try String(contentsOfFile: (zdotdir as NSString).appendingPathComponent(".zshrc"), encoding: .utf8)
+        #expect(rc.contains("ignoreeof"),
+                "the generated .zshrc must disable exit-on-EOF, or the deadline escalation can kill the shell it is trying to unstick")
     }
 
     @Test func hugeOutputStaysBounded() async throws {

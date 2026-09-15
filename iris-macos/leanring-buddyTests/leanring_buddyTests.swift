@@ -31,6 +31,12 @@ struct leanring_buddyTests {
         #expect(presentationDestination == .systemSettings)
     }
 
+    @Test func accessibilityRecoveryExplainsHowToReplaceAStaleIrisEntry() {
+        #expect(AccessibilityPermissionRecovery.repairInstructions.contains("minus button"))
+        #expect(AccessibilityPermissionRecovery.repairInstructions.contains("plus button"))
+        #expect(AccessibilityPermissionRecovery.repairInstructions.contains("this copy of Iris"))
+    }
+
     @Test func knownGrantedScreenRecordingPermissionSkipsTheGate() async throws {
         let shouldTreatPermissionAsGranted = WindowPositionManager.shouldTreatScreenRecordingPermissionAsGrantedForSessionLaunch(
             hasScreenRecordingPermissionNow: false,

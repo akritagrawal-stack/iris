@@ -3,13 +3,16 @@
 //  leanring-buddyTests
 //
 //  The on-demand edit tool's load-bearing SAFETY logic, tested without a
-//  screen. Two suites:
+//  screen. Three suites:
 //
 //    OnDemandEditPureLogicTests — pure/deterministic, no process spawning: the
 //      per-clone lock's mutual exclusion + canonicalization, the build-script
 //      guard, the synthesized changeId, the branch naming, the up-front
 //      too-large refusal, the fix/feature classifiers, the structural honesty
 //      of the result type, and the coordinator's fail-closed eligibility gate.
+//
+//    OnDemandEditHarnessPlanningTests - drives the bounded intake planner
+//      with a local transport, covering failures, timeout, stale replies, and retry.
 //
 //    OnDemandEditEngineTests — drives the REAL jailed loop through a scripted
 //      stand-in for the model against real temp git repos (the same shape the
@@ -29,6 +32,92 @@ import Testing
 
 @MainActor
 @Suite struct OnDemandEditPureLogicTests {
+
+    @Test func appSelectionDoesNotReplaceLiveAssessmentOrEditState() {
+        let replaceablePhases: [OnDemandEditPhase] = [
+            .pickApp, .describe, .done, .failed(reason: "failed"),
+            .notEligible(reason: "not eligible"), .blockedByModel(explanation: "blocked")
+        ]
+        for phase in replaceablePhases {
+            #expect(
+                OnDemandEditCoordinator.appSelectionMayRetargetCurrentFlow(
+                    phase: phase, isAssessingRequest: false, undoNeedsRecovery: false
+                )
+            )
+        }
+
+        let livePhases: [OnDemandEditPhase] = [
+            .clarifying, .presentingPlan, .awaitingStartConsent, .running,
+            .previewDiff, .committing, .awaitingRelaunchConsent, .relaunching,
+            .awaitingManifestConsent, .awaitingMachineCommandConsent, .delivering,
+            .awaitingSymptomConfirmation, .awaitingForceQuitConsent
+        ]
+        for phase in livePhases {
+            #expect(
+                !OnDemandEditCoordinator.appSelectionMayRetargetCurrentFlow(
+                    phase: phase, isAssessingRequest: false, undoNeedsRecovery: false
+                )
+            )
+        }
+
+        #expect(
+            !OnDemandEditCoordinator.appSelectionMayRetargetCurrentFlow(
+                phase: .describe, isAssessingRequest: true, undoNeedsRecovery: false
+            )
+        )
+        #expect(
+            !OnDemandEditCoordinator.appSelectionMayRetargetCurrentFlow(
+                phase: .pickApp, isAssessingRequest: false, undoNeedsRecovery: true
+            )
+        )
+    }
+
+    @Test func symptomUndoCopyMatchesInstalledAndCloneOnlyDelivery() {
+        let installedUndo = OnDemandEditCoordinator.symptomUndoAvailabilityMessage(
+            appName: "Notes", installedCopyReplaced: true, undoAvailable: true
+        )
+        #expect(installedUndo == "Undo to go back to the installed Notes, or try again.")
+
+        let cloneOnly = OnDemandEditCoordinator.symptomUndoAvailabilityMessage(
+            appName: "Notes", installedCopyReplaced: false, undoAvailable: false
+        )
+        #expect(cloneOnly.contains("installed Notes was left unchanged"))
+        #expect(cloneOnly.contains("Undo is unavailable"))
+        #expect(!cloneOnly.contains("Undo to go back"))
+
+        let missingRecovery = OnDemandEditCoordinator.symptomUndoAvailabilityMessage(
+            appName: "Notes", installedCopyReplaced: true, undoAvailable: false
+        )
+        #expect(missingRecovery.contains("installed app was replaced"))
+        #expect(missingRecovery.contains("complete recovery details"))
+    }
+
+    @Test func aBuiltArtifactDoesNotHideAnEligibleDeliveryRetry() {
+        #expect(OnDemandEditCoordinator.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: true,
+            hasSavedDeliveryIdentity: true,
+            phase: .done,
+            hasEditTask: false,
+            undoNeedsRecovery: false,
+            installedCopyReplaced: false
+        ))
+        #expect(!OnDemandEditCoordinator.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: true,
+            hasSavedDeliveryIdentity: true,
+            phase: .done,
+            hasEditTask: false,
+            undoNeedsRecovery: false,
+            installedCopyReplaced: true
+        ))
+        #expect(!OnDemandEditCoordinator.savedDeliveryRetryIsEligible(
+            savedDeliveryMayBeRetried: true,
+            hasSavedDeliveryIdentity: true,
+            phase: .awaitingSymptomConfirmation,
+            hasEditTask: false,
+            undoNeedsRecovery: false,
+            installedCopyReplaced: false
+        ))
+    }
 
     // MARK: - Per-clone lock (mutual exclusion + canonicalization)
 
@@ -105,6 +194,18 @@ import Testing
             "CMakeLists.txt",
             "deep/nested/gulpfile.js",
             "fragment.mk",
+            "Package.swift",
+            "setup.py",
+            "pyproject.toml",
+            "noxfile.py",
+            "tox.ini",
+            "nested/build.gradle",
+            "nested/build.gradle.kts",
+            "nested/settings.gradle",
+            "nested/settings.gradle.kts",
+            "gradlew",
+            "gradlew.bat",
+            "meson.build",
         ] {
             #expect(MaintainBuildScriptGuard.isBuildScriptFile(path), "\(path) should be a build-script file")
         }
@@ -118,15 +219,24 @@ import Testing
             "app/index.ts",
             "lib/util.js",
             "styles/app.css",
+            "docs/Package.swift.txt",
+            "docs/build.gradle.md",
+            "docs/gradlew.example",
+            "docs/meson.build.txt",
         ] {
             #expect(!MaintainBuildScriptGuard.isBuildScriptFile(path), "\(path) should NOT be a build-script file")
         }
     }
 
     @Test func buildScriptFilePathsFiltersOnlyTheOffenders() {
-        let changed = ["src/main.rs", "package.json", "README.md", "sub/build.rs"]
+        let changed = [
+            "src/main.rs", "package.json", "README.md", "sub/build.rs",
+            "Package.swift", "nested/build.gradle.kts", "docs/build.gradle.md"
+        ]
         let offenders = MaintainBuildScriptGuard.buildScriptFilePaths(inChangedPaths: changed)
-        #expect(offenders == ["package.json", "sub/build.rs"])
+        #expect(offenders == [
+            "package.json", "sub/build.rs", "Package.swift", "nested/build.gradle.kts"
+        ])
     }
 
     // MARK: - Synthesized changeId
@@ -490,6 +600,9 @@ import Testing
         let contents = try String(contentsOfFile: unwrappedRunLog.filePath, encoding: .utf8)
         #expect(contents.contains("demo (feature)"))
         #expect(contents.contains("Request: add a dark mode toggle"))
+        #expect(contents.contains("Iris version:"))
+        #expect(contents.contains("Iris build:"))
+        #expect(contents.contains("Run identifier:"))
         #expect(contents.contains("iris: Opening the settings view."))
         #expect(contents.contains("$ cat src/settings.tsx"))
         #expect(contents.contains("outcome: failed: ran out of steps"))
@@ -497,6 +610,29 @@ import Testing
         unwrappedRunLog.record("after close")
         let contentsAfterClose = try String(contentsOfFile: unwrappedRunLog.filePath, encoding: .utf8)
         #expect(!contentsAfterClose.contains("after close"))
+    }
+
+    @Test func runLogKeepsCatalogSlugsAndActivityInsideTheLogBoundary() throws {
+        let directory = Self.makeTemporaryDirectory()
+        let credential = "FAKE_RUN_LOG_CREDENTIAL_123456789"
+        let runLog = try #require(OnDemandEditRunLog(
+            appSlug: "../../outside\nINJECTED",
+            kindLabel: "feature\nINJECTED-KIND",
+            scrubbedRequest: "request\nAPI_TOKEN=\(credential)",
+            directoryPath: directory
+        ))
+
+        let logURL = URL(fileURLWithPath: runLog.filePath)
+        #expect(logURL.deletingLastPathComponent().standardizedFileURL.path
+            == URL(fileURLWithPath: directory).standardizedFileURL.path)
+        #expect(!logURL.lastPathComponent.contains("/"))
+
+        runLog.record("model output\nAPI_TOKEN=\(credential)")
+        runLog.finish(outcome: "failed: API_TOKEN=\(credential)")
+        let contents = try String(contentsOf: logURL, encoding: .utf8)
+        #expect(contents.contains("[REDACTED]"))
+        #expect(!contents.contains(credential))
+        #expect(!contents.contains("Iris on-demand edit — ../../outside\n"))
     }
 
     /// The runs directory is pruned oldest-first so it never grows unbounded —
@@ -689,6 +825,609 @@ import Testing
             .appendingPathComponent("iris-ondemand-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+}
+
+// MARK: - Harness planning lifecycle (local planner transport)
+
+/// The harness planner is a bounded intake phase. These tests drive the real
+/// coordinator state machine with a local HarnessModelSession transport, so a
+/// planner error, watchdog timeout, late reply, or retry never reaches a model
+/// service or the edit engine.
+@MainActor
+@Suite(.serialized)
+struct OnDemandEditHarnessPlanningTests {
+
+    private struct PlannerFailure: Error, Sendable {}
+
+    /// The failure and timeout paths must not depend on a valid model reply.
+    /// This recorder only counts local transport activity and delayed delivery.
+    private final class PlannerProbeRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        private var delayedReplies = 0
+
+        @discardableResult
+        func recordCall() -> Int {
+            lock.lock()
+            calls += 1
+            let callNumber = calls
+            lock.unlock()
+            return callNumber
+        }
+
+        func recordDelayedReply() {
+            lock.lock()
+            delayedReplies += 1
+            lock.unlock()
+        }
+
+        var callCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return calls
+        }
+
+        var delayedReplyCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return delayedReplies
+        }
+    }
+
+    private struct Fixture {
+        let rootURL: URL
+        let slug: String
+        let coordinator: OnDemandEditCoordinator
+    }
+
+    /// A factory failure is handled synchronously and leaves the request on the
+    /// describe card with an honest retry message.
+    @Test func plannerFactoryFailureLeavesDescribeReadyForRetry() throws {
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                throw PlannerFailure()
+            },
+            watchdogNanoseconds: 100_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(!fixture.coordinator.isAssessingRequest)
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(fixture.coordinator.statusLine
+            == "Iris could not finish the plan. Nothing was changed. Please try again.")
+        #expect(fixture.coordinator.presentedPlan == nil)
+    }
+
+    /// A planner response error uses the same fail-closed retry surface and
+    /// never advances into clarification or a pre-edit plan.
+    @Test func plannerReplyFailureLeavesDescribeReadyForRetry() async throws {
+        let recorder = PlannerProbeRecorder()
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                try Self.makeWorkflow { _ in
+                    recorder.recordCall()
+                    throw PlannerFailure()
+                }
+            },
+            watchdogNanoseconds: 1_000_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil { !fixture.coordinator.isAssessingRequest })
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(fixture.coordinator.statusLine?.contains("could not finish the plan in time") == true)
+        #expect(fixture.coordinator.statusLine?.contains("Nothing was changed") == true)
+        #expect(fixture.coordinator.presentedPlan == nil)
+        #expect(recorder.callCount == 1)
+    }
+
+    /// The watchdog is injected at a short interval so a stalled local planner
+    /// can be tested without waiting for the production three-minute ceiling.
+    @Test func plannerTimeoutLeavesDescribeReadyForRetry() async throws {
+        let recorder = PlannerProbeRecorder()
+        let planReply = try Self.encodedPlan(for: "add a dark mode toggle")
+        var timedOutWorkflow: HarnessFeatureWorkflow?
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                let workflow = try Self.makeWorkflow(transport: Self.delayedTransport(
+                    reply: planReply,
+                    delayNanoseconds: 250_000_000,
+                    recorder: recorder
+                ))
+                timedOutWorkflow = workflow
+                return workflow
+            },
+            watchdogNanoseconds: 20_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil { !fixture.coordinator.isAssessingRequest })
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(fixture.coordinator.statusLine?.contains("could not finish the plan in time") == true)
+        #expect(fixture.coordinator.presentedPlan == nil)
+        #expect(recorder.callCount == 1)
+        #expect(timedOutWorkflow?.modelSession.ledger.snapshot.status == .stopped(.failed))
+
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(timedOutWorkflow?.modelSession.ledger.snapshot.status == .stopped(.failed))
+    }
+
+    /// Backing out of a planning request stops its captured session before the
+    /// delayed transport settles. The stopped ledger remains authoritative and
+    /// must not admit a later request from the cancelled flow.
+    @Test func cancellingPlanningStopsItsCapturedLedgerBeforeLateSettlement() async throws {
+        let recorder = PlannerProbeRecorder()
+        let planReply = try Self.encodedPlan(for: "add a dark mode toggle")
+        var cancelledWorkflow: HarnessFeatureWorkflow?
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                let workflow = try Self.makeWorkflow(transport: Self.delayedTransport(
+                    reply: planReply,
+                    delayNanoseconds: 250_000_000,
+                    recorder: recorder
+                ))
+                cancelledWorkflow = workflow
+                return workflow
+            },
+            watchdogNanoseconds: 1_000_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil { recorder.callCount == 1 })
+        fixture.coordinator.cancel()
+        #expect(cancelledWorkflow?.modelSession.ledger.snapshot.status == .stopped(.cancelled))
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(cancelledWorkflow?.modelSession.ledger.snapshot.status == .stopped(.cancelled))
+        #expect(cancelledWorkflow?.modelSession.ledger.snapshot.admittedCallCount == 1)
+    }
+
+    /// A valid planner reply that arrives after the watchdog must not draw a
+    /// stale plan or change the retry state.
+    @Test func latePlannerReplyIsIgnoredAfterTimeout() async throws {
+        let recorder = PlannerProbeRecorder()
+        let planReply = try Self.encodedPlan(for: "add a dark mode toggle")
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                try Self.makeWorkflow(transport: Self.delayedTransport(
+                    reply: planReply,
+                    delayNanoseconds: 250_000_000,
+                    recorder: recorder
+                ))
+            },
+            watchdogNanoseconds: 20_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil { !fixture.coordinator.isAssessingRequest })
+        let statusAfterTimeout = fixture.coordinator.statusLine
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(fixture.coordinator.presentedPlan == nil)
+
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(!fixture.coordinator.isAssessingRequest)
+        #expect(fixture.coordinator.statusLine == statusAfterTimeout)
+        #expect(fixture.coordinator.presentedPlan == nil)
+    }
+
+    /// After a planner failure the reader can immediately submit a new request;
+    /// the second workflow is a fresh local planner and may present its plan.
+    @Test func immediateRetryStartsANewPlannerAndPresentsPlan() async throws {
+        let recorder = PlannerProbeRecorder()
+        let planReply = try Self.encodedPlan(for: "add a dark mode toggle")
+        var factoryCalls = 0
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                factoryCalls += 1
+                if factoryCalls == 1 {
+                    return try Self.makeWorkflow { _ in
+                        recorder.recordCall()
+                        throw PlannerFailure()
+                    }
+                }
+                return try Self.makeWorkflow { _ in
+                    recorder.recordCall()
+                    return HarnessModelReply(text: planReply)
+                }
+            },
+            watchdogNanoseconds: 1_000_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil { !fixture.coordinator.isAssessingRequest })
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(factoryCalls == 1)
+
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil {
+            fixture.coordinator.phase == .presentingPlan
+        })
+        #expect(factoryCalls == 2)
+        #expect(recorder.callCount == 2)
+        #expect(fixture.coordinator.presentedPlan != nil)
+    }
+
+    /// A re-submission replaces the planner immediately, without waiting for
+    /// its watchdog. The old session must become terminal before the new
+    /// workflow is installed, and its late transport settlement cannot alter
+    /// the new workflow's plan or ledger.
+    @Test func rapidResubmitRetiresThePriorPlannerLedger() async throws {
+        let recorder = PlannerProbeRecorder()
+        let firstRequest = "add the stale dark mode toggle"
+        let secondRequest = "add the replacement dark mode toggle"
+        let firstPlan = try Self.encodedPlan(
+            for: firstRequest,
+            desiredOutcome: "STALE RESUBMIT PLAN - must never be shown"
+        )
+        let secondPlan = try Self.encodedPlan(
+            for: secondRequest,
+            desiredOutcome: "REPLACEMENT PLAN - the current plan"
+        )
+        var factoryCalls = 0
+        var firstWorkflow: HarnessFeatureWorkflow?
+        var secondWorkflow: HarnessFeatureWorkflow?
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                factoryCalls += 1
+                if factoryCalls == 1 {
+                    let workflow = try Self.makeWorkflow { _ in
+                        _ = recorder.recordCall()
+                        return await Self.delayedReplyIgnoringCancellation(
+                            reply: firstPlan,
+                            delayNanoseconds: 250_000_000,
+                            recorder: recorder
+                        )
+                    }
+                    firstWorkflow = workflow
+                    return workflow
+                }
+                let workflow = try Self.makeWorkflow { _ in
+                    _ = recorder.recordCall()
+                    return HarnessModelReply(text: secondPlan)
+                }
+                secondWorkflow = workflow
+                return workflow
+            },
+            watchdogNanoseconds: 1_000_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest(firstRequest, kind: .feature))
+        #expect(await Self.waitUntil { recorder.callCount == 1 })
+        #expect(fixture.coordinator.describeRequest(secondRequest, kind: .feature))
+        #expect(firstWorkflow?.modelSession.ledger.snapshot.status == .stopped(.cancelled))
+        #expect(await Self.waitUntil {
+            fixture.coordinator.phase == .presentingPlan
+                && fixture.coordinator.presentedPlan?.approachSummary
+                    .contains("REPLACEMENT PLAN - the current plan") == true
+        })
+        #expect(factoryCalls == 2)
+        #expect(secondWorkflow?.modelSession.ledger.snapshot.status == .running)
+        let secondSnapshot = fixture.coordinator.harnessRunSnapshot
+
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(firstWorkflow?.modelSession.ledger.snapshot.status == .stopped(.cancelled))
+        #expect(firstWorkflow?.modelSession.ledger.snapshot.admittedCallCount == 1)
+        #expect(fixture.coordinator.harnessRunSnapshot == secondSnapshot)
+    }
+
+    /// The first planner transport deliberately ignores cancellation: it
+    /// settles after the watchdog and after the reader submits an immediate
+    /// retry. The retry must own the visible plan, workflow state and ledger;
+    /// the late first reply is stale and cannot overwrite any of them.
+    @Test func immediateRetryWinsOverLateCancellationIgnoringPlanner() async throws {
+        let recorder = PlannerProbeRecorder()
+        let firstRequest = "add the stale dark mode toggle"
+        let retryRequest = "add the retry-only dark mode toggle"
+        let firstPlan = try Self.encodedPlan(
+            for: firstRequest,
+            desiredOutcome: "STALE FIRST PLAN — must never be shown",
+            modelAssumption: "stale-first-assumption"
+        )
+        let retryPlan = try Self.encodedPlan(
+            for: retryRequest,
+            desiredOutcome: "RETRY PLAN — the current plan",
+            modelAssumption: "retry-only-assumption"
+        )
+        var factoryCalls = 0
+        var firstWorkflow: HarnessFeatureWorkflow?
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                factoryCalls += 1
+                if factoryCalls == 1 {
+                    let workflow = try Self.makeWorkflow { _ in
+                        _ = recorder.recordCall()
+                        // A DispatchQueue continuation is intentionally not
+                        // cancellation-aware. This mirrors a provider that
+                        // returns after the coordinator has already retried.
+                        return await Self.delayedReplyIgnoringCancellation(
+                            reply: firstPlan,
+                            delayNanoseconds: 250_000_000,
+                            recorder: recorder
+                        )
+                    }
+                    firstWorkflow = workflow
+                    return workflow
+                }
+                return try Self.makeWorkflow { _ in
+                    _ = recorder.recordCall()
+                    return HarnessModelReply(text: retryPlan)
+                }
+            },
+            watchdogNanoseconds: 20_000_000
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest(firstRequest, kind: .feature))
+        #expect(await Self.waitUntil {
+            !fixture.coordinator.isAssessingRequest && recorder.callCount == 1
+        })
+        #expect(fixture.coordinator.phase == .describe)
+        #expect(recorder.callCount == 1)
+        #expect(firstWorkflow?.modelSession.ledger.snapshot.status == .stopped(.failed))
+
+        // This is the user-visible retry while the first provider call is
+        // still physically in flight. It must create a fresh workflow.
+        #expect(fixture.coordinator.describeRequest(retryRequest, kind: .feature))
+        #expect(await Self.waitUntil {
+            fixture.coordinator.phase == .presentingPlan
+                && fixture.coordinator.presentedPlan?.approachSummary
+                    .contains("RETRY PLAN — the current plan") == true
+        })
+        #expect(factoryCalls == 2)
+        #expect(recorder.callCount == 2)
+        #expect(fixture.coordinator.proposedHarnessDefaults == ["retry-only-assumption"])
+
+        let planBeforeLateReply = fixture.coordinator.presentedPlan?.approachSummary
+        let stateBeforeLateReply = fixture.coordinator.proposedHarnessDefaults
+        let ledgerBeforeLateReply = fixture.coordinator.harnessRunSnapshot
+        #expect(ledgerBeforeLateReply?.admittedCallCount == 1)
+        #expect(ledgerBeforeLateReply?.settledCallCount == 1)
+
+        // The first continuation now settles. Its canceled workflow may
+        // finish internally, but its generation guard must make it inert at
+        // the coordinator boundary.
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(recorder.callCount == 2)
+        #expect(fixture.coordinator.phase == .presentingPlan)
+        #expect(fixture.coordinator.presentedPlan?.approachSummary == planBeforeLateReply)
+        #expect(fixture.coordinator.proposedHarnessDefaults == stateBeforeLateReply)
+        #expect(fixture.coordinator.harnessRunSnapshot == ledgerBeforeLateReply)
+        #expect(firstWorkflow?.modelSession.ledger.snapshot.status == .stopped(.failed))
+    }
+
+    /// A configured harness can temporarily have no workflow state (for
+    /// example while a stale planner task is being replaced). Driving the
+    /// real consent method in that window must fail closed before the edit
+    /// performer is even constructed or called.
+    @Test func confirmStartDoesNotCallPerformerWhenConfiguredWorkflowIsMissingState() async throws {
+        let recorder = PlannerProbeRecorder()
+        let firstPlan = try Self.encodedPlan(for: "add a dark mode toggle")
+        var retainedWorkflow: HarnessFeatureWorkflow?
+        let performerCalls = PlannerProbeRecorder()
+        let fixture = try Self.makeFixture(
+            makeWorkflow: {
+                let workflow = try Self.makeWorkflow { request in
+                    let callNumber = recorder.recordCall()
+                    if callNumber == 1 {
+                        return HarnessModelReply(text: firstPlan)
+                    }
+                    return await Self.delayedReplyIgnoringCancellation(
+                        reply: firstPlan,
+                        delayNanoseconds: 250_000_000,
+                        recorder: recorder
+                    )
+                }
+                retainedWorkflow = workflow
+                return workflow
+            },
+            watchdogNanoseconds: 1_000_000_000,
+            onPerformerCall: { _ = performerCalls.recordCall() }
+        )
+        defer { Self.removeFixture(fixture) }
+
+        Self.pickFixtureApp(fixture)
+        #expect(fixture.coordinator.describeRequest("add a dark mode toggle", kind: .feature))
+        #expect(await Self.waitUntil {
+            fixture.coordinator.phase == .presentingPlan
+        })
+        guard let workflow = retainedWorkflow else {
+            Issue.record("the configured harness workflow was not retained")
+            return
+        }
+
+        // HarnessFeatureWorkflow clears state synchronously at the beginning
+        // of a new plan. The delayed second plan leaves that state missing
+        // while the coordinator is still showing the previous plan.
+        let stalePlanningTask = Task { @MainActor in
+            _ = try? await workflow.plan(
+                request: "a newer stale planner request",
+                repositorySummary: "the local planner test repository"
+            )
+        }
+        defer { stalePlanningTask.cancel() }
+        #expect(await Self.waitUntil {
+            workflow.state == nil && recorder.callCount == 2
+        })
+
+        fixture.coordinator.confirmPlanAndStart()
+        #expect(fixture.coordinator.phase == .failed(
+            reason: "Iris could not finish its measured plan. Nothing was changed; try the request again."
+        ))
+        #expect(performerCalls.callCount == 0)
+        #expect(recorder.callCount == 2)
+
+        // Let the intentionally late transport settle before the fixture is
+        // removed. The stale workflow is allowed to finish, but must not move
+        // the coordinator away from its fail-closed result.
+        #expect(await Self.waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            recorder.delayedReplyCount == 1
+        })
+        #expect(fixture.coordinator.phase == .failed(
+            reason: "Iris could not finish its measured plan. Nothing was changed; try the request again."
+        ))
+        #expect(performerCalls.callCount == 0)
+    }
+
+    private static func makeWorkflow(
+        transport: @escaping HarnessModelSession.Transport
+    ) throws -> HarnessFeatureWorkflow {
+        let session = try HarnessModelSession(
+            implementationArm: .astraLow,
+            settings: .init(maxCalls: 3, maxInputBytes: 120_000),
+            maximumDurationNanoseconds: 5_000_000_000,
+            transport: transport
+        )
+        // These focused workflow fixtures model the coordinator after the
+        // reader selected an app. Keep that host fact explicit now that an
+        // unbound target is a no-model-call admission failure.
+        return HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
+    }
+
+    private static func delayedTransport(
+        reply: String,
+        delayNanoseconds: UInt64,
+        recorder: PlannerProbeRecorder
+    ) -> HarnessModelSession.Transport {
+        { _ in
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().asyncAfter(
+                    deadline: .now() + .nanoseconds(Int(delayNanoseconds))
+                ) {
+                    recorder.recordDelayedReply()
+                    continuation.resume(returning: HarnessModelReply(text: reply))
+                }
+            }
+        }
+    }
+
+    private static func delayedReplyIgnoringCancellation(
+        reply: String,
+        delayNanoseconds: UInt64,
+        recorder: PlannerProbeRecorder
+    ) async -> HarnessModelReply {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().asyncAfter(
+                deadline: .now() + .nanoseconds(Int(delayNanoseconds))
+            ) {
+                recorder.recordDelayedReply()
+                continuation.resume(returning: HarnessModelReply(text: reply))
+            }
+        }
+    }
+
+    private static func encodedPlan(
+        for request: String,
+        desiredOutcome: String = "The app shows the requested change.",
+        modelAssumption: String? = nil
+    ) throws -> String {
+        let brief = try HarnessTaskBrief(
+            userRequest: request,
+            desiredOutcome: desiredOutcome,
+            acceptanceCriteria: [
+                .init(id: "visible", statement: "The app shows the requested change.")
+            ],
+            milestones: [
+                .init(id: "change", title: "Make the requested change")
+            ],
+            modelAssumptions: modelAssumption.map {
+                [.init(id: "marker", statement: $0)]
+            } ?? []
+        )
+        return String(decoding: try JSONEncoder().encode(brief), as: UTF8.self)
+    }
+
+    private static func makeFixture(
+        makeWorkflow: @escaping () throws -> HarnessFeatureWorkflow,
+        watchdogNanoseconds: UInt64,
+        onPerformerCall: @escaping () -> Void = {}
+    ) throws -> Fixture {
+        let rootURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/iris-harness-planning-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let cloneURL = rootURL.appendingPathComponent("clone", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: cloneURL.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("{\"name\":\"planner-fixture\",\"scripts\":{\"build\":\"true\",\"test\":\"true\"}}\n".utf8)
+            .write(to: cloneURL.appendingPathComponent("package.json"))
+
+        let slug = "harness-planning-\(UUID().uuidString)"
+        let provenanceStore = InstallProvenanceStore(
+            userDefaults: UserDefaults(suiteName: "iris.harness.planning.\(UUID().uuidString)")!
+        )
+        provenanceStore.recordGuideSourceClone(
+            appSlug: slug, clonePath: cloneURL.path, pinnedCommit: nil, canonicalRepo: nil
+        )
+        let recoveryStore = DeliveredEditUndoRecoveryStore(
+            recordURL: rootURL.appendingPathComponent("recovery.json")
+        )
+        let coordinator = OnDemandEditCoordinator(
+            installProvenanceStore: provenanceStore,
+            patchQueue: PatchQueue(baseDirectoryURL: rootURL.appendingPathComponent("patches")),
+            clonePathLock: MaintainClonePathLock(),
+            topRequestsForApp: { _ in [] },
+            performOnDemandEdit: { _, _, _, _, _, _, _, _, _, _, _ in
+                onPerformerCall()
+                return .couldNotComplete(reason: "the harness planning test must not start an edit")
+            },
+            deliveredUndoRecoveryStore: recoveryStore,
+            appDeliveryReceiptStore: AppDeliveryReceiptStore(
+                baseDirectory: rootURL.appendingPathComponent("receipts")
+            ),
+            makeHarnessWorkflow: makeWorkflow,
+            harnessPlanningWatchdogNanoseconds: watchdogNanoseconds,
+            editReadiness: { .ready }
+        )
+        return Fixture(rootURL: rootURL, slug: slug, coordinator: coordinator)
+    }
+
+    private static func pickFixtureApp(_ fixture: Fixture) {
+        fixture.coordinator.pickApp(slug: fixture.slug, name: "Planner Fixture", stack: .nextjs)
+        #expect(fixture.coordinator.phase == .describe)
+    }
+
+    @discardableResult
+    private static func waitUntil(
+        timeoutNanoseconds: UInt64 = 2_000_000_000,
+        _ condition: () -> Bool
+    ) async -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return condition()
+    }
+
+    private static func removeFixture(_ fixture: Fixture) {
+        try? FileManager.default.removeItem(at: fixture.rootURL)
     }
 }
 
@@ -936,6 +1675,45 @@ struct OnDemandEditEngineTests {
             .trimmingCharacters(in: .whitespacesAndNewlines).contains("iris/edit-"))
     }
 
+    /// The unattended crash path has no reader approval surface for a model
+    /// build-file edit. Its shell command is still allowed to write inside the
+    /// exploration jail, so the shared pre-verification guard must restore the
+    /// file before the ordinary verifier sees it. The build command below
+    /// checks the exact pristine package content; if the crash path bypasses
+    /// the guard, verification fails instead of silently executing the edit.
+    @Test func aCrashFixBuildScriptEditIsRestoredBeforeVerification() async throws {
+        guard sandboxIsAvailable else { return }
+        let repo = try Self.makeBuggyRepo(extraFiles: ["package.json": "{\"name\":\"x\"}\n"])
+        defer { Self.removeRepo(repo) }
+
+        let fixer = MaintainTierCFixer(provider: ScriptedProvider([
+            "```bash\nprintf '{\"name\":\"model\"}\\n' > package.json\n```",
+            "```bash\nprintf 'FIXED\\n' > app.txt\n```",
+            "DONE",
+        ]))
+        let commands = VerificationCommands(
+            buildCommand: "test \"$(cat package.json)\" = '{\"name\":\"x\"}'",
+            testCommand: "test \"$(cat app.txt)\" = 'FIXED'",
+            commandSubdirectory: nil
+        )
+        let result = await fixer.attemptFix(
+            clonePath: repo,
+            appSlug: "demo",
+            appStack: .nextjs,
+            signatureId: "9999999999999999eeeeeeeeeeeeeeee",
+            crashEvidence: "SIGSEGV in demo",
+            verificationCommandsOverride: commands
+        )
+
+        guard case .fixedAndVerified = result else {
+            Issue.record("expected crash fix to verify after restoring its build-file edit, got \(result)")
+            return
+        }
+        #expect(Self.fileContents(repo, "package.json") == "{\"name\":\"x\"}")
+        #expect(Self.fileContents(repo, "app.txt") == "FIXED")
+        #expect(FileManager.default.fileExists(atPath: repo + "/.git"))
+    }
+
     /// The reader's Stop is honored at the next step boundary and undoes
     /// EVERYTHING: the model's tracked edit reverted, its untracked file
     /// removed, `.git` restored, no branch created — and the result is the
@@ -1066,6 +1844,105 @@ struct OnDemandEditEngineTests {
             let filler = readOnlyFillerCommands[index % readOnlyFillerCommands.count]
             return "Checking my work.\n```bash\n\(filler)\n```"
         }
+    }
+
+    /// Reproduces the complex-feature failure before the first edit: the
+    /// provider keeps rereading setup and transfer fixtures until Iris gives a
+    /// bounded steer, then emits the source edit the request needs.
+    // Keep this provider deliberately production-shaped. CodexMaintainProvider
+    // does not conform to HarnessExecutionObserving; the convergence bound is
+    // task-driven and must therefore apply to the real provider path too.
+    final class PreEditRereadingProvider: MaintainModelProviding {
+        let displayName = "pre-edit-rereader"
+        let identifier = "test-provider-pre-edit-rereader"
+        let isAvailable = true
+        private let respondsToNudge: Bool
+        private(set) var callCount = 0
+        private var emittedEdit = false
+        private let readOnlyCommands = [
+            "ls",
+            "cat README.md",
+            "find . -maxdepth 2 -type f -print",
+            "cat app.txt",
+            "cat health.txt",
+            "head app.txt",
+        ]
+
+        init(respondsToNudge: Bool) { self.respondsToNudge = respondsToNudge }
+
+        func respond(
+            systemPrompt: String, conversation: [MaintainChatTurn], maximumOutputTokens: Int
+        ) async throws -> String {
+            defer { callCount += 1 }
+            if respondsToNudge,
+               !emittedEdit,
+               conversation.contains(where: {
+                   $0.role == "user" && $0.text.contains(
+                       MaintainTierCFixer.preEditConvergenceNudgeMessage
+                   )
+               }) {
+                emittedEdit = true
+                return "Implementing the transfer surface now.\n```bash\nprintf 'TRANSFER READY\\n' > app.txt\n```"
+            }
+            if emittedEdit { return "The transfer surface is implemented.\nDONE" }
+            let command = readOnlyCommands[min(callCount, readOnlyCommands.count - 1)]
+            return "Checking the transfer setup.\n```bash\n\(command)\n```"
+        }
+    }
+
+    /// A real harness provider must either converge after the bounded steer or
+    /// stop before verification. It must never spend an open-ended prefix on
+    /// distinct repository reads.
+    @Test func complexFeatureRereadsAreSteeredIntoAnEdit() async throws {
+        guard sandboxIsAvailable else { return }
+        let repo = try Self.makeBuggyRepo()
+        defer { Self.removeRepo(repo) }
+
+        let provider = PreEditRereadingProvider(respondsToNudge: true)
+        let fixer = MaintainTierCFixer(provider: provider)
+        var observedEvents: [MaintainTierCProgressEvent] = []
+        let result = await fixer.attemptOnDemandEdit(
+            clonePath: repo, appSlug: "nitroai", appStack: .nextjs,
+            changeId: "4444444444444444dddddddddddddddd",
+            request: "add NitroAI notes and folders transfer controls", kind: .feature,
+            progressHandler: { observedEvents.append($0) },
+            verificationCommandsOverride: Self.fastCommands()
+        )
+
+        guard case .appliedAndRebuilt = result else {
+            Issue.record("expected bounded pre-edit steer to reach verification, got \(result)")
+            return
+        }
+        #expect(provider.callCount == MaintainTierCFixer.preEditInvestigationStepThreshold + 1)
+        #expect(observedEvents.contains { event in
+            if case .nudgedTowardConvergence = event { return true }
+            return false
+        })
+        #expect(Self.fileContents(repo, "app.txt") == "TRANSFER READY")
+    }
+
+    @Test func complexFeatureRereadsStopHonestlyWhenSteerIsIgnored() async throws {
+        guard sandboxIsAvailable else { return }
+        let repo = try Self.makeBuggyRepo()
+        defer { Self.removeRepo(repo) }
+
+        let provider = PreEditRereadingProvider(respondsToNudge: false)
+        let fixer = MaintainTierCFixer(provider: provider)
+        let result = await fixer.attemptOnDemandEdit(
+            clonePath: repo, appSlug: "nitroai", appStack: .nextjs,
+            changeId: "5555555555555555eeeeeeeeeeeeeeee",
+            request: "add NitroAI notes and folders transfer controls", kind: .feature,
+            verificationCommandsOverride: Self.fastCommands()
+        )
+
+        guard case .couldNotComplete(let reason) = result else {
+            Issue.record("expected bounded pre-edit stop, got \(result)")
+            return
+        }
+        #expect(reason == "the provider did not produce a source edit after bounded investigation")
+        #expect(provider.callCount == MaintainTierCFixer.preEditInvestigationStepThreshold * 2)
+        #expect(Self.fileContents(repo, "app.txt") == "BROKEN")
+        #expect(FileManager.default.fileExists(atPath: repo + "/.git"))
     }
 
     /// The Aug 22 dogfood failure, replayed and fixed: an agent that finished

@@ -82,6 +82,27 @@ struct SavedEditDeliveryChecks {
         let archives = try files.contentsOfDirectory(at: root.appendingPathComponent("failed-edit-reviews"), includingPropertiesForKeys: nil)
         try require(archives.count == 1 && OnDemandEditInterruptedRunRecovery.recordOnDisk(recordPath: archives[0].path) == held, "held review was not archived exactly")
         print("PASS failed edits report dirty or unknown source and retain review-held recovery across reload")
+        let boundedState = root.appendingPathComponent("bounded-state")
+        let boundedRecoveryPath = boundedState.appendingPathComponent("bounded-recovery.json").path
+        let boundedDirectory = boundedState.appendingPathComponent("failed-edit-reviews")
+        try files.createDirectory(at: boundedDirectory, withIntermediateDirectories: true)
+        for index in 0..<OnDemandEditInterruptedRunRecovery.maximumFailedReviewArchives {
+            try Data("archive-\(index)".utf8).write(
+                to: boundedDirectory.appendingPathComponent("\(index).json"), options: .withoutOverwriting)
+        }
+        let bounded = OnDemandEditInFlightRecord(appSlug: "fixture", clonePath: clone.path,
+            baseCommit: String(repeating: "b", count: 40), pathsIrisEdited: ["source.txt"],
+            startedAt: Date(timeIntervalSince1970: 1_700_000_001), runLogPath: nil,
+            whatIrisWasWaitingFor: "review", requiresReviewBeforeRecovery: true)
+        OnDemandEditInterruptedRunRecovery.remember(bounded, recordPath: boundedRecoveryPath)
+        do {
+            try OnDemandEditInterruptedRunRecovery.archiveHeldReviewBeforeNewRun(recordPath: boundedRecoveryPath)
+            throw NSError(domain: "failed-review-retention-was-unbounded", code: 1)
+        } catch OnDemandEditInterruptedRunRecovery.FailedReviewArchiveError.archiveLimitExceeded {
+            try require(OnDemandEditInterruptedRunRecovery.recordOnDisk(recordPath: boundedRecoveryPath) == bounded,
+                "archive cap failure discarded the active failed candidate")
+        }
+        print("PASS failed review archive cap preserves the active candidate when storage is full")
         var turns = [MaintainChatTurn(role: "user", text: "runtime observation", attachedImagePNGData: Data([1])),
             MaintainChatTurn(role: "assistant", text: "Observed the Settings panel"),
             MaintainChatTurn(role: "user", text: "explicit later attachment", attachedImagePNGData: Data([2]))]

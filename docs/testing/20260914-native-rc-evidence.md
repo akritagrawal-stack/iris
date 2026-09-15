@@ -772,6 +772,14 @@ live `Iris Test` process, then was quit cleanly. This is a bounded startup
 smoke only; without native screen interaction it does not establish the
 Kneecap, spatial, or permission journeys.
 
+The signed RC was relaunched with its isolated Test onboarding state reset.
+Using macOS UI scripting, the visible Setup panel's Start control was clicked;
+the panel transitioned to the idle companion state and displayed the real
+overlay eye with the “press control + option and ask me anything” guidance.
+This is the first recorded native panel activation and start interaction on
+v20. It does not yet prove a live provider response or a full click-through
+spatial journey.
+
 ### 2026-09-14 native capture probe
 
 The signed v20 candidate was launched and a native `screencapture` probe was

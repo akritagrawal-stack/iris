@@ -588,6 +588,16 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+### 2026-09-14 workspace revalidation and cancellation fix
+
+An isolated rerun exposed two issues in `GuideSourceWorkspaceServiceTests`:
+revalidation refreshed the staged fingerprint internally but returned the old
+binding, and the cancellation tests could observe the scripted executor before
+its suspended probe was scheduled. Revalidation now returns the refreshed
+binding, and the tests wait for the suspension deterministically. The suite
+then passed `8/8`. The correction was rebuilt into
+`/Users/Shared/Iris-RC-20260914-v18/Iris Test.app`.
+
 ### 2026-09-14 review-context wording regression fix
 
 The review/context rerun initially caught a stale assertion: omitted repository

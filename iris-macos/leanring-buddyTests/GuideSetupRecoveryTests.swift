@@ -465,7 +465,9 @@ final class GuideSetupWorkspaceScriptedExecutor: GuideSourceWorkspaceCommandExec
         }
 
         let output: String
-        if arguments.contains("remote") {
+        if arguments.contains("--show-toplevel") {
+            output = workingDirectory.path + "\n"
+        } else if arguments.contains("remote") {
             output = origin + "\n"
         } else if arguments.contains("status") {
             output = ""
@@ -875,8 +877,9 @@ struct GuideSourceWorkspaceServiceTests {
             ownedProjectsRoot: fixture.ownedRoot
         )
         let inspectionTask = Task { await service.inspect(request) }
-        for _ in 0..<200 where !executor.hasPendingRun {
+        for _ in 0..<2_000 where !executor.hasPendingRun {
             await Task.yield()
+            try? await Task.sleep(nanoseconds: 1_000_000)
         }
         #expect(executor.hasPendingRun)
         service.cancel(runID: fixture.runID)
@@ -920,8 +923,9 @@ struct GuideSourceWorkspaceServiceTests {
         )
 
         let firstInspection = Task { await service.inspect(firstRequest) }
-        for _ in 0..<200 where !executor.hasPendingRun {
+        for _ in 0..<2_000 where !executor.hasPendingRun {
             await Task.yield()
+            try? await Task.sleep(nanoseconds: 1_000_000)
         }
         #expect(executor.hasPendingRun)
         service.cancel(runID: firstRequest.runID)
@@ -935,6 +939,8 @@ struct GuideSourceWorkspaceServiceTests {
             return
         }
         #expect(identity.canonicalPath == fixture.source.path)
-        #expect(executor.arguments.count == 6)
+        // The cancelled first probe is recorded before the fresh retry's six
+        // Git probes, so the scripted executor sees seven invocations total.
+        #expect(executor.arguments.count == 7)
     }
 }

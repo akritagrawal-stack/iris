@@ -751,7 +751,23 @@ nonisolated final class GuideSourceWorkspaceService: @unchecked Sendable {
                     "linked worktree identity changed"
                 )
             }
-            return .success(binding)
+            let refreshedBinding = GuideSourceWorkspaceBinding(
+                runID: binding.runID,
+                guideID: binding.guideID,
+                guideRevision: binding.guideRevision,
+                projectID: binding.projectID,
+                original: binding.original,
+                staged: staged,
+                originalPath: binding.originalPath,
+                stagedPath: binding.stagedPath,
+                expectedOrigin: binding.expectedOrigin,
+                expectedCommit: binding.expectedCommit,
+                ownershipMarker: binding.ownershipMarker,
+                commonGitDirectory: binding.commonGitDirectory,
+                linkedWorktreeGitDirectory: binding.linkedWorktreeGitDirectory,
+                isIsolated: binding.isIsolated
+            )
+            return .success(refreshedBinding)
         } catch let error as GuideSourceWorkspacePreparationError {
             return .failure(error)
         } catch is CancellationError {

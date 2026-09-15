@@ -441,3 +441,13 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 - This strengthens source/native test coverage. It is not a substitute for
   the permission-restored live screen-capture journey or physical-device
   acceptance.
+
+### 2026-09-14 installed-delivery history regression rerun
+
+- The native Xcode scheme ran `AppRelaunchInstalledDeliveryTests` with all
+  `12/12` tests passing. The run covered clone-path exclusion, application
+  copy selection, in-place replacement, injected Undo recovery, interrupted
+  swap reconciliation, stale prepared delivery retention, and bundle-ID
+  backup paths.
+- This is focused native decision and filesystem evidence. It does not prove a
+  live provider-generated feature or physical-device continuity.

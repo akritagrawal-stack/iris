@@ -1430,14 +1430,14 @@ final class CompanionManager: ObservableObject {
     /// Lets a guide step fly the eye without the guide controller knowing that
     /// overlays, screens or AppKit exist.
     ///
-    /// The eye is already the app's one way of saying "there" — the assistant's
-    /// `[POINT:…]` answers use exactly these two properties — so a guide step
-    /// reuses it rather than inventing a second kind of arrow.
+    /// The eye is already the app's one way of saying "there". A guide step
+    /// reuses the same destination properties as model-backed chat pointing
+    /// rather than inventing a second kind of arrow.
     private func connectTheGuideToTheEye() {
-        // Wire the model-based locator so the eye can fly to a control the
-        // accessibility tree can't name (a System Settings toggle, a web
-        // button) — the same capture → [POINT] → global-coords path the
-        // assistant's own pointing uses. Only called when the pointing ladder
+        // Wire the dedicated spatial-model locator so the eye can fly to a
+        // control the accessibility tree can't name (a System Settings toggle,
+        // a web button). It returns a structured model coordinate which is
+        // mapped to global screen points. Only called when the pointing ladder
         // has already decided the model may look (non-sensitive step, screen
         // recording granted).
         guideSessionController.targetLocator = SystemGuideTargetLocator(askTheModel: { [weak self] stepTitle, stepBody in
@@ -2837,10 +2837,9 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Convert a parsed [POINT] screenshot-pixel coordinate to AppKit global
-    /// bottom-left-origin points — the space `frame(of:)`/OverlayWindow use — via
-    /// the matching screen capture. The same math as the assistant's [POINT]
-    /// flight in `sendUserMessageToClaudeWithScreenshot`, kept in one place.
+    /// Convert a legacy conversational `[POINT]` screenshot-pixel coordinate to
+    /// AppKit global bottom-left-origin points. Explicit spatial requests never
+    /// use this fallback; it remains only for non-spatial compatibility replies.
     private static func globalScreenLocation(
         fromScreenshotPoint pointCoordinate: CGPoint,
         screenNumber: Int?,
@@ -3082,10 +3081,10 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Captures a screenshot, sends it along with the typed message to Claude,
-    /// and publishes the response text for the panel to display.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
-    /// the buddy to fly to that element on screen.
+    /// Captures the current screen as context for the typed message and
+    /// publishes the response text for the panel to display. For an explicit
+    /// UI-location request, the coordinate is resolved before this response by
+    /// `ElementLocationDetector`; the conversational response cannot choose it.
     private func sendUserMessageToClaudeWithScreenshot(messageText: String) {
         currentResponseTask?.cancel()
         let responseIdentifier = UUID()

@@ -844,3 +844,9 @@ screen-help changes. Xcode reported `BUILD SUCCEEDED`; deep strict signature
 verification passed. The artifact is `/Users/Shared/Iris-RC-20260914-v22/Iris
 Test.app` with executable SHA-256
 `0b73d4205417c98112f9a6775fa0eb9599c5ede1496264bab52c1ed133aca8af`.
+
+The signed integrated RC was rebuilt as v23 after exposing the Screen Content
+row in the permission card. Xcode reported `BUILD SUCCEEDED`; deep strict
+signature verification passed. The artifact is `/Users/Shared/Iris-RC-20260914-v23/Iris
+Test.app` with executable SHA-256
+`0fd55e4d4d468cc521dfa139aa4c5d3f320fbd3d1bcfc5364cebdcd77b037d5b`.

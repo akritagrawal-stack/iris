@@ -588,6 +588,16 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+### 2026-09-14 cancellation and spend regression rerun
+
+The native scheme reran `ChatActionCancellationTests` and
+`AssistantSpendLedgerTests`; all `16/16` tests passed. Coverage includes
+approval cancellation, superseding stale work, clipboard safety, autonomy
+floor preservation, relaunch persistence, split-stream usage, duplicate-delta
+protection, dated model pricing, unknown-cost honesty, and sub-cent precision.
+This is native accounting/safety evidence; live provider settlement remains
+open.
+
 ### 2026-09-14 installed-delivery and Undo regression rerun
 
 The native scheme reran `AppRelaunchInstalledDeliveryTests`; all `12/12`

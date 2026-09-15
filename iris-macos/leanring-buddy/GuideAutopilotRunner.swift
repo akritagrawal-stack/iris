@@ -662,6 +662,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
     private var fixProposer: GuideAutopilotFixProposing
     /// Who is paying, and what Iris may fall back to. See the type's own notes.
     private let fixLadderFunding: GuideAutopilotFixLadderFunding
+    private let autonomyGranted: @Sendable () -> Bool
     private let guideContext: GuideAutopilotGuideContext
     /// The perceived-pace floor. Real execution is untouched; this only holds a
     /// fast command's result line so the install reads as deliberate work.
@@ -776,6 +777,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         guideContext: GuideAutopilotGuideContext,
         pacing: GuideAutopilotPacing = .humanPaced,
         fixLadderFunding: GuideAutopilotFixLadderFunding = .publiksFundedTier,
+        autonomyGranted: @escaping @Sendable () -> Bool = { AutopilotAutonomyGrant.shared.isGranted },
         sourceMetadataReader: @escaping @Sendable (String) async -> GuideAutopilotSourceCheckoutMetadata =
             GuideAutopilotSourceCheckoutRefusal.readFreshMetadata
     ) {
@@ -783,6 +785,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         self.longRunningSession = longRunningSession
         self.fixProposer = fixProposer
         self.fixLadderFunding = fixLadderFunding
+        self.autonomyGranted = autonomyGranted
         self.guideContext = guideContext
         self.pacing = pacing
         self.sourceMetadataReader = sourceMetadataReader
@@ -1083,10 +1086,10 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
         _ command: String,
         inWorkingDirectory workingDirectory: String
     ) async -> GuideCommandOutcome {
-        switch GuideAutopilotRiskAssessment.assess(command, inWorkingDirectory: workingDirectory) {
+        switch GuideAutopilotRiskAssessment.assess(command, inWorkingDirectory: workingDirectory, autonomyGranted: autonomyGranted()) {
         case .runsWithoutAsking:
             guard let approved = GuideAutopilotRiskAssessment.approve(
-                command, inWorkingDirectory: workingDirectory
+                command, inWorkingDirectory: workingDirectory, autonomyGranted: autonomyGranted()
             ) else {
                 return .stopped
             }
@@ -1097,7 +1100,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             )
             guard approvedToRun,
                   let approved = GuideAutopilotRiskAssessment.approveAfterAReaderTap(
-                      command, inWorkingDirectory: workingDirectory
+                      command, inWorkingDirectory: workingDirectory, autonomyGranted: autonomyGranted()
                   ) else {
                 return .skippedByReader
             }
@@ -1518,10 +1521,10 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
                 return .skippedByReader
             }
         }
-        switch GuideAutopilotRiskAssessment.assess(fixCommand, inWorkingDirectory: folder) {
+        switch GuideAutopilotRiskAssessment.assess(fixCommand, inWorkingDirectory: folder, autonomyGranted: autonomyGranted()) {
         case .runsWithoutAsking:
             guard let approved = GuideAutopilotRiskAssessment.approve(
-                fixCommand, inWorkingDirectory: folder
+                fixCommand, inWorkingDirectory: folder, autonomyGranted: autonomyGranted()
             ) else {
                 return .stopped
             }
@@ -1532,7 +1535,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             )
             guard approvedToRun,
                   let approved = GuideAutopilotRiskAssessment.approveAfterAReaderTap(
-                      fixCommand, inWorkingDirectory: folder
+                      fixCommand, inWorkingDirectory: folder, autonomyGranted: autonomyGranted()
                   ) else {
                 return .skippedByReader
             }
@@ -1915,7 +1918,7 @@ final class GuideAutopilotRunner: ObservableObject, AutopilotTerminalPresenting 
             folder = step.workingDirectory ?? longRunningSession.currentWorkingDirectory
         }
         guard let approved = GuideAutopilotRiskAssessment.approve(
-            command, inWorkingDirectory: folder
+            command, inWorkingDirectory: folder, autonomyGranted: autonomyGranted()
         ) else {
             transcript.append(.explanation(
                 text: "Iris won't start this one automatically — run it yourself when you're ready."

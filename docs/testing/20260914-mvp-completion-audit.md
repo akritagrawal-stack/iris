@@ -59,6 +59,12 @@ headless, browser, or package tests.
 - Result: **59/59** tests passed across 4 suites, including cancellation before command execution, late/failed usage settlement, dated-model pricing, cache tiers, unknown-cost honesty, relaunch persistence, stale metadata invalidation, and long-running ownership.
 - This is native accounting and safety evidence; live provider pricing and execution remain open.
 
+## Fresh NitroAI transfer oracle rerun (2026-09-14)
+
+- The pinned NitroAI Vitest oracle ran against `/Users/akrit/NitroAI` with `IRIS_NITROAI_TARGET_ROOT` set explicitly.
+- Result: **2/2 tests passed** in 14.50 seconds, retaining coverage for the compound import/export edge cases and restart/atomicity behavior.
+- This verifies the target application's transfer contract without claiming Iris generated or delivered the feature live.
+
 ## Permission-pane recheck (2026-09-14)
 
 - macOS Accessibility settings visibly list both `Iris` and `Iris Test` as registered applications.

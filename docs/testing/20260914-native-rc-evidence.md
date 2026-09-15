@@ -730,6 +730,17 @@ These checks cover the retained routing, lifecycle, review, storage, and hub
 contracts; they do not close native permission, live-provider, or physical
 phone acceptance.
 
+### 2026-09-14 signed integrated RC v20
+
+The integration source was built with the available stable local identity
+`Iris Local Code Signing`; Xcode reported `BUILD SUCCEEDED`. The candidate is
+`/Users/Shared/Iris-RC-20260914-v20/Iris Test.app`. Deep strict signature
+verification passed, with identifier `com.publikhq.iris.test` and executable
+SHA-256 `df43bf18dcc5a1615f81f6cb02cd381e898283d3dde54b9e0e35d70042f78900`.
+This makes a stable permission-bearing candidate available without replacing
+the normal Iris installation; Screen Recording and Accessibility consent
+still need to be granted and exercised by a native UI operator.
+
 The fresh compile-gated feature-host run also completed successfully with its
 explicit scratch directory and `IRIS_HARNESS_SCRATCH` binding. It reported
 passing usage attribution, review-reserve, command-freshness, repair-window,

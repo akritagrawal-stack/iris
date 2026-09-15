@@ -505,3 +505,12 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   approval work for persisted behavior.
 - This is focused native cancellation evidence. Live provider late-settlement
   and physical-device acceptance remain separate gates.
+
+### 2026-09-14 candidate-evidence receipt rerun
+
+- The native scheme ran `EditVerificationReceiptTests`; all `6/6` tests
+  passed. These checks ensure skipped checks, build-only results, partial
+  passes, and failures remain explicit, and that packaging or installation
+  never gets reported as behavior proof without the required evidence.
+- This is focused native verification-boundary evidence. Live provider
+  delivery and physical-device acceptance remain separate gates.

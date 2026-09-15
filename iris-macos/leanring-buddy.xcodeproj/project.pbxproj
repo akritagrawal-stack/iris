@@ -50,7 +50,6 @@
 				CatalogMacCompatibilityTests.swift,
 				ChatTranscriptResetTests.swift,
 				CodexEditModelSelectionTests.swift,
-				EditVerificationReceiptTests.swift,
 				GuidePresentationRegressionTests.swift,
 				KeychainReadPolicyTests.swift,
 				OverlayEyeDragTests.swift,

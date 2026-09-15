@@ -588,6 +588,15 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+### 2026-09-14 run usage attribution rerun
+
+The native scheme reran `IrisTestRunUsageTests`; all `7/7` tests passed. These
+checks preserve route and lifecycle dimensions, admitted versus rejected
+requests, reserved input bytes, failed transport counts, and unknown usage
+measurements without converting them to false zero-cost results. This is
+source/native accounting evidence; live provider pricing and settlement remain
+open.
+
 ### 2026-09-14 cancellation and spend regression rerun
 
 The native scheme reran `ChatActionCancellationTests` and

@@ -776,11 +776,11 @@ Kneecap, spatial, or permission journeys.
 
 The signed v20 candidate was launched and a native `screencapture` probe was
 taken before quitting it. The probe produced a valid PNG container but the
-entire 3024x1964 frame was black. Although the process-level preflight APIs
-reported Accessibility and Screen Recording as true for the probe process,
-this does not prove that the Iris bundle can capture or inspect the desktop.
-The app-specific Screen Recording/Accessibility path therefore remains a
-live acceptance failure requiring native UI diagnosis.
+entire 3024x1964 frame was black; System Events reported the app as not
+frontmost with zero windows. The bundle is a menu-bar app, so this is
+consistent with a launch smoke that never opened its panel, not proof of a
+Screen Recording failure. Native panel activation and screen interaction
+remain unverified and require the actual UI operator path.
 
 The post-change native Kneecap subset was rerun against the integrated source:
 `Bug7MissingToolSelfInstallEndToEndTests` and

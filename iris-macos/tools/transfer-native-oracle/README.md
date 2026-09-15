@@ -51,10 +51,12 @@ against a generated feature.
 
 The staged entry imports both the existing persistence suite and this oracle.
 Run from the isolated NitroAI clone using its installed Vitest runtime and an
-explicit approved fixture root. There is no user-profile default:
+explicit approved fixture root. The oracle includes its own dependency-free
+Vitest config because the test file lives outside the NitroAI checkout. There
+is no user-profile default:
 
 ```sh
-IRIS_NITROAI_TARGET_ROOT=/approved/fixture-root node --no-experimental-webstorage node_modules/vitest/vitest.mjs run server/desktop-persistence.test.mjs --maxWorkers=1
+IRIS_NITROAI_TARGET_ROOT=/approved/fixture-root node --no-experimental-webstorage node_modules/vitest/vitest.mjs run --root "$IRIS_NITROAI_TARGET_ROOT" --config /path/to/iris/iris-macos/tools/transfer-native-oracle/vitest.config.mjs --maxWorkers=1
 ```
 
 The same `IRIS_NITROAI_TARGET_ROOT` value must be present in the environment

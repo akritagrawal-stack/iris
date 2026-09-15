@@ -527,3 +527,21 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 ### 2026-09-14 guide setup recovery regression rerun
 
 Ran the native Xcode `Iris Test` scheme against `leanring-buddyTests/GuideSetupRecoveryTests` with signing disabled. Swift Testing executed 7 tests in 1 suite and all passed. Coverage includes diversion into setup when prerequisites are missing, skip/setup branching, recheck failure staying in setup, successful recheck returning to the saved guide step, and setup progress preserving guide progress. This verifies the state transition contract in the harness; it does not establish live provider, installed-app, or physical-device acceptance.
+
+### 2026-09-14 NitroAI transfer oracle rerun
+
+- The transfer oracle ran against the explicitly approved `/Users/akrit/NitroAI`
+  target using the repository's installed Electron and Vitest runtime. Both
+  tests passed (`2/2` in `1` file, 21.2 seconds): readiness through the real
+  note/folder UI and the compound transfer journey covering identity collisions,
+  equal-name/equal-time folders, repeated import, malformed and unsupported
+  envelopes, dangling relationships, atomic abort, restart persistence, and
+  changed same-ID content.
+- The oracle now has a dependency-free config in
+  `iris-macos/tools/transfer-native-oracle/vitest.config.mjs`, so the external
+  test file is discoverable without changing NitroAI's test configuration.
+- This is fresh direct NitroAI computer-process/oracle evidence. It proves the
+  target app's transfer contract and edge cases, but does not prove that Iris's
+  live provider generated, delivered, relaunched, or rechecked the feature.
+  Provider-mediated Iris transfer and native installed-app readback remain open
+  gates.

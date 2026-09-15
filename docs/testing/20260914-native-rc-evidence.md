@@ -553,3 +553,7 @@ The harness feature host `--checks` run now covers four completed pre-edit reply
 ### 2026-09-14 integrated package regression rerun
 
 The integrated harness package ran `swift test --package-path iris-macos/tools/harness-tests`: Swift Testing executed 161 tests in 7 suites and all passed. The mobile install hub ran `node --test iris-mobile/test/*.test.mjs`: 19/19 passed. These are source/package regressions; they do not establish live provider, installed-app, or physical-device acceptance.
+
+### 2026-09-14 install and spatial focused rerun
+
+The native `Iris Test` scheme executed the combined `GuideSetupRecoveryTests` and `SpatialGuidanceRegressionTests` selection: 14 tests in 2 suites, all passed. This rerun confirms setup diversion/resume/recheck behavior and semantic spatial target freshness across the integrated source. It remains source/native test evidence only; live provider screen capture, permissions, and physical-device install are still open gates.

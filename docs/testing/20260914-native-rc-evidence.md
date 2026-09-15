@@ -704,3 +704,22 @@ scheme and signing disabled. The resulting candidate is
 `712dcf81f18c7bc024fa77fc9c5374a9d3ab3d88a6cae5239b5671e83db23a65`). This
 ties the latest source and test changes to a named artifact. It does not close
 the live-provider, macOS permission, or physical-iPhone acceptance gates.
+
+### 2026-09-14 long-running autonomy-gate regression
+
+The isolated native `GuideAutopilotRunnerTests` suite passed `36/36` after
+fixing a safety and reliability gap: a risky long-running command is assessed
+with the runner's actual autonomy grant before it can claim the side-session
+ownership lane. A refused command therefore leaves the lane available for the
+next legitimate step, and process-wide grant state cannot leak into tests.
+This is focused native evidence; it does not replace live UI or device
+acceptance.
+
+### 2026-09-14 integrated RC v19
+
+The autonomy-gate fix was built with the `Iris Test` scheme and
+`CODE_SIGNING_ALLOWED=NO`; Xcode reported `BUILD SUCCEEDED`. The named
+artifact is `/Users/Shared/Iris-RC-20260914-v19/Iris Test.app` with executable
+SHA-256 `712dcf81f18c7bc024fa77fc9c5374a9d3ab3d88a6cae5239b5671e83db23a65`.
+This is an unsigned test candidate, so it is not evidence that macOS TCC or
+installed-app acceptance is complete.

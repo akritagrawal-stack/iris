@@ -53,6 +53,7 @@ struct CompanionPanelView: View {
     /// and never repopulated — a saved key is never echoed back into the UI.
     @State private var anthropicAPIKeyInput: String = ""
     @State private var isShowingEmailAndPasswordSignIn: Bool = false
+    @State private var isRetryingSavedSession = false
     @State private var emailAddressInput: String = ""
     @State private var passwordInput: String = ""
 
@@ -186,6 +187,20 @@ struct CompanionPanelView: View {
         // instant it presents, so it shows once and never ambushes them again.
         .onAppear {
             autoPresentTheSetupHelperIfThisIsTheFirstReadyLaunch()
+            // Re-measure the panel to its real content once SwiftUI has actually
+            // mounted and laid this view out. On a cold launch the panel is
+            // positioned and shown (`positionPanelBelowStatusItem`) the same
+            // runloop turn its hosting view is created, before the content has a
+            // fitting size — so it comes up at the fallback 380pt height, which
+            // clips everything below the fold of the scroll view (the guide
+            // picker, the installed apps, the account section) with no visible
+            // scrollbar. The reported "degraded" panel after a relaunch. The
+            // resize path already exists for content that grows later; firing it
+            // once here, on the next runloop turn so layout has settled, sizes
+            // the panel to the whole home instead of the pre-layout default.
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .clickyResizePanelToContent, object: nil)
+            }
         }
     }
 
@@ -271,8 +286,48 @@ struct CompanionPanelView: View {
                 // "It is hard to know which repos to install after the first
                 // one." The installed apps are above; this is where the reader
                 // finds the rest of the catalog and picks the next one.
-                DiscoverAppsSectionView(appInventoryService: appInventoryService)
+                DiscoverAppsSectionView(
+                    appInventoryService: appInventoryService,
+                    onInstallWithIris: { discoverableEntry in
+                        // The catalog names the guide's slug; it is the app's
+                        // own slug for every listing today, but the catalog is
+                        // the authority if that ever differs.
+                        let guideSlugToOpen = discoverableEntry.guideSlug ?? discoverableEntry.slug
+                        Task { await guideSessionController.openLatestVersionOfGuide(slug: guideSlugToOpen) }
+                    }
+                )
                     .padding(.horizontal, 16)
+
+                if IrisTestEnvironment.isEnabled
+                    || Bundle.main.bundleURL.path.contains("/Build/Products/Test/") {
+                    Spacer()
+                        .frame(height: 14)
+
+                    SavedAppVersionsSection(
+                        receiptStore: companionManager.savedAppVersionsReceiptStore,
+                        onUndoReceipt: { receipt in
+                            companionManager.requestUndoSavedAppVersion(receipt)
+                        },
+                        testProjects: companionManager.savedTestProjects,
+                        previewTestBackups: { project in
+                            await companionManager.previewSavedTestBackups(for: project)
+                        },
+                        onCleanupTestBackups: { project in
+                            await companionManager.cleanupSavedTestBackups(for: project)
+                        }
+                    )
+                        .padding(.horizontal, 16)
+
+                    // A stopped Undo explicitly tells the reader to find its
+                    // recovery details in Settings. Keep that promise here;
+                    // the section renders nothing unless a stopped Undo left
+                    // recovery files behind.
+                    SavedUndoRecoverySection(
+                        coordinator: companionManager.onDemandEditCoordinator
+                    )
+                        .padding(.top, 10)
+                        .padding(.horizontal, 16)
+                }
 
                 Spacer()
                     .frame(height: 14)
@@ -525,26 +580,34 @@ struct CompanionPanelView: View {
                         .foregroundColor(DS.Colors.success)
                 }
             } else {
-                HStack(spacing: 6) {
-                    Button(action: {
-                        // Triggers the system accessibility prompt (AXIsProcessTrustedWithOptions)
-                        // on first attempt, then opens System Settings on subsequent attempts.
-                        WindowPositionManager.requestAccessibilityPermission()
-                    }) {
-                        Text("Grant")
-                    }
-                    .irisPrimaryPill(isFullWidth: false, isCompact: true)
+                VStack(alignment: .trailing, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Button(action: {
+                            // Triggers the system accessibility prompt (AXIsProcessTrustedWithOptions)
+                            // on first attempt, then opens System Settings on subsequent attempts.
+                            WindowPositionManager.requestAccessibilityPermission()
+                        }) {
+                            Text("Grant")
+                        }
+                        .irisPrimaryPill(isFullWidth: false, isCompact: true)
 
-                    Button(action: {
-                        // Reveals the app in Finder so the user can drag it into
-                        // the Accessibility list if it doesn't appear automatically
-                        // (common with unsigned dev builds).
-                        WindowPositionManager.revealAppInFinder()
-                        WindowPositionManager.openAccessibilitySettings()
-                    }) {
-                        Text("Find App")
+                        Button(action: {
+                            // Reveals the app in Finder so the user can drag it into
+                            // the Accessibility list if it doesn't appear automatically
+                            // (common with unsigned dev builds).
+                            WindowPositionManager.revealAppInFinder()
+                            WindowPositionManager.openAccessibilitySettings()
+                        }) {
+                            Text("Show Iris")
+                        }
+                        .irisTinyButton()
                     }
-                    .irisTinyButton()
+
+                    Text(AccessibilityPermissionRecovery.repairInstructions)
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: 260, alignment: .trailing)
                 }
             }
         }
@@ -943,6 +1006,8 @@ struct CompanionPanelView: View {
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                savedSessionRecovery
+
                 Divider()
                     .background(DS.Colors.borderSubtle)
 
@@ -981,17 +1046,47 @@ struct CompanionPanelView: View {
                 emailAndPasswordSignInFields
             }
 
-            if let signInFailureMessage = accountService.signInFailureMessage {
-                Text(signInFailureMessage)
-                    .font(.system(size: 10))
-                    .foregroundColor(DS.Colors.destructiveText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            savedSessionRecovery
 
             Divider()
                 .background(DS.Colors.borderSubtle)
 
             bringYourOwnCredentialSection
+        }
+    }
+
+    @ViewBuilder
+    private var savedSessionRecovery: some View {
+        if let message = accountService.signInFailureMessage {
+            Text(message)
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.destructiveText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let message = accountService.sessionPersistenceMessage {
+            Text(message)
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.amber)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        // A Keychain denial is also represented by the user-facing saved-login
+        // message. Keep the recovery action visible if that message arrives
+        // before the published authorization flag reaches this view.
+        let savedLoginIsUnreadable = accountService.signInFailureMessage?
+            .localizedCaseInsensitiveContains("saved login") == true
+        if accountService.needsSavedLoginAuthorization
+            || accountService.sessionPersistenceMessage != nil
+            || savedLoginIsUnreadable {
+            Button(accountService.savedSessionRetryLabel) {
+                isRetryingSavedSession = true
+                Task { @MainActor in
+                    defer { isRetryingSavedSession = false }
+                    await accountService.retrySavedSessionAction()
+                }
+            }
+            .irisTinyButton()
+            .disabled(isRetryingSavedSession || accountService.isSignInInProgress || accountService.isRestoringSession)
+            .help("Retry access to your existing saved login. macOS may ask you to approve access.")
         }
     }
 

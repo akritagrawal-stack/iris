@@ -1,0 +1,247 @@
+import SwiftUI
+import AppKit
+
+/// Recovery locations survive Iris restarts. This is not a claim that source,
+/// app data, or an older app has been restored.
+struct SavedAppVersionsSection: View {
+    private let receiptStore: AppDeliveryReceiptStore
+    private let onUndoReceipt: ((AppDeliveryReceipt) -> Void)?
+    private let testProjects: [IrisTestProjectRegistry.Project]
+    private let previewTestBackups: ((IrisTestProjectRegistry.Project) async -> IrisTestAppDelivery.TestBackupCleanupPreview)?
+    private let onCleanupTestBackups: ((IrisTestProjectRegistry.Project) async -> String)?
+    @State private var records: [AppDeliveryReceiptStore.Entry] = []
+    @State private var missingFiles = false
+    @State private var isShowingCleanupConfirmation = false
+    @State private var cleanupMessage: String?
+    @State private var selectedTestProjectSlug: String?
+    @State private var cleanupPreview: IrisTestAppDelivery.TestBackupCleanupPreview?
+    @State private var isPreviewingCleanup = false
+
+    init(
+        receiptStore: AppDeliveryReceiptStore = AppDeliveryReceiptStore(),
+        onUndoReceipt: ((AppDeliveryReceipt) -> Void)? = nil,
+        testProjects: [IrisTestProjectRegistry.Project] = [],
+        previewTestBackups: ((IrisTestProjectRegistry.Project) async -> IrisTestAppDelivery.TestBackupCleanupPreview)? = nil,
+        onCleanupTestBackups: ((IrisTestProjectRegistry.Project) async -> String)? = nil
+    ) {
+        self.receiptStore = receiptStore
+        self.onUndoReceipt = onUndoReceipt
+        self.testProjects = testProjects
+        self.previewTestBackups = previewTestBackups
+        self.onCleanupTestBackups = onCleanupTestBackups
+    }
+
+    var body: some View {
+        DisclosureGroup("Saved app versions") {
+            VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+                Text("Previous app files are kept when Iris replaces an installed copy. Your documents are separate. These records do not confirm that the app opened or worked.")
+                    .fixedSize(horizontal: false, vertical: true)
+                if records.isEmpty {
+                    Text("No saved app versions recorded yet.")
+                }
+                ForEach(Array(records.enumerated()), id: \.offset) { _, entry in
+                    if case .valid(let receipt) = entry {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(URL(fileURLWithPath: receipt.installedPath).deletingPathExtension().lastPathComponent)
+                                .foregroundColor(DS.Colors.textPrimary)
+                            Text(receipt.startedAt, style: .date)
+                            Text(phaseLabel(receipt.phase))
+                            let backupAvailable = receiptStore.backupIsAvailable(for: receipt)
+                            let testProjectFailure = isIrisTestRuntime
+                                ? Self.testProjectUndoFailure(
+                                    receipt: receipt,
+                                    project: testProjects.first(where: { $0.slug == receipt.sourceIdentity?.appSlug })
+                                )
+                                : nil
+                            Text(backupAvailable
+                                 ? "Previous app files were found. Iris checks their contents before Undo."
+                                 : "Previous app files are unavailable at the recorded location.")
+                            switch receipt.phase {
+                            case .prepared:
+                                Text("Iris will not guess whether this update reached the installed app.")
+                                    .foregroundColor(DS.Colors.amber)
+                            case .installed:
+                                if AppDeliveryReceiptStore.isSupersededInstalledReceipt(
+                                    receipt, among: records
+                                ) {
+                                    Text("A newer version is installed. Undo the latest saved version first.")
+                                        .foregroundColor(DS.Colors.amber)
+                                } else if let testProjectFailure {
+                                    Text(testProjectFailure)
+                                        .foregroundColor(DS.Colors.amber)
+                                } else if receipt.hasCompleteUndoMetadata && backupAvailable {
+                                    if let onUndoReceipt {
+                                        Button("Undo") { onUndoReceipt(receipt) }
+                                            .irisTinyButton()
+                                            .help("Restore the exact previous app files and source recorded for this update.")
+                                    } else {
+                                        Text("Undo is available from the edit recovery card.")
+                                            .foregroundColor(DS.Colors.textSecondary)
+                                    }
+                                } else if !backupAvailable {
+                                    Text("Undo is unavailable because the previous app files are unavailable at the recorded location.")
+                                        .foregroundColor(DS.Colors.amber)
+                                } else {
+                                    Text("Undo is unavailable because the exact source identity was not saved.")
+                                        .foregroundColor(DS.Colors.amber)
+                                }
+                            case .restored:
+                                Text("This saved version is already recorded as restored.")
+                                    .foregroundColor(DS.Colors.textSecondary)
+                            }
+                            if backupAvailable {
+                                Button("Show previous app files") {
+                                    let url = URL(fileURLWithPath: receipt.backupPath)
+                                    missingFiles = !receiptStore.backupIsAvailable(for: receipt)
+                                    if !missingFiles { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                                }
+                                .irisTinyButton()
+                            }
+                        }
+                    } else {
+                        Text("Some saved version details cannot be read. No restoration is confirmed.")
+                            .foregroundColor(DS.Colors.amber)
+                    }
+                }
+                if missingFiles {
+                    Text("The previous app files became unavailable at the recorded location.")
+                        .foregroundColor(DS.Colors.amber)
+                }
+                if records.count >= AppDeliveryReceiptStore.maximumEntries {
+                    Text("Showing up to \(AppDeliveryReceiptStore.maximumEntries) saved records. Additional records may not appear here; nothing was deleted.")
+                        .foregroundColor(DS.Colors.amber)
+                }
+                if let onCleanupTestBackups, isIrisTestRuntime {
+                    Divider()
+                        .padding(.vertical, 4)
+                    Text("Iris Test cleanup")
+                        .foregroundColor(DS.Colors.textPrimary)
+                    if testProjects.isEmpty {
+                        Text("No eligible registered Test app is available. Iris will not guess a project or remove anything.")
+                            .foregroundColor(DS.Colors.amber)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Picker("Test app", selection: $selectedTestProjectSlug) {
+                            ForEach(testProjects, id: \.slug) { project in
+                                Text(project.name).tag(Optional(project.slug))
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        let selectedProject = testProjects.first(where: { $0.slug == selectedTestProjectSlug }) ?? testProjects[0]
+                        Text(cleanupPreview?.summary ?? "Review cleanup runs a fresh, read-only retention preview before showing any confirmation.")
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Review cleanup…") {
+                            guard let previewTestBackups else { return }
+                            isPreviewingCleanup = true
+                            cleanupPreview = nil
+                            Task {
+                                let preview = await previewTestBackups(selectedProject)
+                                await MainActor.run {
+                                    cleanupPreview = preview
+                                    isPreviewingCleanup = false
+                                    if preview.hasEligibleBackups {
+                                        isShowingCleanupConfirmation = true
+                                    }
+                                }
+                            }
+                        }
+                        .irisTinyButton()
+                        .disabled(isPreviewingCleanup || previewTestBackups == nil)
+                        .overlay {
+                            if isPreviewingCleanup { ProgressView().controlSize(.small) }
+                        }
+                        .alert("Remove obsolete Test backups?", isPresented: $isShowingCleanupConfirmation) {
+                            Button("Cancel", role: .cancel) {}
+                            Button("Remove obsolete backups", role: .destructive) {
+                                Task {
+                                    let result = await onCleanupTestBackups(selectedProject)
+                                    await MainActor.run {
+                                        cleanupMessage = result
+                                        refresh()
+                                    }
+                                }
+                            }
+                        } message: {
+                            Text(cleanupPreview?.summary ?? "Iris will re-check project identity, recovery references, bundle identity, and paths immediately before removing anything. Your source clone and installed app are not deleted.")
+                        }
+                        if let cleanupMessage {
+                            Text(cleanupMessage)
+                                .foregroundColor(DS.Colors.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                Button("Refresh") { refresh() }.irisTinyButton()
+            }
+            .padding(.top, DS.Spacing.sm)
+        }
+        .font(DS.Typography.caption)
+        .foregroundColor(DS.Colors.textSecondary)
+        .onAppear {
+            refresh()
+            if selectedTestProjectSlug == nil {
+                selectedTestProjectSlug = testProjects.first?.slug
+            }
+        }
+        .onChange(of: selectedTestProjectSlug) { _, _ in
+            cleanupPreview = nil
+            isShowingCleanupConfirmation = false
+        }
+    }
+
+    private func refresh() {
+        records = receiptStore.entries().sorted { left, right in
+            if case .valid(let a) = left, case .valid(let b) = right { return a.startedAt > b.startedAt }
+            if case .valid = left { return false }
+            if case .valid = right { return true }
+            return false
+        }
+    }
+
+    private func phaseLabel(_ phase: AppDeliveryReceipt.Phase) -> String {
+        switch phase {
+        case .prepared: return "Update prepared. Whether it finished is not confirmed."
+        case .installed: return "Last recorded event: app files replaced."
+        case .restored: return "Last recorded event: previous app files restored."
+        }
+    }
+
+    /// A Test receipt is actionable only while it still names the exact staged
+    /// project that made it. Without this join the Saved Versions card could
+    /// offer Undo, then the coordinator would correctly refuse once recovery
+    /// began. Production inventory uses its own registered-path callback.
+    static func testProjectUndoFailure(
+        receipt: AppDeliveryReceipt,
+        project: IrisTestProjectRegistry.Project?
+    ) -> String? {
+        guard let source = receipt.sourceIdentity else {
+            return "Undo is unavailable because the exact Test project identity was not saved."
+        }
+        guard let project else {
+            return "Undo is unavailable because this Test app is no longer registered."
+        }
+        let sameProject = project.slug == source.appSlug
+            && samePath(project.clonePath, source.clonePath)
+            && samePath(project.applicationPath, receipt.installedPath)
+            && samePath(project.buildArtifactPath, receipt.sourceArtifactPath)
+            && project.bundleIdentifier == receipt.bundleIdentifier
+        return sameProject
+            ? nil
+            : "Undo is unavailable because this Test app's registered identity changed since delivery."
+    }
+
+    private static func samePath(_ left: String, _ right: String) -> Bool {
+        URL(fileURLWithPath: left).standardizedFileURL.path
+            == URL(fileURLWithPath: right).standardizedFileURL.path
+    }
+
+    /// Xcode's Test scheme injects the Test bundle identity into the app
+    /// process, but a debug launch can briefly report the host identity while
+    /// the debug dylib is being loaded. The product-path fallback keeps the
+    /// Test-only cleanup affordance visible in that narrow window without ever
+    /// exposing it from the normal /Applications/Iris.app build.
+    private var isIrisTestRuntime: Bool {
+        IrisTestEnvironment.isEnabled
+            || Bundle.main.bundleURL.path.contains("/Build/Products/Test/")
+    }
+}

@@ -855,3 +855,9 @@ The independent regression lanes were rerun from the v23 source: Swift
 harness `161/161` across 7 suites and mobile hub Node tests `20/20`. These
 remain source/package evidence and do not substitute for native permissions,
 live provider execution, or a physical phone journey.
+
+The fresh compile-gated host was rebuilt and exercised on 2026-09-15. Its
+`--checks` run completed successfully, and the guide/spatial driver reported
+`72/72` tests across 5 suites in 25.639 seconds with `spatialExit: 0`. This
+confirms the integrated state-machine and accounting contracts after the
+permission UX changes; it remains headless evidence, not live screen capture.

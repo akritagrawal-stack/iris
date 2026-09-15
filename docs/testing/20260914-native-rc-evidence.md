@@ -366,3 +366,17 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 
 - The capability-refresh change was packaged as `/Users/Shared/Iris-RC-20260914-v12/Iris.app` and signed with the local test identity. Strict verification passed; executable SHA-256 is `02cb4e858c52c10ae671247768a5acd5d9c7118060ebb804448b0264886a3628`.
 - v12 is a candidate artifact for the next native Ask acceptance pass. It does not close live screen capture, provider-backed transfer, or physical iPhone gates.
+
+### 2026-09-14 integrated automated regression rerun
+
+- The current integrated tree reran the harness suite with `161/161` tests
+  passing across `7` suites, including route budgets, cancellation and late
+  settlement accounting, review reserve, convergence bounds, and source-root
+  guards.
+- Source-workspace identity/storage checks passed `5/5`; the mobile install hub
+  suite passed `19/19`, including cache timeout recovery, device preference
+  persistence, safe route validation, icon validation, and bounded catalog
+  handling.
+- `system_profiler SPUSBDataType` found no connected iPhone or iPad. Physical
+  install, launch, restart, and update continuity therefore remain an explicit
+  device gate rather than a claimed result.

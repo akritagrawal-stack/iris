@@ -97,7 +97,7 @@ nonisolated struct FeatureEditRepositoryContext: Sendable, Equatable {
         if omittedFileCount > 0 {
             lines.append(
                 "\(omittedFileCount) requested file(s) were not included by the safety or byte bounds. "
-                    + "Their bodies are unseen final-review evidence; their absence is not evidence that a guard is missing."
+                    + "Paths not shown were not inspected; their bodies are unseen final-review evidence, and their absence is not evidence that a guard is missing."
             )
         } else {
             lines.append(

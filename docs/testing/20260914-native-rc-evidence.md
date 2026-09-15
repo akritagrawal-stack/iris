@@ -588,6 +588,15 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+### 2026-09-14 review-context wording regression fix
+
+The review/context rerun initially caught a stale assertion: omitted repository
+paths no longer stated plainly that they had not been inspected. The prompt
+now includes that explicit disclaimer. `EditVerificationReceiptTests` and
+`FeatureEditRepositoryContextTests` then passed `19/19` together. The fix was
+rebuilt into `/Users/Shared/Iris-RC-20260914-v17/Iris Test.app` with the Xcode
+scheme completing successfully and signing disabled.
+
 ### 2026-09-14 run usage attribution rerun
 
 The native scheme reran `IrisTestRunUsageTests`; all `7/7` tests passed. These

@@ -588,6 +588,11 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+The full harness package was rerun after the workspace revalidation fix:
+`swift test --package-path iris-macos/tools/harness-tests` passed `161/161`
+tests across 7 suites. This confirms the production change did not regress the
+headless lifecycle, routing, retention, or clarification contracts.
+
 ### 2026-09-14 workspace revalidation and cancellation fix
 
 An isolated rerun exposed two issues in `GuideSourceWorkspaceServiceTests`:

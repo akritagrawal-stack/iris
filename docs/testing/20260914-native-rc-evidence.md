@@ -420,3 +420,13 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   was quit after observation; no permission state was changed. This is a live
   native environment gate, so Ask/Edit and spatial acceptance remain pending
   until the owner restores permissions through macOS settings.
+
+### 2026-09-14 RC v14 test-target wiring build
+
+- Xcode rebuilt the integrated `Iris Test` scheme after restoring native test
+  discovery. The signed candidate is
+  `/Users/Shared/Iris-RC-20260914-v14/Iris Test.app`.
+- Strict deep signature verification passed with executable SHA-256
+  `ed4e29428dd4545cba99b7e05d709135c340c062be67c292dbe9c9d2e65de927`.
+- RC v14 is ready for the permission-restored native run; provider-backed
+  transfer and physical-device acceptance remain open.

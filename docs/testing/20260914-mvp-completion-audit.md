@@ -146,7 +146,7 @@ headless, browser, or package tests.
 
 - The actual `Iris Test` configuration was rebuilt and signed with the stable
   `Iris Local Code Signing` identity, with the debug launcher disabled so the
-  standalone candidate can run outside Xcode. Candidate: `/Users/Shared/Iris-RC-20260914-v28/Iris Test.app`; bundle `com.publikhq.iris.test`; executable SHA-256 `ed54f465fe0bd0de0bfca42032ca605585ab51b36ca239155ed06c041887a297`.
+  standalone candidate can run outside Xcode. Candidate: `/Users/Shared/Iris-RC-20260915-v29/Iris Test.app`; bundle `com.publikhq.iris.test`; executable SHA-256 `2fd8f97cb9da532c9f44d9a5e84fab8e3c4a71b2a4179cc3842bc2a1963ae46a`.
 - A screenshot is only the spatial model's visual input. The coordinate comes
   from Anthropic's structured Computer Use model/tool call. Guide fallback,
   explicit UI questions, and the onboarding preview all use that detector;

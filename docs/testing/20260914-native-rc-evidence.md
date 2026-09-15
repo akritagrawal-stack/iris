@@ -838,3 +838,9 @@ visible when Screen Recording is missing, with an explicit dependency message.
 The prior UI said “Grant all three” while rendering only two controls. The
 `Iris Test` scheme rebuilt successfully after this change; a native permission
 recheck remains required on the signed candidate.
+
+The signed integrated RC was rebuilt as v22 after the permission-row and
+screen-help changes. Xcode reported `BUILD SUCCEEDED`; deep strict signature
+verification passed. The artifact is `/Users/Shared/Iris-RC-20260914-v22/Iris
+Test.app` with executable SHA-256
+`0b73d4205417c98112f9a6775fa0eb9599c5ede1496264bab52c1ed133aca8af`.

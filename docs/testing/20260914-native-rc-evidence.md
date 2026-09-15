@@ -552,7 +552,7 @@ The harness feature host `--checks` run now covers four completed pre-edit reply
 
 ### 2026-09-14 integrated package regression rerun
 
-The integrated harness package ran `swift test --package-path iris-macos/tools/harness-tests`: Swift Testing executed 161 tests in 7 suites and all passed. The mobile install hub ran `node --test iris-mobile/test/*.test.mjs`: 19/19 passed. These are source/package regressions; they do not establish live provider, installed-app, or physical-device acceptance.
+The integrated harness package ran `swift test --package-path iris-macos/tools/harness-tests`: Swift Testing executed 161 tests in 7 suites and all passed. The mobile install hub ran `node --test iris-mobile/test/*.test.mjs`: 20/20 passed after the handoff-label regression fix. These are source/package regressions; they do not establish live provider, installed-app, or physical-device acceptance.
 
 ### 2026-09-14 install and spatial focused rerun
 

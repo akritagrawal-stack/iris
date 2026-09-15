@@ -13,6 +13,7 @@
 //  so a link Iris is not allowed to open can never be drawn as a live button.
 //
 
+import AppKit
 import SwiftUI
 
 struct GuidePanelView: View {
@@ -145,22 +146,30 @@ struct GuidePanelView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if let unsupportedPair = guideSessionController.unsupportedPairForTheSelectedBranch {
                         unsupportedPairExplanation(unsupportedPair)
-                    } else if let setupRecoveryState = guideSessionController.setupRecoveryState {
+                    } else {
+                        if guideSessionController.guideOffersSourceWorkspaceSetup
+                            || guideSessionController.guideNeedsPublisherWorkspaceMigration
+                            || guideSessionController.guideHasPinnedSourceIdentity
+                            || guideSessionController.shouldShowSourceWorkspaceRecovery {
+                            sourceWorkspaceSetupCard
+                        }
+                        if let setupRecoveryState = guideSessionController.setupRecoveryState {
                         setupRecoveryCard(setupRecoveryState)
-                    } else if guideSessionController.readerHasFinishedTheGuide {
+                        } else if guideSessionController.readerHasFinishedTheGuide {
                         completionCard
-                    } else if guideSessionController.currentStep != nil {
+                        } else if guideSessionController.currentStep != nil {
                         // Each step slides in from the right the way the pill's
                         // `step-in` keyframes do; the id() makes SwiftUI treat
                         // every step as a fresh card so the transition runs.
                         stepCard
                             .id(guideSessionController.currentStepIndex)
                             .transition(DS.Motion.stepTransition)
-                    } else {
+                        } else {
                         Text("Publik needs to review this platform branch.")
                             .font(.system(size: 11))
                             .foregroundColor(DS.Colors.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -541,6 +550,127 @@ struct GuidePanelView: View {
 
     // MARK: - Setup recovery
 
+    /// Source setup is separate from tool setup. It is available only for a
+    /// guide that published an origin and commit, and it always stages beneath
+    /// Iris's owned root rather than under the reader-selected folder.
+    private var sourceWorkspaceSetupCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Text("SOURCE")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(DS.Colors.warningText)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(DS.Colors.warning.opacity(0.16)))
+                Text("Prepare the reviewed project copy")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            sourceWorkspaceSetupContent
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .fill(DS.Colors.warning.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                .stroke(DS.Colors.warning.opacity(0.24), lineWidth: 0.5)
+        )
+    }
+
+    @ViewBuilder
+    private var sourceWorkspaceSetupContent: some View {
+        if guideSessionController.guideNeedsPublisherWorkspaceMigration {
+            Text("This published guide still uses HOME-relative project commands. Iris can safely automate it after you choose and prepare the reviewed source copy below.")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+
+        switch guideSessionController.sourceWorkspaceSetupState {
+        case .idle:
+            Text("Choose an existing clean checkout. Iris will inspect its origin and reviewed commit before offering a prepared copy.")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            chooseSourceFolderButton
+        case .inspecting:
+            ProgressView("Inspecting the selected source folder…")
+                .font(.system(size: 11))
+        case .offer(let inspection):
+            sourceWorkspaceOffer(inspection)
+        case .preparing(let choice):
+            ProgressView(choice == .createIsolatedWorktree ? "Preparing an isolated copy…" : "Checking the selected checkout…")
+                .font(.system(size: 11))
+        case .ready(let binding):
+            Text(binding.isIsolated ? "Prepared copy is ready." : "The clean selected checkout is ready.")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.green)
+            Text(binding.stagedPath)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(DS.Colors.textTertiary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+            HStack(spacing: 12) {
+                chooseSourceFolderButton
+                Button("Cancel setup") { guideSessionController.cancelSourceWorkspaceSetup() }
+                    .irisTextButton(fontSize: 10)
+            }
+        case .failed(let message):
+            Text(message)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.warningText)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                chooseSourceFolderButton
+                Button("Cancel") { guideSessionController.cancelSourceWorkspaceSetup() }
+                    .irisTextButton(fontSize: 10)
+            }
+        }
+    }
+
+    private var chooseSourceFolderButton: some View {
+        Button("Choose source folder") { chooseSourceFolder() }
+            .irisPrimaryPill(isFullWidth: false, isCompact: true)
+    }
+
+    private func sourceWorkspaceOffer(_ inspection: GuideSourceWorkspaceInspection) -> some View {
+        let isDirty: Bool = if case .isolatedCopyOffered = inspection { true } else { false }
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(isDirty ? "The selected checkout has changes, so Iris will only use an isolated prepared copy." : "The selected checkout is clean and at the reviewed source identity.")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                if !isDirty {
+                    Button("Use clean checkout") {
+                        Task { _ = await guideSessionController.prepareSelectedSourceWorkspace(choice: .useExistingCleanCheckout) }
+                    }
+                    .irisTextButton(fontSize: 10)
+                }
+                Button(isDirty ? "Prepare copy" : "Prepare isolated copy") {
+                    Task { _ = await guideSessionController.prepareSelectedSourceWorkspace(choice: .createIsolatedWorktree) }
+                }
+                .irisPrimaryPill(isFullWidth: false, isCompact: true)
+                Button("Cancel") { guideSessionController.cancelSourceWorkspaceSetup() }
+                    .irisTextButton(fontSize: 10)
+            }
+        }
+    }
+
+    private func chooseSourceFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use source folder"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { _ = await guideSessionController.inspectReaderSelectedSourceWorkspace(sourcePath: url.path) }
+    }
+
     /// The detour shown when the branch needs a tool this computer does not
     /// have. It deliberately does not look like a step of the guide: a tinted
     /// card, a "Setup" badge, and an explanation of what is missing and why come
@@ -702,9 +832,21 @@ struct GuidePanelView: View {
     @ViewBuilder
     private var navigationRow: some View {
         if guideSessionController.unsupportedPairForTheSelectedBranch == nil {
+            let stepIdThisRowWasDrawnFor = guideSessionController.currentStep?.id
             VStack(alignment: .leading, spacing: 6) {
+                if let blocked = guideSessionController.autopilotBlockedExplanation {
+                    Text(blocked)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(DS.Colors.warningText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Choose source folder") { chooseSourceFolder() }
+                        .buttonStyle(.borderedProminent)
+                }
                 if let primaryAction = guideSessionController.primaryActionForTheCurrentStep {
-                    primaryActionButton(primaryAction)
+                    primaryActionButton(
+                        primaryAction,
+                        expectedCurrentStepId: stepIdThisRowWasDrawnFor
+                    )
                 }
 
                 HStack(spacing: 12) {
@@ -741,11 +883,18 @@ struct GuidePanelView: View {
     /// disabled rather than pressable-but-inert: the reason is already on the
     /// card above, and a button that looks live and does nothing is the exact
     /// failure `iris-desktop 0.1.4` was released to fix.
-    private func primaryActionButton(_ primaryAction: GuideStepPrimaryAction) -> some View {
+    private func primaryActionButton(
+        _ primaryAction: GuideStepPrimaryAction,
+        expectedCurrentStepId: String?
+    ) -> some View {
         Button(action: {
-            guideSessionController.performPrimaryAction()
+            if guideSessionController.shouldShowSourceWorkspaceRecovery {
+                chooseSourceFolder()
+            } else {
+                guideSessionController.performPrimaryAction(expectedCurrentStepId: expectedCurrentStepId)
+            }
         }) {
-            Text(primaryAction.buttonLabel)
+            Text(guideSessionController.shouldShowSourceWorkspaceRecovery ? "Choose source folder" : primaryAction.buttonLabel)
         }
         .irisPrimaryPill()
         .disabled(!primaryAction.isPressable)
@@ -769,14 +918,15 @@ struct GuideSlugEntryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Follow an install guide")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(DS.Colors.muted)
+            Text("If you already know the guide's name, enter it below. Otherwise, choose an app above to see how to install it.")
+                .font(DS.Typography.caption)
+                .foregroundColor(DS.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 8) {
-                TextField("App name, e.g. cue", text: $slugInput)
+                TextField("Guide name, e.g. cue", text: $slugInput)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12))
+                    .font(DS.Typography.caption)
                     .foregroundColor(DS.Colors.ink)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)

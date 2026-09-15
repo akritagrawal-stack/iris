@@ -25,6 +25,8 @@ import SwiftUI
 /// accidentally start driving the guide: it renders, and it reports what was
 /// pressed.
 nonisolated struct OverlayEyeGuideStepPresentation: Equatable, Sendable {
+    /// The rendered step identity used to reject a tap from an older card.
+    let stepId: String
     let appName: String
     let stepTitle: String
     let stepBody: String
@@ -128,12 +130,12 @@ struct OverlayEyeGuideCard: View {
             header
 
             Text(presentation.stepTitle)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundColor(DS.Colors.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(presentation.stepBody)
-                .font(.system(size: 11.5))
+                .font(.system(size: 15))
                 .foregroundColor(DS.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -143,19 +145,19 @@ struct OverlayEyeGuideCard: View {
 
             if let pointingNote = presentation.pointingNote {
                 Text(pointingNote)
-                    .font(.system(size: 10.5))
-                    .foregroundColor(DS.Colors.textTertiary)
+                    .font(.system(size: 13))
+                    .foregroundColor(DS.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if let completionHint = presentation.completionHint {
                 HStack(alignment: .top, spacing: 5) {
                     Text("✓")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(DS.Colors.textTertiary)
                     Text(completionHint)
-                        .font(.system(size: 10.5))
-                        .foregroundColor(DS.Colors.textTertiary)
+                        .font(.system(size: 13))
+                        .foregroundColor(DS.Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -187,12 +189,12 @@ struct OverlayEyeGuideCard: View {
     private var header: some View {
         HStack(spacing: 6) {
             Text(presentation.appName)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(DS.Colors.textSecondary)
 
             if let progressLabel = presentation.progressLabel {
                 Text(progressLabel)
-                    .font(.system(size: 10))
+                    .font(.system(size: 13))
                     .foregroundColor(DS.Colors.textTertiary)
             }
 
@@ -200,7 +202,7 @@ struct OverlayEyeGuideCard: View {
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
             }
             .irisIconButton()
             .help("Close the guide. Your place is kept.")
@@ -218,7 +220,7 @@ struct OverlayEyeGuideCard: View {
     private func commandBlock(_ command: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text(command)
-                .font(.system(size: 11, design: .monospaced))
+                .font(.system(size: 13, design: .monospaced))
                 .foregroundColor(DS.Colors.textPrimary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -236,7 +238,7 @@ struct OverlayEyeGuideCard: View {
         HStack(spacing: 8) {
             if presentation.readerCanGoBack {
                 Button("Back", action: onBack)
-                    .irisTextButton()
+                    .irisTextButton(fontSize: 13)
             }
 
             Spacer(minLength: 0)

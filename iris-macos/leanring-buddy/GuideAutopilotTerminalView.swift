@@ -43,6 +43,38 @@ struct TakeoverControlFramesKey: PreferenceKey {
     }
 }
 
+/// The yellow traffic light has a window-level action, so its frame is kept
+/// separate from the generic list of SwiftUI controls.  The takeover panel
+/// intercepts mouse-downs to support dragging a borderless window; naming this
+/// one control lets it complete a real click itself instead of depending on a
+/// SwiftUI button that AppKit cannot hit-test directly.
+struct TakeoverMinimizeControlFrameKey: PreferenceKey {
+    static var defaultValue: CGRect? { nil }
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// The title-bar controls that need a window-level click path. SwiftUI's
+/// buttons are not represented by individual AppKit views inside the hosting
+/// view, and a native tooltip/cursor overlay must not be allowed to decide
+/// which button receives a press. Naming the frames lets the owning panel
+/// complete those small, semantic clicks without relying on AppKit's view hit
+/// test (the same boundary used by the minimize light).
+struct TakeoverEscapeHatchControlFrameKey: PreferenceKey {
+    static var defaultValue: CGRect? { nil }
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
+    }
+}
+
+struct TakeoverHelpControlFrameKey: PreferenceKey {
+    static var defaultValue: CGRect? { nil }
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
+    }
+}
+
 extension View {
     /// Marks this view as an interactive control whose frame the takeover panel
     /// must exclude from its drag hit-testing, so a click on it reaches it
@@ -55,6 +87,47 @@ extension View {
                 Color.clear.preference(
                     key: TakeoverControlFramesKey.self,
                     value: [geometryInsideTheControl.frame(in: .global)]
+                )
+            }
+        )
+    }
+
+    /// Marks the yellow traffic light's frame for the owning AppKit panel.
+    /// This remains a preference rather than an AppKit overlay, so the
+    /// annotation itself cannot swallow the click it is describing.
+    func reportsFrameAsATakeoverMinimizeControl() -> some View {
+        background(
+            GeometryReader { geometryInsideTheControl in
+                Color.clear.preference(
+                    key: TakeoverMinimizeControlFrameKey.self,
+                    value: geometryInsideTheControl.frame(in: .global)
+                )
+            }
+        )
+    }
+
+    /// Marks the red escape-hatch frame for the owning AppKit panel. The
+    /// preference is geometry only; it does not add a hit-testable overlay.
+    func reportsFrameAsATakeoverEscapeHatchControl() -> some View {
+        background(
+            GeometryReader { geometryInsideTheControl in
+                Color.clear.preference(
+                    key: TakeoverEscapeHatchControlFrameKey.self,
+                    value: geometryInsideTheControl.frame(in: .global)
+                )
+            }
+        )
+    }
+
+    /// Marks the Help frame for the owning AppKit panel. Keeping this separate
+    /// from the generic control list makes the semantic click unambiguous even
+    /// when another control is added to the title strip later.
+    func reportsFrameAsATakeoverHelpControl() -> some View {
+        background(
+            GeometryReader { geometryInsideTheControl in
+                Color.clear.preference(
+                    key: TakeoverHelpControlFrameKey.self,
+                    value: geometryInsideTheControl.frame(in: .global)
                 )
             }
         )
@@ -149,7 +222,7 @@ struct GuideAutopilotTerminalView<Runner: AutopilotTerminalPresenting>: View {
                 Spacer(minLength: 0)
                 helpButton
             }
-            Text("iris — install")
+            Text("Iris terminal")
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundColor(Color.white.opacity(0.5))
         }
@@ -196,6 +269,7 @@ struct GuideAutopilotTerminalView<Runner: AutopilotTerminalPresenting>: View {
         .pointerCursor()
         .nativeTooltip("Stuck? Ask Iris about this step — it can see the command and its output")
         .reportsFrameAsATakeoverControl()
+        .reportsFrameAsATakeoverHelpControl()
     }
 
     /// The red traffic light is a real button, and shows the × on hover the
@@ -222,7 +296,10 @@ struct GuideAutopilotTerminalView<Runner: AutopilotTerminalPresenting>: View {
         .onHover { hovering in escapeHatchIsHovered = hovering }
         .pointerCursor()
         .nativeTooltip("Close — stops the install, keeps your place in the guide")
+        .accessibilityLabel("Stop and close terminal")
+        .accessibilityHint("Stops the current task.")
         .reportsFrameAsATakeoverControl()
+        .reportsFrameAsATakeoverEscapeHatchControl()
     }
 
     /// The yellow traffic light: a real button wherever there is a window to
@@ -258,7 +335,10 @@ struct GuideAutopilotTerminalView<Runner: AutopilotTerminalPresenting>: View {
             .onHover { hovering in minimizeIsHovered = hovering }
             .pointerCursor()
             .nativeTooltip("Minimize — the install keeps running")
+            .accessibilityLabel("Minimize terminal")
+            .accessibilityHint("Hides the terminal while the task keeps running.")
             .reportsFrameAsATakeoverControl()
+            .reportsFrameAsATakeoverMinimizeControl()
         } else {
             Circle().fill(GuideAutopilotTerminalTheme.trafficYellow).frame(width: 11, height: 11)
         }

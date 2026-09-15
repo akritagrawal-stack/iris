@@ -399,3 +399,14 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 - Focused `ComposerConnectionPresentationTests` passed `13/13`; Swift parsing
   and diff checks passed. This is source and focused-test evidence. A rebuilt
   native candidate still needs the live Ask/Edit interaction rerun.
+
+### 2026-09-14 RC v13 capability dispatch build
+
+- Xcode built the integrated `Iris Test` scheme from commit `67ecf9c` with
+  `CODE_SIGNING_ALLOWED=NO`; the build completed successfully.
+- The candidate was copied to `/Users/Shared/Iris-RC-20260914-v13/Iris Test.app`,
+  signed with the local test identity, and passed strict deep signature
+  verification. Executable SHA-256 is
+  `946db8751918e8ce31d0acd9b8cd85b0945455a8ada47ebe2563605e6c784b50`.
+- This names a current integrated candidate. It does not substitute for the
+  live Ask/Edit interaction rerun, provider-backed transfer, or device gates.

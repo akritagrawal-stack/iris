@@ -329,3 +329,8 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 - Xcode GUI ran `a reader who moves a window mid-install is asked about once and pointed at where the control is` against the integrated tree. It passed in 2.374s after driving the real guide to the manual Xcode gate, using two real AppKit panels, moving the focused panel during the simulated capture round trip, and observing one model ask. The final eye point was 0.0pt from the moved control; the untouched same-app window was not used.
 - The test initially exposed a runner setup problem because Xcode itself was frontmost. The test now activates the already-running Finder app before checking its frontmost-app premise, using an async bounded wait without deprecated activation or run-loop calls. The corrected test passed with no new compiler warnings.
 - This is native macOS movement and activation evidence for the focused spatial path. Full product acceptance still requires live screen-capture/provider behavior and the remaining minimize, cancellation, tab-switch, ambiguity, and physical-device gates.
+
+### 2026-09-14 RC v11 artifact
+
+- The integrated source was packaged as `/Users/Shared/Iris-RC-20260914-v11/Iris Test.app` after the native spatial test correction. Strict code-signature verification passed using `Iris Local Code Signing`; executable SHA-256 is `2a0f47f584a95d582eddb5cf6b5a3618bac240b17796308fe54f8c191c2f643c`.
+- v11 is the current named candidate for subsequent native acceptance. The existing v10 artifact remains available for rollback.

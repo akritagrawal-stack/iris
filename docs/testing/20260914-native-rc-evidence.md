@@ -451,3 +451,12 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   backup paths.
 - This is focused native decision and filesystem evidence. It does not prove a
   live provider-generated feature or physical-device continuity.
+
+### 2026-09-14 Kneecap install retry end-to-end rerun
+
+- The native Xcode scheme ran `Bug3StaleShellPathEndToEndTests`; both end-to-end
+  tests passed (`2/2`). The run exercised the real shell retry path after a
+  tool is installed mid-run and confirmed the shipped shell preserves its
+  working directory and user dotfile behavior.
+- This closes the focused macOS retry continuity check. It does not prove the
+  full phone handoff or physical-device install journey.

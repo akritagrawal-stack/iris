@@ -483,8 +483,8 @@ final class MaintainTierCFixer {
 
     /// Complex Test feature runs must investigate enough to localize a change,
     /// but they must not spend an unbounded prefix rereading repository setup
-    /// and fixture files. The existing no-progress detector deliberately waits
-    /// until the first edit, so this separate bound closes the pre-edit gap.
+    /// and fixture files. Every completed reply counts, including rejected or
+    /// duplicate actions. Transport failures retain their separate retry bound.
     static let preEditInvestigationStepThreshold = 3
 
     /// The one steer emitted after the bounded pre-edit investigation window.
@@ -1341,6 +1341,26 @@ final class MaintainTierCFixer {
             if cancellationCheck?() == true {
                 return await revertEverythingForAReaderStop()
             }
+            // Count completed replies, including rejected edits and deduplicated
+            // commands. Those replies consume model work even when dispatch
+            // returns before the shell-command progress check.
+            if shouldBoundPreEditInvestigation,
+               !theModelHasEditedTheTreeAtLeastOnce,
+               preEditInvestigationStepCount >= Self.preEditInvestigationStepThreshold {
+                if hasNudgedBeforeFirstEdit {
+                    if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
+                    _ = try? await runner.run(
+                        "git checkout -- . && git clean -fd --quiet", deadline: 120
+                    )
+                    return .couldNotFix(
+                        reason: "the provider did not produce a source edit after bounded investigation"
+                    )
+                }
+                hasNudgedBeforeFirstEdit = true
+                preEditInvestigationStepCount = 0
+                appendEarlyBuildCheckpointObservation(Self.preEditConvergenceNudgeMessage, to: &conversation)
+                progressHandler?(.nudgedTowardConvergence(stepNumber: step))
+            }
             if (provider as? HarnessReviewBudgetProviding)?.shouldYieldEditingToVerification == true {
                 reachedHarnessReviewReserve = true
                 irisTrace("maintain: harness editing stopped to preserve independent review capacity; current work may be incomplete")
@@ -1409,6 +1429,9 @@ final class MaintainTierCFixer {
             // apply its structured edits and only notice Stop on the next turn.
             if cancellationCheck?() == true {
                 return await revertEverythingForAReaderStop()
+            }
+            if shouldBoundPreEditInvestigation, !theModelHasEditedTheTreeAtLeastOnce {
+                preEditInvestigationStepCount += 1
             }
             conversation.append(MaintainChatTurn(role: "assistant", text: reply))
 
@@ -1835,33 +1858,6 @@ final class MaintainTierCFixer {
                     consecutiveNoProgressStepCount = 0
                     modelOwnedPaths.formUnion(changedPaths)
                     progressHandler?(.editedFiles(paths: changedPaths, stepNumber: step))
-                }
-                if shouldBoundPreEditInvestigation,
-                   changedPaths?.isEmpty != false,
-                   !theModelHasEditedTheTreeAtLeastOnce {
-                    preEditInvestigationStepCount += 1
-                    if preEditInvestigationStepCount >= Self.preEditInvestigationStepThreshold {
-                        if hasNudgedBeforeFirstEdit {
-                            if let restoreFailure = await restoreGitOrReport() { return restoreFailure }
-                            _ = try? await runner.run(
-                                "git checkout -- . && git clean -fd --quiet", deadline: 120
-                            )
-                            irisTrace("maintain: tier-c stopping before edit after bounded pre-edit investigation")
-                            return .couldNotFix(
-                                reason: "the provider did not produce a source edit after bounded investigation"
-                            )
-                        }
-                        hasNudgedBeforeFirstEdit = true
-                        preEditInvestigationStepCount = 0
-                        if let lastTurn = conversation.last, lastTurn.role == "user" {
-                            conversation[conversation.count - 1] = MaintainChatTurn(
-                                role: "user",
-                                text: lastTurn.text + "\n\n" + Self.preEditConvergenceNudgeMessage
-                            )
-                        }
-                        irisTrace("maintain: tier-c pre-edit convergence nudge after \(Self.preEditInvestigationStepThreshold) unchanged investigation steps")
-                        progressHandler?(.nudgedTowardConvergence(stepNumber: step))
-                    }
                 }
                 if changedPaths?.isEmpty != false,
                    theModelHasEditedTheTreeAtLeastOnce,

@@ -18,6 +18,7 @@ func runCommandFreshnessChecks() async throws {
     try runCommandFreshnessByteChecks()
     try await runCommandFreshnessEditScenario()
     try await runCommandFreshnessInvestigationScenario()
+    try await runPreEditReplyBudgetChecks()
     print("PASS command freshness checks: source-change invalidation, no-op/rejected edits and lifetime investigation history")
 }
 
@@ -322,4 +323,90 @@ private func runCommandFreshnessInvestigationScenario() async throws {
     let restoredSource = try String(contentsOf: sourceURL, encoding: .utf8)
     try require(restoredSource == "export const featureValue = 1;\n",
                 "the post-edit blocked outcome did not restore source content")
+}
+
+
+@MainActor
+private func runPreEditReplyBudgetChecks() async throws {
+    let stalledReplies = [
+        "```bash\ncat src/feature.js\n```",
+        "I am still considering how to implement this.",
+        "```edit src/feature.js\nmissing replacement markers\n```",
+        "```bash\nprintf ''\n```"
+    ]
+    for (scenarioIndex, stalledReply) in stalledReplies.enumerated() {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iris-pre-edit-replies-" + UUID().uuidString)
+        let workRoot = container.appendingPathComponent("work")
+        let scratchRoot = container.appendingPathComponent("scratch")
+        try FileManager.default.createDirectory(
+            at: workRoot.appendingPathComponent("src"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: scratchRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+        let previousScratch = ProcessInfo.processInfo.environment["IRIS_HARNESS_SCRATCH"]
+        setenv("IRIS_HARNESS_SCRATCH", scratchRoot.path, 1)
+        defer {
+            if let previousScratch { setenv("IRIS_HARNESS_SCRATCH", previousScratch, 1) }
+            else { unsetenv("IRIS_HARNESS_SCRATCH") }
+        }
+        let source = Data("export const featureValue = 1;\n".utf8)
+        let sourceURL = workRoot.appendingPathComponent("src/feature.js")
+        try source.write(to: sourceURL)
+        let runner = try MaintainShellRunner(repoRootPath: workRoot.path)
+        let initialized = try await runner.run(
+            "git init -q && git add src/feature.js && git -c user.name=IrisFixture -c user.email=fixture@example.invalid commit -qm baseline",
+            deadline: 20)
+        guard initialized.succeeded else {
+            throw CommandFreshnessCheckError.failed("could not initialize pre-edit fixture")
+        }
+        let brief = try HarnessTaskBrief(
+            userRequest: "Change the fixture value",
+            desiredOutcome: "The fixture exports the requested value",
+            acceptanceCriteria: [.init(id: "value", statement: "The fixture displays the requested value")])
+        let briefJSON = String(decoding: try JSONEncoder().encode(brief), as: UTF8.self)
+        var editReplies = 0
+        var nudges = 0
+        var executedCommands = 0
+        let session = try HarnessModelSession(
+            implementationArm: .astraLow,
+            settings: .init(maxCalls: 16, maxInputBytes: 2_000_000),
+            maximumDurationNanoseconds: 120_000_000_000
+        ) { request in
+            switch request.phase {
+            case .intake: return HarnessModelReply(text: briefJSON)
+            case .edit:
+                editReplies += 1
+                return HarnessModelReply(text: stalledReply)
+            default:
+                throw CommandFreshnessCheckError.failed("stalled pre-edit reply entered verification")
+            }
+        }
+        let workflow = HarnessFeatureWorkflow(modelSession: session, targetAppIsBound: true)
+        _ = try await workflow.plan(request: brief.userRequest, repositorySummary: "src/feature.js")
+        let result = await MaintainTierCFixer(provider: HarnessWorkflowMaintainProvider(workflow: workflow))
+            .attemptOnDemandEdit(
+                clonePath: workRoot.path, appSlug: "pre-edit-fixture", appStack: .electron,
+                changeId: UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(),
+                request: brief.userRequest, kind: .feature,
+                progressHandler: { event in
+                    if case .nudgedTowardConvergence = event { nudges += 1 }
+                    if case .runningJailedCommand = event { executedCommands += 1 }
+                },
+                verificationCommandsOverride: VerificationCommands(
+                    buildCommand: nil, testCommand: nil, commandSubdirectory: nil),
+                runsAnIndependentReview: false)
+        guard case .couldNotComplete(let reason) = result,
+              reason == "the provider did not produce a source edit after bounded investigation",
+              editReplies == MaintainTierCFixer.preEditInvestigationStepThreshold * 2,
+              nudges == 1,
+              executedCommands == ((scenarioIndex == 0 || scenarioIndex == 3) ? 1 : 0),
+              try Data(contentsOf: sourceURL) == source else {
+            throw CommandFreshnessCheckError.failed("pre-edit reply scenario \(scenarioIndex) escaped its convergence bound")
+        }
+        let status = try await runner.run("git status --porcelain", deadline: 10)
+        guard status.succeeded, status.outputTail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CommandFreshnessCheckError.failed("pre-edit reply fixture was not restored cleanly")
+        }
+    }
+    print("PASS pre-edit reply budgets: duplicate commands, prose, malformed edits and no-op writes stop after six replies")
 }

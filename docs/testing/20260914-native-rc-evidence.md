@@ -545,3 +545,7 @@ Ran the native Xcode `Iris Test` scheme against `leanring-buddyTests/GuideSetupR
   live provider generated, delivered, relaunched, or rechecked the feature.
   Provider-mediated Iris transfer and native installed-app readback remain open
   gates.
+
+### 2026-09-14 pre-edit reply convergence regression
+
+The harness feature host `--checks` run now covers four completed pre-edit reply classes: duplicate/read command, prose-only response, malformed edit block, and an inert shell write attempt. Each scenario is bounded to six model replies, emits one convergence nudge after three, restores the fixture cleanly, and reports the honest no-source-edit outcome. The affected harness build and command-freshness checks passed; this is headless executor evidence, not live provider or installed-app acceptance.

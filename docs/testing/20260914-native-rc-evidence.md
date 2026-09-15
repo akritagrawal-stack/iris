@@ -824,3 +824,11 @@ to Settings, leaving `hasScreenContentPermission` false even when Screen
 Recording was already enabled. The `Iris Test` scheme rebuilt successfully
 with this change; the next native probe must verify that the picker/capture
 result changes the status and that a subsequent Ask includes a real screen.
+
+The signed v21 smoke launched the test bundle and displayed its permission
+recovery panel. Because v21 has a fresh signing identity, macOS reports its
+Accessibility and Screen Recording grants as revoked even though the older
+v20 identity appears enabled in System Settings. The app correctly stops at
+that gate instead of pretending screen capture is available. A native operator
+must grant the current v21 identity and restart it; only then can the new
+screen-help handshake and spatial journey be exercised.

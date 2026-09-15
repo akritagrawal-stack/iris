@@ -144,13 +144,17 @@ headless, browser, or package tests.
 ## Signed spatial-model candidate (2026-09-15)
 
 - The actual `Iris Test` configuration was rebuilt and signed with the stable
-  `Iris Local Code Signing` identity. Candidate: `/Users/Shared/Iris-RC-20260914-v26/Iris Test.app`; bundle `com.publikhq.iris.test`; executable SHA-256 `5f9f83500b46638eace73df351cd7d9acdd18894b0c9d9e66a277b1b2d031cf0`.
-- A screenshot is the spatial model's visual input, not the spatial decision.
-  The decision now comes from Anthropic's structured Computer Use tool call;
+  `Iris Local Code Signing` identity, with the debug launcher disabled so the
+  standalone candidate can run outside Xcode. Candidate: `/Users/Shared/Iris-RC-20260914-v28/Iris Test.app`; bundle `com.publikhq.iris.test`; executable SHA-256 `ed54f465fe0bd0de0bfca42032ca605585ab51b36ca239155ed06c041887a297`.
+- A screenshot is only the spatial model's visual input. The coordinate comes
+  from Anthropic's structured Computer Use model/tool call. Guide fallback,
+  explicit UI questions, and the onboarding preview all use that detector;
   conversational text and legacy `[POINT]` tags cannot supply or override a
   coordinate for an explicit UI-location request.
-- The candidate launched, but Iris's setup panel still reports the runtime
-  screen-recording/accessibility state as unavailable even though the privacy
-  pane lists `Iris Test` enabled. Therefore no live provider-backed coordinate
-  is claimed from this launch; this remains a native permission/runtime gate,
-  not evidence that screenshot heuristics are the implementation.
+- The detector makes one bounded model request only when a spatial target is
+  requested, rejects screenshot/scroll/drag actions, and maps the returned
+  model-space coordinate through the captured display's scale and origin. The
+  source/native focused suite remains **12/12**.
+- A fresh provider-backed point request is still needed to prove the server
+  accepts Computer Use and that the overlay lands on the intended live control.
+  No live point is claimed until that provider/runtime gate is observed.

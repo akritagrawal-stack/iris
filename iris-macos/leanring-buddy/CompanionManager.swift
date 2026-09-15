@@ -3715,23 +3715,14 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Onboarding Demo Interaction
 
-    private static let onboardingDemoSystemPrompt = """
-    you're iris, a small blue cursor buddy living on the user's screen. you're showing off during onboarding — look at their screen and find ONE specific, concrete thing to point at. pick something with a clear name or identity: a specific app icon (say its name), a specific word or phrase of text you can read, a specific filename, a specific button label, a specific tab title, a specific image you can describe. do NOT point at vague things like "a window" or "some text" — be specific about exactly what you see.
-
-    make a short quirky 3-6 word observation about the specific thing you picked — something fun, playful, or curious that shows you actually read/recognized it. no emojis ever. NEVER quote or repeat text you see on screen — just react to it. keep it to 6 words max, no exceptions.
-
-    CRITICAL COORDINATE RULE: you MUST only pick elements near the CENTER of the screen. your x coordinate must be between 20%-80% of the image width. your y coordinate must be between 20%-80% of the image height. do NOT pick anything in the top 20%, bottom 20%, left 20%, or right 20% of the screen. no menu bar items, no dock icons, no sidebar items, no items near any edge. only things clearly in the middle area of the screen. if the only interesting things are near the edges, pick something boring in the center instead.
-
-    respond with ONLY your short comment followed by the coordinate tag. nothing else. all lowercase.
-
-    format: your comment [POINT:x,y:label]
-
-    the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. origin (0,0) is top-left. x increases rightward, y increases downward.
-    """
-
-    /// Captures a screenshot and asks Claude to find something interesting to
-    /// point at, then triggers the buddy's flight animation. Used during
-    /// onboarding to demo the pointing feature while the intro video plays.
+    /// Captures the display and asks the dedicated spatial model for one
+    /// concrete visible target, then triggers the buddy's flight animation.
+    ///
+    /// This preview intentionally uses the same `ElementLocationDetector` as
+    /// guide fallback and explicit chat pointing. It must never call the
+    /// conversational vision model or parse a legacy `[POINT]` tag: a screenshot
+    /// is the model's visual input, while the structured computer-use action is
+    /// the only source of the coordinate.
     func performOnboardingDemoInteraction() {
         // Don't interrupt an active response
         guard assistantState == .idle else { return }
@@ -3747,47 +3738,29 @@ final class CompanionManager: ObservableObject {
                     return
                 }
 
-                let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
-                let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.onboardingDemoSystemPrompt,
-                    userPrompt: "look around my screen and find something interesting to point at",
-                    onTextChunk: { _ in },
-                    // A pointing answer must not move between two identical asks.
-                    temperature: 0
-                )
-
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
-
-                guard let pointCoordinate = parseResult.coordinate else {
+                guard let pointInDisplay = await elementLocationDetector.detectElementLocation(
+                    screenshotData: cursorScreenCapture.imageData,
+                    userQuestion: "For the onboarding preview, point to one concrete visible interactive element near the center of the screen.",
+                    displayWidthInPoints: cursorScreenCapture.displayWidthInPoints,
+                    displayHeightInPoints: cursorScreenCapture.displayHeightInPoints
+                ) else {
                     print("🎯 Onboarding demo: no element to point at")
                     return
                 }
 
-                let screenshotWidth = CGFloat(cursorScreenCapture.screenshotWidthInPixels)
-                let screenshotHeight = CGFloat(cursorScreenCapture.screenshotHeightInPixels)
-                let displayWidth = CGFloat(cursorScreenCapture.displayWidthInPoints)
-                let displayHeight = CGFloat(cursorScreenCapture.displayHeightInPoints)
                 let displayFrame = cursorScreenCapture.displayFrame
-
-                let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-                let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-                let appKitY = displayHeight - displayLocalY
                 let globalLocation = CGPoint(
-                    x: displayLocalX + displayFrame.origin.x,
-                    y: appKitY + displayFrame.origin.y
+                    x: pointInDisplay.x + displayFrame.origin.x,
+                    y: pointInDisplay.y + displayFrame.origin.y
                 )
 
-                // Set custom bubble text so the pointing animation uses Claude's
-                // comment instead of a random phrase
-                detectedElementBubbleText = parseResult.responseText
+                // The spatial call returns a coordinate by design. Keep the
+                // onboarding copy local and deterministic instead of making a
+                // second conversational call just to label the target.
+                detectedElementBubbleText = "found something here"
                 detectedElementScreenLocation = globalLocation
                 detectedElementDisplayFrame = displayFrame
-                print("🎯 Onboarding demo: pointing at \"\(parseResult.elementLabel ?? "element")\" — \"\(parseResult.responseText)\"")
+                print("🎯 Onboarding demo: dedicated computer-use model resolved a target")
             } catch {
                 // The demo is a flourish, not a feature — a signed-out user
                 // simply doesn't see the cursor fly anywhere, and telling them

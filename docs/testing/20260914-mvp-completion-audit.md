@@ -46,3 +46,8 @@ headless, browser, or package tests.
 - `xcodebuild -project iris-macos/leanring-buddy.xcodeproj -scheme "Iris Test" -destination "platform=macOS" -only-testing:leanring-buddyTests/SpatialGuidanceRegressionTests test CODE_SIGNING_ALLOWED=NO` passed **7/7** tests.
 - The run covered focused-window preference, target identity staleness, duplicate refusal, coordinate transforms, negative monitor origins, bounded compatibility fallback, and one-line cues.
 - The launched test process reported `accessibility: false, screen: false, screenContent: true`; therefore live click-through remains permission-gated even though the semantic target suite passed.
+
+## Permission-pane recheck (2026-09-14)
+
+- macOS Accessibility settings visibly list both `Iris` and `Iris Test` as registered applications.
+- The current v23 process still reports `accessibility: false` and `screen: false`, so registration in the pane is not treated as consent. A user must enable the current test bundle's controls and relaunch before live click-through can be accepted.

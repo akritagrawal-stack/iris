@@ -22,3 +22,9 @@ headless, browser, or package tests.
 - `swift test --package-path iris-macos/tools/harness-tests --parallel`: **161/161** tests passed across 7 suites.
 - `node --test iris-mobile/test/*.test.mjs`: **20/20** tests passed.
 - The rerun changes automated evidence only; it does not close the live provider, macOS permission, screen-capture, or physical-device gates above.
+
+## Fresh native visual probe (2026-09-14)
+
+- The signed v23 process was live (`Iris Test.app`, PID 35284) and displayed the real overlay over the active Canvas/Chrome workspace, including the current task context, model selector, edited-file receipt, and Ask input.
+- `hasScreenContentPermission=1` for the test bundle, and the captured frame was recorded at `/tmp/iris-current-native-20260914.png` (SHA-256 `28d4099d86fa239cdc718bec796b1089bed25589f6800dafc15fbe2ff1fbed18`).
+- This proves native overlay rendering and screen-context presentation for this run. It does not by itself prove a completed click-through action, provider-backed edit, or iPhone journey.

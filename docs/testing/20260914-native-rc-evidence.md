@@ -588,6 +588,15 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+### 2026-09-14 Kneecap installation regression rerun
+
+The native Xcode scheme reran `Bug7MissingToolSelfInstallEndToEndTests` and
+`Bug3StaleShellPathEndToEndTests` together. All `4/4` tests passed, covering
+self-install through completion, reader-installed-tool retry, shipped-shell
+continuity, and real-tool execution against the Kneecap workspace shape. This
+is native fixture evidence; a live install into a selected user workspace and
+the phone handoff remain separate acceptance gates.
+
 ### 2026-09-14 NitroAI transfer oracle rerun
 
 Using NitroAI's pinned Vitest runtime and the explicitly approved

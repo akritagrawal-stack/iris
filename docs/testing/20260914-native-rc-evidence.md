@@ -380,3 +380,13 @@ original `/Users/akrit/kneecap` tree remains unchanged.
 - `system_profiler SPUSBDataType` found no connected iPhone or iPad. Physical
   install, launch, restart, and update continuity therefore remain an explicit
   device gate rather than a claimed result.
+
+### 2026-09-14 NitroAI transfer regression rerun
+
+- The current `/Users/akrit/NitroAI` source passed its complete Vitest suite:
+  `14` files and `140` tests. The transfer-specific database checks passed as
+  part of that run, including export/import envelopes, duplicate and dangling
+  references, atomic failure behavior, and changed same-ID content retention.
+- This is fresh source-level NitroAI evidence. It does not claim Iris generated
+  or delivered the feature through a live provider, nor does it replace the
+  pending packaged relaunch/readback acceptance.

@@ -48,7 +48,6 @@
 				AssistantRequestDiagnosticsTests.swift,
 				CatalogAppIconTests.swift,
 				CatalogMacCompatibilityTests.swift,
-				ChatActionCancellationTests.swift,
 				ChatTranscriptResetTests.swift,
 				CodexEditModelSelectionTests.swift,
 				EditVerificationReceiptTests.swift,

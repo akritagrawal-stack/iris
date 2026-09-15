@@ -495,3 +495,13 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   empty usage, split stream usage, and duplicate-delta protection.
 - This is focused native accounting evidence. Live provider execution and
   physical-device acceptance remain separate gates.
+
+### 2026-09-14 native cancellation regression rerun
+
+- The native scheme ran `ChatActionCancellationTests`; all `6/6` tests passed.
+  They cover cancellation during approval, superseding an older pending
+  approval, preserving the normal approved path, preventing clipboard writes
+  after cancellation, retaining the autonomy safety floor, and avoiding extra
+  approval work for persisted behavior.
+- This is focused native cancellation evidence. Live provider late-settlement
+  and physical-device acceptance remain separate gates.

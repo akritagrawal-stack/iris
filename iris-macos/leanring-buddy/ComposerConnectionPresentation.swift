@@ -28,16 +28,20 @@ nonisolated struct ComposerConnectionPresentation: Equatable, Sendable {
     let inlineMessage: String?
     /// A small settings link, not a second model control or primary action.
     let settingsLinkLabel: String?
+    let hasUsableConnection: Bool
 
     static func canSendTypedRequest(
         hasText: Bool,
         requestIsBeingSizedUp: Bool,
         context: Context,
         helpIsAvailable: Bool,
-        textOnlyHelpIsAvailable: Bool = false
+        textOnlyHelpIsAvailable: Bool = false,
+        editingIsAvailable: Bool = false
     ) -> Bool {
         hasText && !requestIsBeingSizedUp
-            && (context == .projectEdit || helpIsAvailable || textOnlyHelpIsAvailable)
+            && (context == .projectEdit
+                ? editingIsAvailable
+                : helpIsAvailable || textOnlyHelpIsAvailable)
     }
 
     static func resolve(
@@ -60,7 +64,8 @@ nonisolated struct ComposerConnectionPresentation: Equatable, Sendable {
                     connectionLabel: "General questions through Codex",
                     showsModelControl: true,
                     inlineMessage: "Codex can answer typed questions. Connect screen help for questions about what is on your screen or this Mac.",
-                    settingsLinkLabel: "Connect screen help"
+                    settingsLinkLabel: "Connect screen help",
+                    hasUsableConnection: true
                 )
             case .unavailable:
                 return Self(
@@ -69,7 +74,8 @@ nonisolated struct ComposerConnectionPresentation: Equatable, Sendable {
                     inlineMessage: codexIsConnected
                         ? "Codex is connected for app edits. Screen help needs a separate connection."
                         : "Connect screen help to ask questions about what is on your screen.",
-                    settingsLinkLabel: "Connect screen help"
+                    settingsLinkLabel: "Connect screen help",
+                    hasUsableConnection: false
                 )
             }
         case .projectEdit:
@@ -87,7 +93,8 @@ nonisolated struct ComposerConnectionPresentation: Equatable, Sendable {
                     inlineMessage: help == .unavailable
                         ? "Connect an editing provider to change this app."
                         : "Screen help is connected. App edits need an editing provider.",
-                    settingsLinkLabel: "Connect app editing"
+                    settingsLinkLabel: "Connect app editing",
+                    hasUsableConnection: false
                 )
             }
         }
@@ -95,6 +102,6 @@ nonisolated struct ComposerConnectionPresentation: Equatable, Sendable {
 
     private static func connected(_ label: String) -> Self {
         Self(connectionLabel: label, showsModelControl: true,
-             inlineMessage: nil, settingsLinkLabel: nil)
+             inlineMessage: nil, settingsLinkLabel: nil, hasUsableConnection: true)
     }
 }

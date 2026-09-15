@@ -2628,6 +2628,9 @@ final class CompanionManager: ObservableObject {
     func sendUserMessage(_ messageText: String, allowsEditRouting: Bool = true) {
         let trimmedMessageText = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedMessageText.isEmpty else { return }
+        // The panel and other callers share this dispatch entry. A CLI login
+        // may have changed since either surface last refreshed its snapshot.
+        accountService.refreshCodexLoginState()
 
         latestUserMessageText = trimmedMessageText
         // Asking the next thing is the reader saying they are done with the

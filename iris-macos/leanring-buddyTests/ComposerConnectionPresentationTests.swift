@@ -11,7 +11,31 @@ struct ComposerConnectionPresentationTests {
             hasText: true, requestIsBeingSizedUp: false, context: .screenHelp, helpIsAvailable: false
         ))
         #expect(ComposerConnectionPresentation.canSendTypedRequest(
-            hasText: true, requestIsBeingSizedUp: false, context: .projectEdit, helpIsAvailable: false
+            hasText: true, requestIsBeingSizedUp: false, context: .projectEdit,
+            helpIsAvailable: false, editingIsAvailable: true
+        ))
+    }
+
+    @Test func losingEditConnectionDisablesSendAndReconnectingRestoresIt() {
+        for editing: ComposerConnectionPresentation.EditConnection in [.codex, .unavailable, .codex] {
+            let presentation = ComposerConnectionPresentation.resolve(
+                context: .projectEdit, help: .publik, editing: editing,
+                codexIsConnected: editing == .codex
+            )
+            let canSend = ComposerConnectionPresentation.canSendTypedRequest(
+                hasText: true, requestIsBeingSizedUp: false, context: .projectEdit,
+                helpIsAvailable: true, editingIsAvailable: presentation.hasUsableConnection
+            )
+            #expect(canSend == (editing == .codex))
+            #expect((presentation.settingsLinkLabel == nil) == canSend)
+        }
+    }
+
+    @Test func typedHelpDoesNotAuthorizeAnUnavailableEditRoute() {
+        #expect(!ComposerConnectionPresentation.canSendTypedRequest(
+            hasText: true, requestIsBeingSizedUp: false, context: .projectEdit,
+            helpIsAvailable: true, textOnlyHelpIsAvailable: true,
+            editingIsAvailable: false
         ))
     }
 

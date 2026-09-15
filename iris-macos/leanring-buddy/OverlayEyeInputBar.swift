@@ -733,7 +733,8 @@ struct OverlayEyeInputBarView: View {
             requestIsBeingSizedUp: theRequestIsBeingSizedUp,
             context: composerConnectionContext,
             helpIsAvailable: accountService.canAnswerQuestions,
-            textOnlyHelpIsAvailable: accountService.canAnswerTypedQuestionsThroughCodex
+            textOnlyHelpIsAvailable: accountService.canAnswerTypedQuestionsThroughCodex,
+            editingIsAvailable: composerConnectionPresentation.hasUsableConnection
         ) && (effectiveComposerMode == .ask || !onDemandEditCoordinator.isPreparingSavedChangeRecheck)
     }
 

@@ -772,6 +772,16 @@ live `Iris Test` process, then was quit cleanly. This is a bounded startup
 smoke only; without native screen interaction it does not establish the
 Kneecap, spatial, or permission journeys.
 
+### 2026-09-14 native capture probe
+
+The signed v20 candidate was launched and a native `screencapture` probe was
+taken before quitting it. The probe produced a valid PNG container but the
+entire 3024x1964 frame was black. Although the process-level preflight APIs
+reported Accessibility and Screen Recording as true for the probe process,
+this does not prove that the Iris bundle can capture or inspect the desktop.
+The app-specific Screen Recording/Accessibility path therefore remains a
+live acceptance failure requiring native UI diagnosis.
+
 The post-change native Kneecap subset was rerun against the integrated source:
 `Bug7MissingToolSelfInstallEndToEndTests` and
 `Bug3StaleShellPathEndToEndTests` passed `4/4` in 3.761 seconds. This closes

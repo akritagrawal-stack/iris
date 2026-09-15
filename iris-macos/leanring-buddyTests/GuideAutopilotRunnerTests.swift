@@ -74,13 +74,15 @@ struct GuideAutopilotRunnerTests {
     private static func runner(
         shell: FakeShellSession,
         longRunning: FakeShellSession? = nil,
-        proposer: FakeFixProposer? = nil
+        proposer: FakeFixProposer? = nil,
+        autonomyGranted: Bool = false
     ) -> GuideAutopilotRunner {
         let proposer = proposer ?? FakeFixProposer()
         return GuideAutopilotRunner(
             shellSession: shell,
             longRunningSession: longRunning ?? FakeShellSession(outcomes: [.succeeded(workingDirectory: "/x")]),
             fixProposer: proposer,
+            autonomyGranted: { autonomyGranted },
             guideContext: GuideAutopilotGuideContext(
                 slug: "whimprflow", version: 3, appName: "WhimprFlow",
                 platformLabel: "macOS",

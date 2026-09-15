@@ -1,0 +1,13 @@
+{
+  "prototype": true,
+  "label": "Local prototype fixture · mapped with the live catalog adapter",
+  "apps": [
+    {
+      "slug": "kneecap",
+      "name": "kneecap",
+      "macBundleId": null,
+      "latestReleaseTag": null,
+      "guideSlug": "kneecap"
+    }
+  ]
+}

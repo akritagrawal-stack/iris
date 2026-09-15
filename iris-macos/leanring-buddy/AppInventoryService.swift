@@ -40,6 +40,14 @@ nonisolated struct CatalogAppDescriptor: Decodable, Equatable, Sendable {
     /// The newest published release tag, e.g. `v0.1.1`. Null when the app has
     /// no releases, or when publik's catalog sync has not run yet.
     let latestReleaseTag: String?
+    /// The published guide slug, when this catalog entry has an Iris install
+    /// guide. Nil keeps older catalog responses compatible.
+    var guideSlug: String? = nil
+    var macCompatibility: CatalogMacCompatibility = .unknown
+
+    private enum CodingKeys: String, CodingKey {
+        case slug, name, macBundleId, latestReleaseTag, guideSlug
+    }
 }
 
 private nonisolated struct CatalogAppDirectoryResponse: Decodable {
@@ -72,6 +80,13 @@ nonisolated enum AppCatalogDirectoryError: Error, Equatable, Sendable {
 /// inventory a fixed catalog instead of whatever publik happens to be serving.
 nonisolated protocol CatalogAppDirectorySource: Sendable {
     func catalogApps() async throws -> [CatalogAppDescriptor]
+    /// Invalidates only the source's in-memory catalog copy. Sources that do
+    /// not cache may keep the default no-op implementation.
+    func clearCachedCatalogApps() async
+}
+
+extension CatalogAppDirectorySource {
+    func clearCachedCatalogApps() async {}
 }
 
 /// The real source: publik's read-only catalog route. Shaped after
@@ -82,10 +97,13 @@ actor PublikCatalogAppDirectory: CatalogAppDirectorySource {
     private let apiBase: String
     private let urlSession: URLSession
 
-    /// The catalog changes at most daily (publik's sync is on a cron), so the
-    /// copy fetched this session is reused rather than refetched every time the
-    /// panel opens.
+    /// Match publik's public five-minute freshness window while keeping the
+    /// small catalog out of the network hot path. The service retains the last
+    /// known inventory if an expiry-time fetch cannot reach publik.
+    nonisolated static let catalogCacheLifetime: TimeInterval = 5 * 60
     private var cachedCatalogApps: [CatalogAppDescriptor]?
+    private var cachedCatalogAppsFetchedAt: Date?
+    private var reloadCatalogFromURLCacheOnNextFetch = false
 
     init(
         apiBase: String = GuideService.defaultAPIBase,
@@ -96,7 +114,9 @@ actor PublikCatalogAppDirectory: CatalogAppDirectorySource {
     }
 
     func catalogApps() async throws -> [CatalogAppDescriptor] {
-        if let cachedCatalogApps = cachedCatalogApps {
+        if let cachedCatalogApps,
+           let cachedCatalogAppsFetchedAt,
+           Date().timeIntervalSince(cachedCatalogAppsFetchedAt) < Self.catalogCacheLifetime {
             return cachedCatalogApps
         }
 
@@ -107,6 +127,12 @@ actor PublikCatalogAppDirectory: CatalogAppDirectorySource {
         var catalogRequest = URLRequest(url: catalogURL)
         catalogRequest.httpMethod = "GET"
         catalogRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        if reloadCatalogFromURLCacheOnNextFetch {
+            catalogRequest.cachePolicy = .reloadIgnoringLocalCacheData
+            reloadCatalogFromURLCacheOnNextFetch = false
+        } else {
+            catalogRequest.cachePolicy = .useProtocolCachePolicy
+        }
 
         let responseData: Data
         let urlResponse: URLResponse
@@ -135,12 +161,87 @@ actor PublikCatalogAppDirectory: CatalogAppDirectorySource {
             )
         }
 
-        cachedCatalogApps = catalogResponse.apps
-        return catalogResponse.apps
+        let enrichedCatalog = await resolvingMacCompatibility(for: catalogResponse.apps)
+        try Task.checkCancellation()
+        cachedCatalogApps = enrichedCatalog
+        cachedCatalogAppsFetchedAt = Date()
+        return enrichedCatalog
     }
 
-    func clearCachedCatalogApps() {
+    /// The directory omits platform fields, so read the published guide's
+    /// metadata. At most eight requests run together, with one eight-second
+    /// budget for all guide metadata. Misses remain unknown. Results, including
+    /// unknowns, share the directory's session cache, not every panel refresh.
+    private func resolvingMacCompatibility(
+        for descriptors: [CatalogAppDescriptor]
+    ) async -> [CatalogAppDescriptor] {
+        guard !descriptors.isEmpty, !Task.isCancelled else { return descriptors }
+        // Compatibility is what lets a deliberate search distinguish a phone
+        // guide from a Mac app. Four concurrent reads routinely left entries
+        // near the end of the public catalog unresolved before the existing
+        // eight-second ceiling; eight keeps the same bounded deadline while
+        // letting the full small catalog make meaningful progress.
+        let maximumConcurrentGuideReads = 8
+        let deadline = Date().addingTimeInterval(8)
+        let apiBase = self.apiBase
+        let urlSession = self.urlSession
+        return await withTaskGroup(of: (Int, CatalogMacCompatibility)?.self) { group in
+            var result = descriptors
+            var nextIndex = 0
+            var completedCount = 0
+
+            group.addTask {
+                try? await Task.sleep(for: .seconds(8))
+                return nil
+            }
+
+            func enqueue(_ index: Int) {
+                let slug = descriptors[index].slug
+                group.addTask {
+                    let remainingSeconds = deadline.timeIntervalSinceNow
+                    guard !Task.isCancelled, remainingSeconds > 0,
+                          await IrisDeepLinkParser.isValidGuideSlug(slug),
+                          let guideURL = URL(string: "\(apiBase)/api/iris/guides/\(slug)") else {
+                        return (index, .unknown)
+                    }
+                    var request = URLRequest(url: guideURL)
+                    request.timeoutInterval = min(4, remainingSeconds)
+                    request.setValue("application/json", forHTTPHeaderField: "Accept")
+                    guard let (data, response) = try? await urlSession.data(for: request),
+                          let response = response as? HTTPURLResponse,
+                          response.statusCode == 200 else { return (index, .unknown) }
+                    return (index, .fromPublishedGuideData(data, expectedSlug: slug))
+                }
+            }
+
+            while nextIndex < min(maximumConcurrentGuideReads, descriptors.count) {
+                enqueue(nextIndex)
+                nextIndex += 1
+            }
+            while let completion = await group.next() {
+                guard let (index, compatibility) = completion, !Task.isCancelled else {
+                    group.cancelAll()
+                    break
+                }
+                result[index].macCompatibility = compatibility
+                completedCount += 1
+                if completedCount == descriptors.count {
+                    group.cancelAll()
+                    break
+                }
+                if nextIndex < descriptors.count, deadline.timeIntervalSinceNow > 0 {
+                    enqueue(nextIndex)
+                    nextIndex += 1
+                }
+            }
+            return result
+        }
+    }
+
+    func clearCachedCatalogApps() async {
         cachedCatalogApps = nil
+        cachedCatalogAppsFetchedAt = nil
+        reloadCatalogFromURLCacheOnNextFetch = true
     }
 }
 
@@ -286,6 +387,7 @@ nonisolated struct CatalogAppInventoryEntry: Identifiable, Equatable, Sendable {
     let name: String
     let macBundleId: String?
     let latestReleaseTag: String?
+    let guideSlug: String?
     let installationState: CatalogAppInstallationState
     let updateAvailability: CatalogAppUpdateAvailability
     /// Advisory only: whether this app's source is one Iris may edit locally —
@@ -296,6 +398,34 @@ nonisolated struct CatalogAppInventoryEntry: Identifiable, Equatable, Sendable {
     /// on-demand edit coordinator re-checks provenance LIVE the moment the
     /// reader acts, so a stale positive here can never actually cause an edit.
     let isLocallyEditable: Bool
+    var macCompatibility: CatalogMacCompatibility = .unknown
+    /// Resolved by the existing inventory locator, used only for the local app
+    /// icon. Kept in memory with the rest of the installed-app inventory.
+    var installedBundlePath: String? = nil
+
+    init(
+        slug: String,
+        name: String,
+        macBundleId: String?,
+        latestReleaseTag: String?,
+        guideSlug: String? = nil,
+        installationState: CatalogAppInstallationState,
+        updateAvailability: CatalogAppUpdateAvailability,
+        isLocallyEditable: Bool,
+        macCompatibility: CatalogMacCompatibility = .unknown,
+        installedBundlePath: String? = nil
+    ) {
+        self.slug = slug
+        self.name = name
+        self.macBundleId = macBundleId
+        self.latestReleaseTag = latestReleaseTag
+        self.guideSlug = guideSlug
+        self.installationState = installationState
+        self.updateAvailability = updateAvailability
+        self.isLocallyEditable = isLocallyEditable
+        self.macCompatibility = macCompatibility
+        self.installedBundlePath = installedBundlePath
+    }
 
     var id: String { slug }
 
@@ -311,6 +441,10 @@ nonisolated struct CatalogAppInventoryEntry: Identifiable, Equatable, Sendable {
             return installedVersion
         }
         return nil
+    }
+
+    var hasAnInstallGuide: Bool {
+        guideSlug != nil
     }
 
     var hasAnUpdateAvailable: Bool {
@@ -355,7 +489,7 @@ final class AppInventoryService: ObservableObject {
     /// minute ago is still installed when the network drops.
     @Published private(set) var lastRefreshFailureMessage: String?
 
-    private(set) var lastSuccessfulRefreshCompletedAt: Date?
+    @Published private(set) var lastSuccessfulRefreshCompletedAt: Date?
 
     /// A slug → "may Iris edit this app's local source?" join, set by
     /// `CompanionManager` so the inventory can carry the advisory
@@ -409,7 +543,7 @@ final class AppInventoryService: ObservableObject {
     /// Rescans now. Reading the catalog is a network call; deciding what is
     /// installed is filesystem and LaunchServices work, so it happens off the
     /// main actor and only the finished answer comes back.
-    func refreshInventory() async {
+    func refreshInventory(forceCatalogFetch: Bool = false) async {
         guard !isRefreshing else {
             return
         }
@@ -418,6 +552,9 @@ final class AppInventoryService: ObservableObject {
 
         let catalogDescriptors: [CatalogAppDescriptor]
         do {
+            if forceCatalogFetch {
+                await catalogDirectory.clearCachedCatalogApps()
+            }
             catalogDescriptors = try await catalogDirectory.catalogApps()
             lastRefreshFailureMessage = nil
         } catch let catalogError as AppCatalogDirectoryError {
@@ -559,48 +696,78 @@ final class AppInventoryService: ObservableObject {
         // callers and tests that do not care about editability stay unchanged.
         locallyEditableSlugs: Set<String> = []
     ) -> [CatalogAppInventoryEntry] {
-        catalogDescriptors.map { catalogDescriptor in
-            let installationState = installationState(
+        deduplicatedCatalogDescriptors(catalogDescriptors).map { catalogDescriptor in
+            let installationEvidence = inspectInstallation(
                 forCatalogDescriptor: catalogDescriptor,
                 using: installedApplicationLocator
             )
+            let installationState = installationEvidence.state
             return CatalogAppInventoryEntry(
                 slug: catalogDescriptor.slug,
                 name: catalogDescriptor.name,
                 macBundleId: catalogDescriptor.macBundleId,
                 latestReleaseTag: catalogDescriptor.latestReleaseTag,
+                guideSlug: catalogDescriptor.guideSlug,
                 installationState: installationState,
                 updateAvailability: updateAvailability(
                     forInstallationState: installationState,
                     latestReleaseTag: catalogDescriptor.latestReleaseTag
                 ),
-                isLocallyEditable: locallyEditableSlugs.contains(catalogDescriptor.slug)
+                isLocallyEditable: locallyEditableSlugs.contains(catalogDescriptor.slug),
+                macCompatibility: catalogDescriptor.macCompatibility,
+                installedBundlePath: installationEvidence.bundleURL?.path
             )
         }
+    }
+
+    /// The catalog's stable identity is its slug. Keep the first occurrence so
+    /// a malformed or briefly duplicated response cannot produce duplicate
+    /// SwiftUI IDs or let later rows replace earlier published data
+    /// nondeterministically.
+    nonisolated static func deduplicatedCatalogDescriptors(
+        _ catalogDescriptors: [CatalogAppDescriptor]
+    ) -> [CatalogAppDescriptor] {
+        var seenSlugs = Set<String>()
+        var uniqueDescriptors: [CatalogAppDescriptor] = []
+        uniqueDescriptors.reserveCapacity(catalogDescriptors.count)
+        for catalogDescriptor in catalogDescriptors {
+            guard seenSlugs.insert(catalogDescriptor.slug).inserted else { continue }
+            uniqueDescriptors.append(catalogDescriptor)
+        }
+        return uniqueDescriptors
     }
 
     nonisolated static func installationState(
         forCatalogDescriptor catalogDescriptor: CatalogAppDescriptor,
         using installedApplicationLocator: any InstalledApplicationLocating
     ) -> CatalogAppInstallationState {
+        inspectInstallation(forCatalogDescriptor: catalogDescriptor, using: installedApplicationLocator).state
+    }
+
+    /// Keep the version and icon path from the same lookup. This avoids a
+    /// second Spotlight probe and an app moving between two observations.
+    private nonisolated static func inspectInstallation(
+        forCatalogDescriptor catalogDescriptor: CatalogAppDescriptor,
+        using installedApplicationLocator: any InstalledApplicationLocating
+    ) -> (state: CatalogAppInstallationState, bundleURL: URL?) {
         // No bundle identifier means no way to look. That is `unknown`, and it
         // must never collapse into `notInstalled` — see the header comment.
         guard let macBundleId = catalogDescriptor.macBundleId,
               !macBundleId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .unknown
+            return (.unknown, nil)
         }
 
         guard let applicationBundleURL = installedApplicationLocator.applicationBundleURL(
             forBundleIdentifier: macBundleId
         ) else {
-            return .notInstalled
+            return (.notInstalled, nil)
         }
 
-        return .installed(
+        return (.installed(
             installedVersion: InstalledApplicationVersionReader.shortVersionString(
                 forApplicationBundleAt: applicationBundleURL
             )
-        )
+        ), applicationBundleURL)
     }
 
     /// An update is claimed only when the catalog's release is *strictly* newer
@@ -645,6 +812,14 @@ final class AppInventoryService: ObservableObject {
                 return leftEntry.name.localizedCaseInsensitiveCompare(rightEntry.name)
                     == .orderedAscending
             }
+    }
+
+    var macRecommendationContext: String {
+        CatalogMacDiscoveryPolicy.recommendationContext(
+            confirmedAppNames: inventoryEntries
+                .filter { $0.macCompatibility.isConfirmedForThisMac }
+                .map(\.name)
+        )
     }
 
     /// The app's page on publik. Built from the same base the catalog was read

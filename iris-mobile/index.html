@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#101827">
+    <title>Iris mobile install hub</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">Iris</p>
+          <h1>Find an app</h1>
+          <p class="lede">Choose a device to see the next verified step.</p>
+        </div>
+        <button id="refresh" class="icon-button" type="button" aria-label="Refresh app catalog" title="Refresh catalog">↻</button>
+      </header>
+
+      <section class="device-section" aria-labelledby="device-heading">
+        <h2 id="device-heading">Your device</h2>
+        <div class="device-picker" role="group" aria-label="Choose a device">
+          <button class="device-button" type="button" data-device="iphone" aria-pressed="true">iPhone</button>
+          <button class="device-button" type="button" data-device="android" aria-pressed="false">Android</button>
+          <button class="device-button" type="button" data-device="computer" aria-pressed="false">Computer</button>
+        </div>
+      </section>
+
+      <p id="status" class="status" role="status" aria-live="polite">Loading catalog…</p>
+      <section id="catalog" class="catalog" aria-label="Available apps"></section>
+      <section id="empty" class="message-card" hidden>
+        <h2>No apps available</h2>
+        <p>The verified catalog is empty. Refresh when the publisher has listed an app.</p>
+      </section>
+      <section id="error" class="message-card error-card" hidden>
+        <h2>Catalog unavailable</h2>
+        <p id="error-copy">Try again when a network connection is available.</p>
+        <button id="retry" class="secondary-button" type="button">Try again</button>
+      </section>
+
+      <footer>
+        <p id="manifest-note">Publik live catalog. It contains catalog metadata only.</p>
+      </footer>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

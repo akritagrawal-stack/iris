@@ -50,12 +50,12 @@ final class GuideAutopilotCodexFixProposer: GuideAutopilotFixProposing {
 
     /// How long ONE rung may take before Iris stops waiting on it.
     ///
-    /// `CodexMaintainProvider`'s own ceiling is 300s, and that is correct for
+    /// `CodexMaintainProvider`'s own ceiling is 120s, and that is appropriate for
     /// what it was written for — a Tier C step carrying a large context, where
     /// a reasoning model genuinely can take minutes. It is badly wrong here. A
     /// fix proposal is one small question, measured live at 8.7s and 5.2s, and
-    /// the reader is WATCHING a terminal while it happens. Inheriting 300s
-    /// would mean a wedged rung shows five minutes of nothing, twice per step,
+    /// the reader is WATCHING a terminal while it happens. Inheriting 120s
+    /// would mean a wedged rung shows two minutes of nothing, twice per step,
     /// with the ladder's progress guard needing five such steps before it gives
     /// up. That is not a cap on spend — spend is deliberately uncapped on the
     /// reader's own credential — it is a cap on SILENCE.

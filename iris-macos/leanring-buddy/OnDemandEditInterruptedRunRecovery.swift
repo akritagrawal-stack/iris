@@ -39,6 +39,9 @@
 //
 
 import Foundation
+#if canImport(IrisEnvironment)
+import IrisEnvironment
+#endif
 
 /// One in-flight edit's footprint on the reader's clone.
 struct OnDemandEditInFlightRecord: Codable, Equatable {
@@ -56,12 +59,24 @@ struct OnDemandEditInFlightRecord: Codable, Equatable {
     /// What the run was parked on when Iris went away, when known — the
     /// sentence the dirty-clone card and the run log use to explain the orphan.
     var whatIrisWasWaitingFor: String?
+    /// A completed but failed run can leave partial work. Preserve it across
+    /// restart for review rather than treating it as an abandoned live run.
+    var requiresReviewBeforeRecovery: Bool? = nil
+    /// A prospective fingerprint for an explicit recheck, never proof that an
+    /// older failed edit was accepted or installed.
+    var pendingCandidate: PendingEditCandidateIdentity? = nil
+    /// Shown for confirmation on recheck. Older records ask for the request
+    /// again rather than reconstructing authority from a diagnostic log.
+    var recheckRequest: String? = nil
+    /// The accepted pre-execution contract for a held candidate. Older records
+    /// omit this field and must take the ordinary fresh-planning path.
+    var savedFeatureContract: HarnessSavedFeatureContract? = nil
 }
 
 enum OnDemandEditInterruptedRunRecovery {
 
-    nonisolated static let defaultRecordPath = (NSHomeDirectory() as NSString)
-        .appendingPathComponent("Library/Application Support/Iris/on-demand-edit-in-flight.json")
+    nonisolated static let defaultRecordPath = IrisTestEnvironment.applicationSupportDirectory
+        .appendingPathComponent("on-demand-edit-in-flight.json").path
 
     enum Outcome: Equatable {
         /// No record, or a record naming a clone that is no longer there.
@@ -84,7 +99,17 @@ enum OnDemandEditInterruptedRunRecovery {
     static func remember(_ record: OnDemandEditInFlightRecord, recordPath: String = defaultRecordPath) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        // `JSONEncoder.DateEncodingStrategy.iso8601` truncates Date values to
+        // whole seconds on this platform. The review-held retention path
+        // intentionally checks that its persisted record round-trips exactly;
+        // truncating `startedAt` made every normal `Date()` record fail that
+        // check and silently fall through to cleanup. Persist the reference
+        // timestamp as a Double so Equatable records survive the write/read
+        // boundary without losing sub-second precision.
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(date.timeIntervalSinceReferenceDate)
+        }
         guard let data = try? encoder.encode(record) else { return }
         let directory = (recordPath as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
@@ -98,7 +123,24 @@ enum OnDemandEditInterruptedRunRecovery {
     static func recordOnDisk(recordPath: String = defaultRecordPath) -> OnDemandEditInFlightRecord? {
         guard let data = FileManager.default.contents(atPath: recordPath) else { return nil }
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        // Read the exact numeric format above and retain compatibility with
+        // records written by older builds using an ISO-8601 string.
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            if let timestamp = try? container.decode(Double.self) {
+                return Date(timeIntervalSinceReferenceDate: timestamp)
+            }
+            let string = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: string) { return date }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: string) { return date }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "recovery record date was not a valid ISO-8601 timestamp"
+            )
+        }
         return try? decoder.decode(OnDemandEditInFlightRecord.self, from: data)
     }
 
@@ -107,8 +149,32 @@ enum OnDemandEditInterruptedRunRecovery {
     /// Reverts what the record says Iris left uncommitted, if and only if that
     /// is all that is uncommitted. Safe to call when there is nothing to do.
     @discardableResult
-    static func recoverNow(recordPath: String = defaultRecordPath, now: Date = Date()) -> Outcome {
+    static func recoverNow(recordPath: String = defaultRecordPath, now: Date = Date(),
+        gitRunner: (([String], String) -> GitResult)? = nil) -> Outcome {
         guard let record = recordOnDisk(recordPath: recordPath) else { return .nothingToRecover }
+        let usesInjectedRunner = gitRunner != nil
+        let git = gitRunner ?? { runGit($0, in: $1) }
+        if record.requiresReviewBeforeRecovery == true {
+            return .leftAlone(clonePath: record.clonePath,
+                reason: "This failed edit has partial or unconfirmed source changes awaiting review.",
+                pathsIrisEdited: record.pathsIrisEdited)
+        }
+#if IRIS_TEST_BUILD
+        // A supplied runner is a test-only seam for a disposable repository.
+        // Runtime callers never supply one, so their recovery remains bound to
+        // the registered Iris Test project before any filesystem action.
+        guard IrisTestEnvironment.isEnabled,
+              (usesInjectedRunner || IrisTestProjectRegistry.permitsEdit(
+                slug: record.appSlug, clonePath: record.clonePath
+              )),
+              record.pathsIrisEdited.allSatisfy({ path in
+                  !path.hasPrefix("/") && !path.split(separator: "/").contains("..")
+              }) else {
+            return .leftAlone(clonePath: record.clonePath,
+                reason: "The recovery record is not bound to this test copy. Nothing was changed.",
+                pathsIrisEdited: record.pathsIrisEdited)
+        }
+#endif
 
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: record.clonePath, isDirectory: &isDirectory),
@@ -119,7 +185,7 @@ enum OnDemandEditInterruptedRunRecovery {
             return .nothingToRecover
         }
 
-        let head = runGit(["rev-parse", "HEAD"], in: record.clonePath)
+        let head = git(["rev-parse", "HEAD"], record.clonePath)
         guard head.exitCode == 0 else {
             // Git itself could not be asked. Leave everything, including the
             // record, for a later attempt.
@@ -130,7 +196,7 @@ enum OnDemandEditInterruptedRunRecovery {
             return .theRunHadAlreadyCommitted(clonePath: record.clonePath)
         }
 
-        let status = runGit(["status", "--porcelain", "--untracked-files=all"], in: record.clonePath)
+        let status = git(["status", "--porcelain", "--untracked-files=all"], record.clonePath)
         guard status.exitCode == 0 else {
             return .leftAlone(clonePath: record.clonePath, reason: "git could not read the working tree", pathsIrisEdited: record.pathsIrisEdited)
         }
@@ -144,7 +210,12 @@ enum OnDemandEditInterruptedRunRecovery {
         let pathsThatAreNotIriss = dirtyEntries.map(\.path).filter { !pathsIrisEdited.contains(normalized($0)) }
         guard pathsThatAreNotIriss.isEmpty else {
             let reason = "the clone also has changes Iris did not make (\(pathsThatAreNotIriss.prefix(3).joined(separator: ", "))\(pathsThatAreNotIriss.count > 3 ? ", …" : ""))"
-            appendToTheRunLog(record, line: "recovery: Iris went away before this run finished\(waitingClause(record)). Its unfinished edits were NOT reverted because \(reason).", now: now)
+            appendToTheRunLog(
+                record,
+                line: "recovery: Iris went away before this run finished\(waitingClause(record)). Its unfinished edits were NOT reverted because \(reason).",
+                now: now,
+                allowsUnregisteredFixture: usesInjectedRunner
+            )
             return .leftAlone(clonePath: record.clonePath, reason: reason, pathsIrisEdited: record.pathsIrisEdited)
         }
 
@@ -154,12 +225,30 @@ enum OnDemandEditInterruptedRunRecovery {
         var revertedPaths: [String] = []
         for entry in dirtyEntries {
             let result = entry.isUntracked
-                ? runGit(["clean", "-f", "--", entry.path], in: record.clonePath)
-                : runGit(["checkout", "--", entry.path], in: record.clonePath)
+                ? git(["clean", "-f", "--", entry.path], record.clonePath)
+                : git(["checkout", "--", entry.path], record.clonePath)
             if result.exitCode == 0 { revertedPaths.append(entry.path) }
         }
+        let finalStatus = git(["status", "--porcelain", "--untracked-files=all"], record.clonePath)
+        guard revertedPaths.count == dirtyEntries.count, finalStatus.exitCode == 0,
+              finalStatus.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            appendToTheRunLog(
+                record,
+                line: "recovery: restoration was incomplete or clean source could not be confirmed. Recovery details were retained.",
+                now: now,
+                allowsUnregisteredFixture: usesInjectedRunner
+            )
+            return .leftAlone(clonePath: record.clonePath,
+                reason: "Restoration was incomplete or clean source could not be confirmed. Recovery details were retained.",
+                pathsIrisEdited: record.pathsIrisEdited)
+        }
         forget(recordPath: recordPath)
-        appendToTheRunLog(record, line: "recovery: Iris went away before this run finished\(waitingClause(record)). Its unfinished edits to \(revertedPaths.joined(separator: ", ")) were reverted; the clone is clean again.", now: now)
+        appendToTheRunLog(
+            record,
+            line: "recovery: Iris went away before this run finished\(waitingClause(record)). Its unfinished edits to \(revertedPaths.joined(separator: ", ")) were reverted; the clone is clean again.",
+            now: now,
+            allowsUnregisteredFixture: usesInjectedRunner
+        )
         return .revertedIrisOwnEdits(clonePath: record.clonePath, paths: revertedPaths)
     }
 
@@ -189,6 +278,28 @@ enum OnDemandEditInterruptedRunRecovery {
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_TERMINAL_PROMPT"] = "0"
         environment["GIT_OPTIONAL_LOCKS"] = "0"
+#if IRIS_TEST_BUILD
+        guard IrisTestEnvironment.isEnabled,
+              IrisTestProjectRegistry.projects().contains(where: { $0.clonePath == repoRootPath }) else {
+            return GitResult(exitCode: 126, output: "Test recovery refused an unregistered clone.")
+        }
+        func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let command = ([gitPath, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] + arguments)
+            .map(quote).joined(separator: " ")
+        let processPolicy = MaintainSandbox.runtimeProcessPolicy()
+        guard case .test(let testPolicy) = processPolicy,
+              let jail = MaintainSandbox.jailedInvocation(
+                forCommand: command, repoRootPath: repoRootPath, policy: processPolicy
+              ) else {
+            return GitResult(exitCode: 126, output: "Test recovery could not create its sandbox.")
+        }
+        defer { try? FileManager.default.removeItem(atPath: jail.profilePath) }
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = ["-e", "setpgrp(0,0) or die 'process group failed'; exec @ARGV; die 'exec failed';",
+            "--", "/bin/zsh", "-f", "-c", jail.invocation]
+        environment = MaintainSandbox.testProcessEnvironment(for: testPolicy)
+        process.terminationHandler = { finished in killpg(finished.processIdentifier, SIGKILL) }
+#endif
         process.environment = environment
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -198,6 +309,13 @@ enum OnDemandEditInterruptedRunRecovery {
         } catch {
             return GitResult(exitCode: 126, output: "\(error)")
         }
+#if IRIS_TEST_BUILD
+        let deadline = DispatchWorkItem {
+            if process.isRunning { killpg(process.processIdentifier, SIGKILL) }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 15, execute: deadline)
+        defer { deadline.cancel() }
+#endif
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return GitResult(exitCode: process.terminationStatus, output: String(decoding: data, as: UTF8.self))
@@ -237,7 +355,22 @@ enum OnDemandEditInterruptedRunRecovery {
         return normalizedPath
     }
 
-    private static func appendToTheRunLog(_ record: OnDemandEditInFlightRecord, line: String, now: Date) {
+    private static func appendToTheRunLog(
+        _ record: OnDemandEditInFlightRecord,
+        line: String,
+        now: Date,
+        allowsUnregisteredFixture: Bool = false
+    ) {
+#if IRIS_TEST_BUILD
+        guard IrisTestEnvironment.isEnabled,
+              (allowsUnregisteredFixture || IrisTestProjectRegistry.permitsEdit(
+                slug: record.appSlug, clonePath: record.clonePath
+              )),
+              let path = record.runLogPath,
+              (allowsUnregisteredFixture || IrisTestProjectRegistry.contains(
+                path, within: IrisTestEnvironment.logsDirectory
+              )) else { return }
+#endif
         guard let runLogPath = record.runLogPath,
               let handle = FileHandle(forWritingAtPath: runLogPath) else { return }
         defer { try? handle.close() }

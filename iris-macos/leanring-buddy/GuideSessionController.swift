@@ -281,6 +281,109 @@ nonisolated struct LastFollowedGuideMemory: @unchecked Sendable {
     }
 }
 
+/// Durable pointer to the source workspace selected for a guide run. The
+/// binding contains only identities and owned paths, never source contents.
+/// It is revalidated by `GuideSourceWorkspaceService` before every execution;
+/// persistence alone is never treated as permission to run.
+nonisolated struct GuideSelectedWorkspaceMemory: @unchecked Sendable {
+    static let shared = GuideSelectedWorkspaceMemory()
+    static let storageKey = "iris:guide:selectedWorkspace"
+
+    private let userDefaults: UserDefaults
+
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+    }
+
+    func binding() -> GuideSourceWorkspaceBinding? {
+        guard let data = userDefaults.data(forKey: Self.storageKey) else { return nil }
+        return try? JSONDecoder().decode(GuideSourceWorkspaceBinding.self, from: data)
+    }
+
+    func save(_ binding: GuideSourceWorkspaceBinding) {
+        guard let data = try? JSONEncoder().encode(binding) else { return }
+        userDefaults.set(data, forKey: Self.storageKey)
+    }
+
+    func forget() {
+        userDefaults.removeObject(forKey: Self.storageKey)
+    }
+}
+
+/// The source setup card has three states, intentionally separate from guide
+/// progress. A reader may cancel or retry setup without losing their guide
+/// position, and a stale inspection can never be used to create a workspace.
+enum GuideSourceWorkspaceSetupState: Equatable, Sendable {
+    case idle
+    case inspecting
+    case offer(GuideSourceWorkspaceInspection)
+    case preparing(GuideSourceWorkspaceSetupChoice)
+    case ready(GuideSourceWorkspaceBinding)
+    case failed(String)
+}
+
+/// A deliberately narrow admission for an Iris Test-native fixture. Production
+/// always uses the default `nil` context and retains its marketplace refusal.
+/// The fixture names one guide pin and one disposable workspace root; it cannot
+/// become a general Test-mode marketplace or shell permission.
+nonisolated struct GuideOfflineNativeFixture: @unchecked Sendable {
+    let guideID: String
+    let guideRevision: Int
+    let expectedOrigin: GuideSourceWorkspaceOrigin
+    let expectedCommit: String
+    let workspaceRoot: URL
+
+    init?(
+        guideID: String,
+        guideRevision: Int,
+        expectedOrigin: GuideSourceWorkspaceOrigin,
+        expectedCommit: String,
+        workspaceRoot: URL
+    ) {
+        let root = workspaceRoot.standardizedFileURL
+        let cacheDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches", isDirectory: true)
+            .standardizedFileURL
+        guard IrisTestEnvironment.isEnabled,
+              !guideID.isEmpty,
+              guideRevision >= 1,
+              GitInspectionService.isValidCommitIdentifier(expectedCommit),
+              root.path.hasPrefix(cacheDirectory.path + "/iris-native-guide-fixture-"),
+              root.deletingLastPathComponent() == cacheDirectory,
+              root.path == root.resolvingSymlinksInPath().standardizedFileURL.path,
+              FileManager.default.fileExists(atPath: root.path) else {
+            return nil
+        }
+        self.guideID = guideID
+        self.guideRevision = guideRevision
+        self.expectedOrigin = expectedOrigin
+        self.expectedCommit = expectedCommit
+        self.workspaceRoot = root
+    }
+
+    func accepts(_ guide: IrisGuide) -> Bool {
+        guide.appSlug == guideID
+            && guide.version == guideRevision
+            && guide.sourceCommit == expectedCommit
+            && GuideSourceWorkspaceOrigin.parse(
+                "https://github.com/\(guide.sourceOwner)/\(guide.sourceRepo)"
+            ) == expectedOrigin
+    }
+
+    func accepts(_ binding: GuideSourceWorkspaceBinding) -> Bool {
+        binding.guideID == guideID
+            && binding.guideRevision == guideRevision
+            && binding.projectID == guideID
+            && binding.expectedOrigin == expectedOrigin
+            && binding.expectedCommit == expectedCommit
+            && binding.isIsolated
+            && GuideSourceWorkspacePath.isContained(
+                URL(fileURLWithPath: binding.stagedPath, isDirectory: true),
+                within: workspaceRoot
+            )
+    }
+}
+
 /// How the controller asks whether a tool is installed. It is a closure rather
 /// than a direct call to `ToolVersionService` so a test can answer "node is
 /// missing" without a machine that actually lacks Node, and so no test ever
@@ -348,7 +451,14 @@ final class GuideSessionController: ObservableObject {
     @Published private(set) var autopilotRunner: GuideAutopilotRunner?
     /// True while the drive loop is running, so the watch-loop resume path
     /// cannot start a second concurrent loop.
-    private var autopilotIsDriving = false
+    private var autopilotDriveID: UUID?
+    private var autopilotIsDriving: Bool { autopilotDriveID != nil }
+    private var surfacedStepRetryID: UUID?
+    private var surfacedStepRetryTask: Task<Void, Never>?
+    /// Changes whenever a guide is opened, closed, or switched to another
+    /// branch. Async work may finish after cancellation, so this identity is
+    /// checked before an old operation can publish state for a newer session.
+    private var guideSessionGeneration = 0
 
     /// Which step the takeover is parked on, waiting for the reader to say they
     /// did it — the "I did it — continue" bar's step, and nil whenever that bar
@@ -391,8 +501,60 @@ final class GuideSessionController: ObservableObject {
     /// in `state.setupTool` (`iris-desktop/ui/app.js`).
     @Published private(set) var setupRecoveryState: GuideSetupRecoveryState?
 
+    /// The selected prepared source, exposed as typed state for the setup card
+    /// and retained across a run, retry, watch handoff, and relaunch.
+    @Published private(set) var selectedWorkspaceBinding: GuideSourceWorkspaceBinding?
+    @Published private(set) var sourceWorkspaceSetupState: GuideSourceWorkspaceSetupState = .idle
+
+    var selectedWorkspaceMemory = GuideSelectedWorkspaceMemory.shared {
+        didSet {
+            selectedWorkspaceBinding = selectedWorkspaceMemory.binding()
+        }
+    }
+
     var readerIsInSetupRecovery: Bool {
         setupRecoveryState != nil
+    }
+
+    /// A source-pinned guide can ask the reader to select a checkout before
+    /// Iris takes control. The selected path is inspected with fixed Git argv;
+    /// the panel never turns a path into shell text.
+    var guideOffersSourceWorkspaceSetup: Bool {
+        guard let guide = guideBeingFollowed else { return false }
+        return guide.sourceCommit != nil && Self.sourceOrigin(for: guide) != nil
+    }
+
+    /// A pinned guide still needs the source setup affordance even when an
+    /// older publisher payload has an origin spelling the strict parser cannot
+    /// normalize. The picker will fail closed with a readable identity error;
+    /// hiding it would strand the reader on a hard-coded legacy path.
+    var guideHasPinnedSourceIdentity: Bool {
+        guard let guide = guideBeingFollowed else { return false }
+        return guide.sourceCommit != nil
+            && !guide.sourceOwner.isEmpty
+            && !guide.sourceRepo.isEmpty
+    }
+
+    /// A structural workspace declaration is the publisher's proof that a
+    /// project command is intended to run in the prepared tree. Older guides
+    /// retain their home-relative commands for manual following only.
+    var guideHasStructuralWorkspaceSteps: Bool {
+        selectedBranch?.steps.contains(where: { $0.workspace != nil }) == true
+    }
+
+    /// Do not let a source-pinned guide claim safe automation while it still
+    /// names its project checkout through HOME-relative paths. Moving the shell
+    /// first cannot constrain a later `cd ~/project` in raw guide text.
+    var guideNeedsPublisherWorkspaceMigration: Bool {
+        guard let guide = guideBeingFollowed,
+              guide.sourceCommit != nil,
+              let branch = selectedBranch else { return false }
+        let projectPrefix = "~/\(guide.appSlug)"
+        return branch.steps.contains { step in
+            step.workingDirectory == projectPrefix
+                || step.workingDirectory?.hasPrefix(projectPrefix + "/") == true
+                || step.command?.contains("cd \(projectPrefix)") == true
+        }
     }
 
     /// Where the eye is going for the step on screen, and why.
@@ -406,6 +568,11 @@ final class GuideSessionController: ObservableObject {
     /// controller knowing anything about overlays or windows.
     var sendTheEyeTo: ((CGPoint, CGRect, String) -> Void)?
     var stopPointingTheEye: (() -> Void)?
+    /// The click-through outline is deliberately separate from the eye flight.
+    /// A legacy rectangle can still guide the eye, but only fresh semantic
+    /// evidence may draw an outline around a real control.
+    var showGuideTargetOutline: ((GuideTargetEvidence) -> Void)?
+    var clearGuideTargetOutline: (() -> Void)?
 
     /// Fired exactly once, the moment the reader reaches the completion card, so
     /// `CompanionManager` can open the freshly installed app and refresh the
@@ -414,6 +581,11 @@ final class GuideSessionController: ObservableObject {
     /// The reader asked that a finished install "just open and be part of your
     /// apps list" instead of leaving them on a card.
     var onGuideCompleted: ((IrisGuide, IrisGuideBranch) -> Void)?
+
+    /// Brings the overlay forward when a guide is opened from Settings or a
+    /// deep link. The controller owns guide state, while the companion owns the
+    /// window, so the cross-layer action remains an injected closure.
+    var surfaceTheGuideCardAtTheEye: (() -> Void)?
 
     /// Fired when autopilot begins and ends, so `CompanionManager` can raise and
     /// tear down the centered terminal takeover. Injected like the eye closures
@@ -435,6 +607,11 @@ final class GuideSessionController: ObservableObject {
     /// declined or its alert never reached the front, and the button simply did
     /// nothing forever after. A tap has to be answered.
     @Published private(set) var autopilotBlockedExplanation: String?
+
+    /// Keeps the recovery affordance visible after a legacy guide refuses to
+    /// run. This is state, rather than a derived guide predicate, because the
+    /// refusal can invalidate a saved binding while the guide remains open.
+    @Published private(set) var shouldShowSourceWorkspaceRecovery = false
 
     /// The persisted "Let Iris take control" grant `startAutopilot` reads and
     /// sets. Settable (not just `.shared`) so a test can inject one over an
@@ -534,7 +711,12 @@ final class GuideSessionController: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.theReaderCanSeeTheGuideStepRightNow else { return }
+                // The previous target may belong to the app that just lost
+                // focus. Clear it before the debounced re-resolution rather
+                // than letting a stale outline remain visible during a switch.
+                guard let self else { return }
+                self.clearGuideTargetOutline?()
+                guard self.theReaderCanSeeTheGuideStepRightNow else { return }
                 self.refreshPointingOnceAppActivationsHaveSettled()
             }
         }
@@ -570,6 +752,22 @@ final class GuideSessionController: ObservableObject {
 
     private var debouncedPointingRefreshTask: Task<Void, Never>?
 
+    /// A tab can change without its application activating. Safari and Chrome
+    /// keep the same process and focused window while replacing the document
+    /// underneath the accessibility tree, so the activation observer above
+    /// never fires. A small, free revalidation loop closes that gap: authored
+    /// targets are reacquired from AX, stale outlines are cleared, and the
+    /// existing per-step model budget still bounds inferred targets. The loop
+    /// exists only while a visible guide has a target locator; it is cancelled
+    /// with the guide and pauses while the card is hidden.
+    private var pointingRevalidationTask: Task<Void, Never>?
+
+    /// AX reads are local and bounded by `SystemGuideTargetLocator`'s walk
+    /// deadline. This interval is long enough to avoid turning a tab switch
+    /// into a tight polling loop, while short enough that a changed page does
+    /// not leave an old outline on screen for a noticeable interaction.
+    private static let pointingRevalidationInterval: Duration = .milliseconds(900)
+
     /// Coalesces a burst of app activations into one pointing refresh.
     private func refreshPointingOnceAppActivationsHaveSettled() {
         debouncedPointingRefreshTask?.cancel()
@@ -581,6 +779,29 @@ final class GuideSessionController: ObservableObject {
             guard self.theReaderCanSeeTheGuideStepRightNow else { return }
             self.refreshPointingForTheOpenStep()
         }
+    }
+
+    /// Keep the current target honest when the app remains frontmost but its
+    /// window/document changes. App activation cannot observe those changes;
+    /// this bounded loop reuses the normal refresh path so all of the same
+    /// identity, ambiguity, minimization, cancellation, and model-budget
+    /// gates apply. A hidden guide stops the loop and the next explicit refresh
+    /// starts it again, which avoids background AX work.
+    private func startPointingRevalidationIfNeeded() {
+        guard pointingRevalidationTask == nil else { return }
+        pointingRevalidationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.pointingRevalidationInterval)
+                guard !Task.isCancelled, let self else { return }
+                guard self.theReaderCanSeeTheGuideStepRightNow else { return }
+                self.refreshPointingForTheOpenStep()
+            }
+        }
+    }
+
+    private func stopPointingRevalidation() {
+        pointingRevalidationTask?.cancel()
+        pointingRevalidationTask = nil
     }
 
     deinit {
@@ -600,9 +821,11 @@ final class GuideSessionController: ObservableObject {
         else {
             pointingTask?.cancel()
             theQuestionThePointingTaskIsAnswering = nil
+            stopPointingRevalidation()
             pointingDecisionForTheOpenStep = .doNotPoint(.stepHasNothingToPointAt)
             explanationForIrisHavingStoppedPointingAtThisStep = nil
             theFlightTheEyeIsShowing.theEyeStoppedPointing()
+            clearGuideTargetOutline?()
             stopPointingTheEye?()
             return
         }
@@ -658,7 +881,13 @@ final class GuideSessionController: ObservableObject {
             // no budget to spend and nothing about a budget to explain.
             pointingDecisionForTheOpenStep = decision
             explanationForIrisHavingStoppedPointingAtThisStep = nil
+            clearGuideTargetOutline?()
+            stopPointingTheEye?()
             return
+        }
+
+        if case .pointAt = decision {
+            startPointingRevalidationIfNeeded()
         }
 
         // Pointing refreshes on app activation as well as on step changes, so
@@ -725,6 +954,11 @@ final class GuideSessionController: ObservableObject {
                 )
             self.pointingDecisionForTheOpenStep = outcome.decision
             if let location = outcome.screenLocation, let displayFrame = outcome.displayFrame {
+                if outcome.freshness == .fresh, let evidence = outcome.targetEvidence {
+                    self.showGuideTargetOutline?(evidence)
+                } else {
+                    self.clearGuideTargetOutline?()
+                }
                 // Same step, same place, same words — the eye is already
                 // saying it, so saying it again is noise, not help. Anything
                 // that is genuinely new (the step moved on, the window moved,
@@ -733,7 +967,8 @@ final class GuideSessionController: ObservableObject {
                 let flight = GuideEyeFlight(
                     stepIdentity: stepIdentityForBudget,
                     screenLocation: location,
-                    label: step.title
+                    label: step.title,
+                    targetFingerprint: outcome.targetEvidence?.fingerprint
                 )
                 if self.theFlightTheEyeIsShowing.theEyeShouldFly(to: flight) {
                     self.sendTheEyeTo?(location, displayFrame, step.title)
@@ -762,6 +997,12 @@ final class GuideSessionController: ObservableObject {
                 // step moved on, the window moved — is a different flight and
                 // still flies, and the hard reset for "there is no step any
                 // more" is still done by the guard at the top of this method.
+                // The eye memo survives this absence so a return to the same
+                // semantic control is not needlessly announced again. The
+                // outline is different: it represents the control currently
+                // visible on screen, so it must disappear as soon as this
+                // refresh has no current target to reacquire.
+                self.clearGuideTargetOutline?()
                 self.stopPointingTheEye?()
             }
         }
@@ -824,6 +1065,20 @@ final class GuideSessionController: ObservableObject {
     // MARK: - Collaborators
 
     private let guideService: GuideService
+    private let sourceWorkspaceService: GuideSourceWorkspaceService
+    /// Non-nil only in a direct native test construction. The normal app never
+    /// supplies this and Iris Test continues to refuse marketplace guides.
+    private let offlineNativeFixture: GuideOfflineNativeFixture?
+    private var sourceWorkspaceRequest: GuideSourceWorkspaceRequest?
+    private var sourceWorkspaceInspection: GuideSourceWorkspaceInspection?
+    /// Keeps a cancelled setup's identity for a same-folder retry. The source
+    /// path and guide identity are checked before reuse, so choosing another
+    /// folder always starts a fresh owned destination.
+    private var cancelledSourceWorkspaceRequest: GuideSourceWorkspaceRequest?
+    /// Invalidates source setup completions that belonged to a cancelled,
+    /// closed, or superseded setup attempt. Guide identity alone is not enough:
+    /// two attempts for the same guide can legitimately overlap.
+    private var sourceWorkspaceGeneration = 0
 
     /// Notices when the reader has actually done the step they are on, so the
     /// guide moves without being told. It only ever runs for a step that
@@ -868,13 +1123,36 @@ final class GuideSessionController: ObservableObject {
         checkToolVersion: @escaping GuideToolVersionChecker = { toolName in
             try await ToolVersionService.checkToolVersion(tool: toolName)
         },
-        makeAutopilotRunner: (@MainActor (GuideAutopilotGuideContext) -> GuideAutopilotRunner)? = nil
+        makeAutopilotRunner: (@MainActor (GuideAutopilotGuideContext) -> GuideAutopilotRunner)? = nil,
+        sourceWorkspaceService: GuideSourceWorkspaceService? = nil,
+        offlineNativeFixture: GuideOfflineNativeFixture? = nil
     ) {
         self.guideService = guideService
+        self.offlineNativeFixture = offlineNativeFixture
         self.platformThisAppRunsOn = platformThisAppRunsOn
         self.watchLoop = watchLoop ?? WatchLoop()
         self.checkToolVersion = checkToolVersion
         self.makeAutopilotRunner = makeAutopilotRunner
+        let defaultWorkspaceRoot = IrisTestEnvironment.applicationSupportDirectory
+            .appendingPathComponent("GuideSourceWorkspaces", isDirectory: true)
+        // The destination validator deliberately requires the owned root to
+        // already exist. Create it before the service is constructed so the
+        // first native picker attempt can stage a workspace instead of being
+        // misreported as a destination collision.
+        try? FileManager.default.createDirectory(
+            at: defaultWorkspaceRoot,
+            withIntermediateDirectories: true
+        )
+        self.sourceWorkspaceService = sourceWorkspaceService ?? GuideSourceWorkspaceService(
+            store: GuideSourceWorkspaceStore(directory: defaultWorkspaceRoot.appendingPathComponent("records", isDirectory: true)),
+            destinationIsOwned: { root in
+                let expected = defaultWorkspaceRoot.standardizedFileURL
+                let actual = root.standardizedFileURL
+                return actual.path == expected.path
+                    && actual.path != "/"
+                    && actual.path == actual.resolvingSymlinksInPath().standardizedFileURL.path
+            }
+        )
 
         // The whole feature in four lines: when the loop decides the step is
         // done, move on. `notYet` is silence by design, and a `userStuck` hint
@@ -901,6 +1179,7 @@ final class GuideSessionController: ObservableObject {
         // memory and nothing else — no guide is opened, no network call is
         // made, and startup is not hijacked.
         self.lastGuideTheReaderWasFollowing = lastFollowedGuideMemory.rememberedGuide()
+        self.selectedWorkspaceBinding = selectedWorkspaceMemory.binding()
 
         startRefreshingPointingOnAppActivation()
     }
@@ -966,19 +1245,39 @@ final class GuideSessionController: ObservableObject {
         branchKeyFromDeepLink: String?,
         stepIndexFromDeepLink: Int?
     ) async {
-        cancelAnyWorkFromThePreviousStep()
+        if IrisTestEnvironment.isEnabled,
+           !IrisTestEnvironment.isUnitTestProcess,
+           !IrisTestEnvironment.allowsMarketplaceGuides(
+                hasOfflineFixture: offlineNativeFixture != nil
+           ) {
+            loadState = .guideCouldNotBeLoaded(slug: slug,
+                userFacingMessage: "Iris Test marketplace guides are unavailable in this test host. Use a native Test launch for acceptance or regular Iris for normal marketplace installations.")
+            // The refusal still needs a visible card when opened from Settings.
+            surfaceTheGuideCardAtTheEye?()
+            return
+        }
+        guideSessionGeneration &+= 1
+        let generationForThisOpen = guideSessionGeneration
+        tearDownWhicheverGuideSessionIsCurrentlyOpen()
         loadState = .guideIsLoading(slug: slug)
+        surfaceTheGuideCardAtTheEye?()
         guideBeingFollowed = nil
         selectedBranch = nil
         currentStepIndex = 0
         readerHasFinishedTheGuide = false
         toolCheckRows = []
         setupRecoveryState = nil
+        selectedWorkspaceBinding = nil
+        sourceWorkspaceRequest = nil
+        sourceWorkspaceInspection = nil
+        cancelledSourceWorkspaceRequest = nil
+        sourceWorkspaceSetupState = .idle
 
         let fetchedGuide: IrisGuide
         do {
             fetchedGuide = try await guideService.fetchGuide(slug: slug, version: requestedVersion)
         } catch let guideServiceError as GuideServiceError {
+            guard guideSessionGeneration == generationForThisOpen else { return }
             // Every status the route can answer with is already a distinct case
             // carrying its own sentence, so "this version is gone" never reads
             // as "you have no internet".
@@ -988,11 +1287,21 @@ final class GuideSessionController: ObservableObject {
             )
             return
         } catch {
+            guard guideSessionGeneration == generationForThisOpen else { return }
             loadState = .guideCouldNotBeLoaded(
                 slug: slug,
                 userFacingMessage: GuideServiceError
                     .transportFailure(reason: error.localizedDescription)
                     .userFacingMessage
+            )
+            return
+        }
+
+        guard guideSessionGeneration == generationForThisOpen else { return }
+        if let offlineNativeFixture, !offlineNativeFixture.accepts(fetchedGuide) {
+            loadState = .guideCouldNotBeLoaded(
+                slug: slug,
+                userFacingMessage: "This Iris Test fixture does not match the guide's pinned source."
             )
             return
         }
@@ -1020,6 +1329,7 @@ final class GuideSessionController: ObservableObject {
 
         guideBeingFollowed = fetchedGuide
         selectedBranch = resolvedHandoff.branch
+        await restorePersistedWorkspaceIfItBelongsTo(fetchedGuide)
 
         // A link that names a branch and a step BEYOND THE START is carrying the
         // reader's own place across from the website, so it wins over whatever
@@ -1045,21 +1355,86 @@ final class GuideSessionController: ObservableObject {
             readerHasFinishedTheGuide = false
             await persistProgressForTheCurrentPosition()
         } else {
-            await restoreSavedProgress(forBranch: resolvedHandoff.branch)
+            guard await restoreSavedProgress(
+                forBranch: resolvedHandoff.branch,
+                sessionGeneration: generationForThisOpen
+            ) else { return }
         }
+
+        guard guideSessionGeneration == generationForThisOpen else { return }
 
         prepareToolCheckRowsForTheCurrentStep()
 
         // The prerequisite scan runs while the panel still says "Loading", so
         // the reader is never shown step one of an install they cannot start
         // and then yanked out of it a moment later.
-        await enterSetupRecoveryIfAPrerequisiteIsMissing(forBranch: resolvedHandoff.branch)
+        await enterSetupRecoveryIfAPrerequisiteIsMissing(
+            forBranch: resolvedHandoff.branch,
+            sessionGeneration: generationForThisOpen
+        )
+
+        guard guideSessionGeneration == generationForThisOpen else { return }
 
         loadState = .guideIsOpen
         pointTheWatchLoopAtTheCurrentStep()
     }
 
     func closeTheGuide() {
+        guideSessionGeneration &+= 1
+        sourceWorkspaceGeneration &+= 1
+        tearDownWhicheverGuideSessionIsCurrentlyOpen()
+        loadState = .noGuideIsOpen
+        guideBeingFollowed = nil
+        selectedBranch = nil
+        currentStepIndex = 0
+        readerHasFinishedTheGuide = false
+        toolCheckRows = []
+        setupRecoveryState = nil
+        selectedWorkspaceBinding = nil
+        sourceWorkspaceRequest = nil
+        sourceWorkspaceInspection = nil
+        cancelledSourceWorkspaceRequest = nil
+        sourceWorkspaceSetupState = .idle
+    }
+
+    private func restorePersistedWorkspaceIfItBelongsTo(_ guide: IrisGuide) async {
+        let generation = sourceWorkspaceGeneration
+        guard let persisted = selectedWorkspaceMemory.binding(),
+              persisted.guideID == guide.appSlug,
+              persisted.guideRevision == guide.version,
+              let sourceCommit = guide.sourceCommit,
+              persisted.expectedCommit == sourceCommit,
+              Self.sourceOrigin(for: guide) == persisted.expectedOrigin else {
+            return
+        }
+        selectedWorkspaceBinding = persisted
+        guard await sourceWorkspaceService.validateBinding(persisted) else {
+            guard sourceWorkspaceGeneration == generation,
+                  selectedWorkspaceBinding == persisted else { return }
+            selectedWorkspaceBinding = nil
+            sourceWorkspaceSetupState = .failed("The saved source workspace is no longer valid. Choose setup again.")
+            return
+        }
+        guard sourceWorkspaceGeneration == generation,
+              selectedWorkspaceBinding == persisted else { return }
+        sourceWorkspaceSetupState = .ready(persisted)
+    }
+
+    /// Guide metadata stores the GitHub owner and repository separately. The
+    /// origin parser expects a real host, so every controller admission uses
+    /// the same canonical HTTPS spelling; SSH and HTTPS checkout origins are
+    /// normalized by `GuideSourceWorkspaceOrigin.parse` before comparison.
+    private static func sourceOrigin(for guide: IrisGuide) -> GuideSourceWorkspaceOrigin? {
+        GuideSourceWorkspaceOrigin.parse(
+            "https://github.com/\(guide.sourceOwner)/\(guide.sourceRepo)"
+        )
+    }
+
+    /// Stops all work belonging to the currently open guide. Cancellation is
+    /// paired with the generation checks around async results because a
+    /// cancelled operation can still return from an already-started request.
+    private func tearDownWhicheverGuideSessionIsCurrentlyOpen() {
+        cancelPendingSourceWorkspaceOperation()
         cancelAnyWorkFromThePreviousStep()
         // A pointer request already in flight has to die with the guide.
         //
@@ -1079,17 +1454,14 @@ final class GuideSessionController: ObservableObject {
         // looking at any more.
         debouncedPointingRefreshTask?.cancel()
         debouncedPointingRefreshTask = nil
+        stopPointingRevalidation()
         explanationForIrisHavingStoppedPointingAtThisStep = nil
+        clearGuideTargetOutline?()
         stopPointingTheEye?()
         if autopilotIsRunning { stopAutopilot() }
+        setupRecheckTask?.cancel()
+        setupRecheckTask = nil
         watchLoop.stopWatching()
-        loadState = .noGuideIsOpen
-        guideBeingFollowed = nil
-        selectedBranch = nil
-        currentStepIndex = 0
-        readerHasFinishedTheGuide = false
-        toolCheckRows = []
-        setupRecoveryState = nil
     }
 
     // MARK: - Branch selection
@@ -1113,17 +1485,237 @@ final class GuideSessionController: ObservableObject {
               let branchTheReaderPicked = guide.branch(matchingBranchKey: branchKey) else {
             return
         }
+        guideSessionGeneration &+= 1
+        sourceWorkspaceGeneration &+= 1
+        cancelPendingSourceWorkspaceOperation()
+        let generationForThisBranchSelection = guideSessionGeneration
+        if autopilotIsRunning { stopAutopilot() }
         cancelAnyWorkFromThePreviousStep()
         selectedBranch = branchTheReaderPicked
         setupRecoveryState = nil
         // Each branch remembers its own place: the same reader can be nine steps
         // into the Android build and not have started the iPhone one.
-        await restoreSavedProgress(forBranch: branchTheReaderPicked)
+        guard await restoreSavedProgress(
+            forBranch: branchTheReaderPicked,
+            sessionGeneration: generationForThisBranchSelection
+        ) else { return }
+        guard guideSessionGeneration == generationForThisBranchSelection else { return }
         prepareToolCheckRowsForTheCurrentStep()
         // Branches do not share prerequisites — the Android route needs a JDK
         // the iPhone route never asks about — so switching re-scans.
-        await enterSetupRecoveryIfAPrerequisiteIsMissing(forBranch: branchTheReaderPicked)
+        await enterSetupRecoveryIfAPrerequisiteIsMissing(
+            forBranch: branchTheReaderPicked,
+            sessionGeneration: generationForThisBranchSelection
+        )
+        guard guideSessionGeneration == generationForThisBranchSelection else { return }
         pointTheWatchLoopAtTheCurrentStep()
+    }
+
+    // MARK: - Prepared source setup
+
+    /// The guide panel supplies only a folder chosen through the native picker.
+    /// Keep the owned destination under Iris's application-support root;
+    /// no reader-selected path is ever used as a staging destination.
+    @discardableResult
+    func inspectReaderSelectedSourceWorkspace(
+        sourcePath: String,
+        runID: UUID = UUID()
+    ) async -> Result<GuideSourceWorkspaceInspection, GuideSourceWorkspacePreparationError> {
+        let ownedProjectsRoot = IrisTestEnvironment.applicationSupportDirectory
+            .appendingPathComponent("GuideSourceWorkspaces", isDirectory: true)
+        return await inspectSourceWorkspace(
+            sourcePath: sourcePath,
+            ownedProjectsRoot: ownedProjectsRoot,
+            runID: runID
+        )
+    }
+
+    /// Inspect the guide's declared source and present the reader with the
+    /// existing-clean or isolated-worktree choice. This route is deliberately
+    /// source-only: it does not register an app and does not start a command.
+    @discardableResult
+    func inspectSourceWorkspace(
+        sourcePath: String,
+        ownedProjectsRoot: URL,
+        runID requestedRunID: UUID? = nil
+    ) async -> Result<GuideSourceWorkspaceInspection, GuideSourceWorkspacePreparationError> {
+        guard let guide = guideBeingFollowed,
+              let sourceCommit = guide.sourceCommit else {
+            let failure: Result<GuideSourceWorkspaceInspection, GuideSourceWorkspacePreparationError> =
+                .failure(.invalidRequest("this guide does not declare a pinned source"))
+            sourceWorkspaceSetupState = .failed("this guide does not declare a pinned source")
+            return failure
+        }
+        guard let expectedOrigin = Self.sourceOrigin(for: guide) else {
+            let failure: Result<GuideSourceWorkspaceInspection, GuideSourceWorkspacePreparationError> =
+                .failure(.invalidRequest("this guide's source identity is invalid"))
+            sourceWorkspaceSetupState = .failed("this guide's source identity is invalid")
+            return failure
+        }
+        let runID = requestedRunID ?? reusableCancelledSetupRunID(
+            sourcePath: sourcePath, ownedProjectsRoot: ownedProjectsRoot,
+            guideID: guide.appSlug, guideRevision: guide.version,
+            expectedOrigin: expectedOrigin, expectedCommit: sourceCommit
+        ) ?? UUID()
+        let request = GuideSourceWorkspaceRequest(
+            runID: runID,
+            guideID: guide.appSlug,
+            guideRevision: guide.version,
+            projectID: guide.appSlug,
+            sourcePath: sourcePath,
+            expectedOrigin: "https://\(expectedOrigin.host)/\(expectedOrigin.path)",
+            expectedCommit: sourceCommit,
+            ownedProjectsRoot: ownedProjectsRoot
+        )
+        cancelPendingSourceWorkspaceOperation()
+        sourceWorkspaceGeneration &+= 1
+        let generation = sourceWorkspaceGeneration
+        sourceWorkspaceRequest = request
+        cancelledSourceWorkspaceRequest = nil
+        sourceWorkspaceInspection = nil
+        sourceWorkspaceSetupState = .inspecting
+        let result = await sourceWorkspaceService.inspect(request)
+        guard sourceWorkspaceGeneration == generation,
+              sourceWorkspaceRequest?.runID == request.runID,
+              guideBeingFollowed?.appSlug == guide.appSlug,
+              guideBeingFollowed?.version == guide.version else {
+            return .failure(.cancelled)
+        }
+        switch result {
+        case .success(let inspection):
+            sourceWorkspaceInspection = inspection
+            sourceWorkspaceSetupState = .offer(inspection)
+        case .failure(let error):
+            sourceWorkspaceSetupState = .failed(error.errorDescription ?? "source inspection failed")
+        }
+        return result
+    }
+
+    /// Commit the reader's explicit setup choice. A ready binding is persisted
+    /// before the guide can execute, so retries and relaunches reuse the same
+    /// workspace rather than creating duplicate worktrees.
+    @discardableResult
+    func prepareSelectedSourceWorkspace(
+        choice: GuideSourceWorkspaceSetupChoice
+    ) async -> Result<GuideSourceWorkspaceBinding, GuideSourceWorkspacePreparationError> {
+        if case .preparing = sourceWorkspaceSetupState {
+            let failure: Result<GuideSourceWorkspaceBinding, GuideSourceWorkspacePreparationError> =
+                .failure(.invalidRequest("workspace preparation is already in progress"))
+            return failure
+        }
+        guard let request = sourceWorkspaceRequest,
+              let inspection = sourceWorkspaceInspection else {
+            let failure: Result<GuideSourceWorkspaceBinding, GuideSourceWorkspacePreparationError> =
+                .failure(.invalidRequest("inspect the source before choosing a workspace"))
+            sourceWorkspaceSetupState = .failed("inspect the source before choosing a workspace")
+            return failure
+        }
+        sourceWorkspaceGeneration &+= 1
+        let generation = sourceWorkspaceGeneration
+        sourceWorkspaceSetupState = .preparing(choice)
+        do {
+            let binding = try await sourceWorkspaceService.prepare(
+                request, from: inspection, choice: choice
+            )
+            guard sourceWorkspaceGeneration == generation,
+                  sourceWorkspaceRequest?.runID == request.runID,
+                  guideBeingFollowed?.appSlug == request.guideID,
+                  guideBeingFollowed?.version == request.guideRevision else {
+                return .failure(.cancelled)
+            }
+            selectedWorkspaceBinding = binding
+            selectedWorkspaceMemory.save(binding)
+            cancelledSourceWorkspaceRequest = nil
+            sourceWorkspaceSetupState = .ready(binding)
+            shouldShowSourceWorkspaceRecovery = false
+            autopilotBlockedExplanation = nil
+            return .success(binding)
+        } catch let error as GuideSourceWorkspacePreparationError {
+            guard sourceWorkspaceGeneration == generation,
+                  sourceWorkspaceRequest?.runID == request.runID else { return .failure(.cancelled) }
+            sourceWorkspaceSetupState = .failed(error.errorDescription ?? "workspace setup failed")
+            return .failure(error)
+        } catch is CancellationError {
+            guard sourceWorkspaceGeneration == generation,
+                  sourceWorkspaceRequest?.runID == request.runID else { return .failure(.cancelled) }
+            sourceWorkspaceSetupState = .failed(
+                GuideSourceWorkspacePreparationError.cancelled.errorDescription ?? "workspace preparation cancelled"
+            )
+            return .failure(.cancelled)
+        } catch {
+            guard sourceWorkspaceGeneration == generation,
+                  sourceWorkspaceRequest?.runID == request.runID else { return .failure(.cancelled) }
+            let message = error.localizedDescription
+            sourceWorkspaceSetupState = .failed(message)
+            return .failure(.stagedWorkspaceVerificationFailed(message))
+        }
+    }
+
+    func cancelSourceWorkspaceSetup() {
+        cancelledSourceWorkspaceRequest = sourceWorkspaceRequest
+        cancelPendingSourceWorkspaceOperation()
+        sourceWorkspaceGeneration &+= 1
+        sourceWorkspaceRequest = nil
+        sourceWorkspaceInspection = nil
+        sourceWorkspaceSetupState = .idle
+    }
+
+    private func reusableCancelledSetupRunID(
+        sourcePath: String,
+        ownedProjectsRoot: URL,
+        guideID: String,
+        guideRevision: Int,
+        expectedOrigin: GuideSourceWorkspaceOrigin,
+        expectedCommit: String
+    ) -> UUID? {
+        guard let cancelled = cancelledSourceWorkspaceRequest,
+              cancelled.sourcePath == URL(fileURLWithPath: sourcePath).standardizedFileURL.path,
+              cancelled.ownedProjectsRoot.standardizedFileURL.path
+                == ownedProjectsRoot.standardizedFileURL.path,
+              cancelled.guideID == guideID,
+              cancelled.guideRevision == guideRevision,
+              GuideSourceWorkspaceOrigin.equivalent(
+                  cancelled.expectedOrigin,
+                  "https://\(expectedOrigin.host)/\(expectedOrigin.path)"
+              ),
+              cancelled.expectedCommit == expectedCommit else {
+            return nil
+        }
+        return cancelled.runID
+    }
+
+    /// Cancels the fixed-argv source probe or worktree staging operation before
+    /// its request is discarded. Generation checks still reject any late value,
+    /// while the service cancellation prevents a stale operation from creating
+    /// a worktree after the reader has pressed Cancel or opened another guide.
+    private func cancelPendingSourceWorkspaceOperation() {
+        guard let request = sourceWorkspaceRequest else { return }
+        sourceWorkspaceService.cancel(runID: request.runID)
+    }
+
+    /// Revalidate the persisted binding at an execution boundary. A false
+    /// result clears only the in-memory selection and leaves the record for
+    /// recovery inspection; it never silently falls back to HOME.
+    func revalidateSelectedWorkspaceForCurrentGuide() async -> Bool {
+        guard let guide = guideBeingFollowed,
+              let binding = selectedWorkspaceBinding,
+              binding.guideID == guide.appSlug,
+              binding.guideRevision == guide.version,
+              let commit = guide.sourceCommit,
+              binding.expectedCommit == commit,
+              Self.sourceOrigin(for: guide) == binding.expectedOrigin else {
+            return false
+        }
+        let generation = sourceWorkspaceGeneration
+        let valid = await sourceWorkspaceService.validateBinding(binding)
+        guard sourceWorkspaceGeneration == generation,
+              selectedWorkspaceBinding == binding else { return false }
+        guard valid else {
+            selectedWorkspaceBinding = nil
+            sourceWorkspaceSetupState = .failed("The selected source workspace changed and needs setup again.")
+            return false
+        }
+        return true
     }
 
     // MARK: - What the step card renders
@@ -1370,16 +1962,21 @@ final class GuideSessionController: ObservableObject {
     }
 
     /// Runs whatever the primary button is currently offering.
-    func performPrimaryAction() {
-        // Moving on, or acting on the step, hands the step back to the watch
-        // loop: the reader is no longer parked here on purpose.
-        readerDeliberatelyReturnedToThisStep = false
-        // And the note explaining a corrected position belongs to the step it
-        // was about; carried forward it would explain the wrong thing.
-        positionWasCorrectedExplanation = nil
+    func performPrimaryAction(expectedCurrentStepId: String? = nil) {
+        if let expectedCurrentStepId, !readerIsInSetupRecovery,
+           currentStep?.id != expectedCurrentStepId {
+            irisTrace(
+                "primary action: rendered for step \(expectedCurrentStepId) but the guide "
+                + "is now on \(currentStep?.id ?? "nil") - ignoring the stale tap"
+            )
+            return
+        }
         guard let primaryAction = primaryActionForTheCurrentStep else {
             return
         }
+        // Only a current action can release the reader's navigation latch.
+        readerDeliberatelyReturnedToThisStep = false
+        positionWasCorrectedExplanation = nil
         switch primaryAction {
         case .copyCommandToClipboard(let command, _):
             copyCommandToClipboard(command)
@@ -1421,9 +2018,22 @@ final class GuideSessionController: ObservableObject {
     /// least one command Iris could execute. Offering it on a guide with
     /// nothing to run would be a dead button.
     var canOfferAutopilot: Bool {
-        guard makeAutopilotRunner != nil, isActivelyGuiding, !autopilotIsRunning,
-              let branch = selectedBranch else { return false }
-        return branch.steps.contains { stepIsAutopilotExecutable($0) }
+        autopilotAvailability == .available
+    }
+
+    var autopilotAvailabilityExplanation: String? {
+        autopilotAvailability.explanation
+    }
+
+    private var autopilotAvailability: GuideAutopilotAvailability {
+        GuideAutopilotAvailability.resolve(
+            isActivelyGuiding: isActivelyGuiding && selectedBranch != nil,
+            isRunning: autopilotIsRunning,
+            isSupportedBranch: selectedBranch?.unsupported == nil,
+            isInSetupRecovery: readerIsInSetupRecovery,
+            hasRunner: makeAutopilotRunner != nil,
+            hasExecutableSteps: selectedBranch?.steps.contains { stepIsAutopilotExecutable($0) } ?? false
+        )
     }
 
     /// True while Iris is executing a terminal step itself. The exit code is
@@ -1449,6 +2059,13 @@ final class GuideSessionController: ObservableObject {
     /// guide and step, but it lands the reader on this button — it cannot
     /// press it. Nothing about opening a guide calls this.
     func startAutopilot() {
+        guard !IrisTestEnvironment.isEnabled
+            || IrisTestEnvironment.isUnitTestProcess
+            || offlineNativeFixture != nil
+            || IrisTestEnvironment.isNativeAcceptanceMode else {
+            autopilotBlockedExplanation = "Marketplace installation is off in Iris Test. Your normal apps are protected."
+            return
+        }
         // EVERY refusal below names itself. This guard used to be six conditions
         // and one bare `return`, which is the literal shape of the "I click Let
         // Iris run it and nothing happens" report: the tap lands, nothing moves,
@@ -1465,6 +2082,41 @@ final class GuideSessionController: ObservableObject {
             irisTrace("autopilot: start refused — guide not open (loadState=\(loadState))")
             return
         }
+        // A fixture is an explicitly admitted, pinned test copy. It may keep
+        // the published guide's legacy HOME-relative paths so this suite can
+        // exercise the install gate; normal controllers always pass nil here.
+        if guideNeedsPublisherWorkspaceMigration {
+            let hasValidatedLegacyBinding = selectedWorkspaceBinding.map { binding in
+                binding.guideID == guide.appSlug
+                    && binding.guideRevision == guide.version
+                    && binding.projectID == guide.appSlug
+                    && binding.expectedCommit == guide.sourceCommit
+                    && Self.sourceOrigin(for: guide) == binding.expectedOrigin
+                    && binding.isIsolated
+            } == true
+            guard hasValidatedLegacyBinding
+                || IrisTestEnvironment.isUnitTestProcess
+                || offlineNativeFixture != nil else {
+                autopilotBlockedExplanation = "Choose and prepare the reviewed source workspace before Iris runs this older guide."
+                shouldShowSourceWorkspaceRecovery = true
+                irisTrace("autopilot: start refused — legacy guide needs a validated workspace binding")
+                return
+            }
+        }
+        if guideHasStructuralWorkspaceSteps {
+            guard let binding = selectedWorkspaceBinding,
+                  let sourceCommit = guide.sourceCommit,
+                  binding.guideID == guide.appSlug,
+                  binding.guideRevision == guide.version,
+                  binding.projectID == guide.appSlug,
+                  binding.expectedCommit == sourceCommit,
+                  Self.sourceOrigin(for: guide) == binding.expectedOrigin else {
+                autopilotBlockedExplanation = "Choose and prepare the guide's source folder before Iris runs project commands."
+                shouldShowSourceWorkspaceRecovery = true
+                irisTrace("autopilot: start refused — no matching prepared source workspace")
+                return
+            }
+        }
         guard !readerIsInSetupRecovery else {
             autopilotBlockedExplanation = "Finish the setup step Iris is helping with first, then Iris can run the rest."
             irisTrace("autopilot: start refused — reader is in setup recovery")
@@ -1474,6 +2126,13 @@ final class GuideSessionController: ObservableObject {
             autopilotBlockedExplanation = "Iris can't start an install right now. Restart Iris and try again."
             irisTrace("autopilot: start refused — no runner factory wired")
             return
+        }
+        if let offlineNativeFixture, guideHasStructuralWorkspaceSteps {
+            guard let binding = selectedWorkspaceBinding,
+                  offlineNativeFixture.accepts(binding) else {
+                autopilotBlockedExplanation = "This Iris Test fixture has no validated prepared workspace."
+                return
+            }
         }
         // One-time "Let Iris take control of your Mac?" consent, then remembered
         // across every future install. A vetted publik guide runs hands-off; the
@@ -1500,6 +2159,8 @@ final class GuideSessionController: ObservableObject {
             autonomyGrant.grant()
         }
         autopilotBlockedExplanation = nil
+        shouldShowSourceWorkspaceRecovery = false
+        readerDeliberatelyReturnedToThisStep = false
         let context = GuideAutopilotGuideContext(
             slug: guide.appSlug,
             version: guide.version,
@@ -1507,9 +2168,19 @@ final class GuideSessionController: ObservableObject {
             platformLabel: branch.label,
             hostsReachedByTheGuide: Self.hostsReachedBy(branch: branch),
             commandTheGuidePublishesToInstallEachTool:
-                Self.commandsThisGuidePublishesToInstallEachToolItWatchesFor(branch: branch)
+                Self.commandsThisGuidePublishesToInstallEachToolForAutopilot(branch: branch),
+            sourceOwner: guide.sourceOwner,
+            sourceRepo: guide.sourceRepo,
+            sourceCommit: guide.sourceCommit,
+            projectID: guide.appSlug
         )
         let runner = makeAutopilotRunner(context)
+        if let binding = selectedWorkspaceBinding {
+            let workspaceService = sourceWorkspaceService
+            runner.bindPreparedWorkspace(binding) { candidate in
+                await workspaceService.validateBinding(candidate)
+            }
+        }
         autopilotRunner = runner
         autopilotIsRunning = true
         autopilotHandedTheCurrentStepToTheReader = false
@@ -1528,6 +2199,10 @@ final class GuideSessionController: ObservableObject {
     }
 
     func stopAutopilot() {
+        autopilotDriveID = nil
+        surfacedStepRetryID = nil
+        surfacedStepRetryTask?.cancel()
+        surfacedStepRetryTask = nil
         autopilotIsRunning = false
         runnerSessionHasStarted = false
         autopilotIsShownAsTakeover = false
@@ -1596,9 +2271,13 @@ final class GuideSessionController: ObservableObject {
     /// it is tapped.
     func retryTheSurfacedStep() {
         guard autopilotIsRunning, !autopilotIsDriving,
+              surfacedStepRetryID == nil, autopilotHandedTheCurrentStepToTheReader,
               let runner = autopilotRunner,
               let branch = selectedBranch,
               currentStepIndex < branch.steps.count else { return }
+        // Acquire ownership before the first suspension or a second button tap.
+        let retryID = UUID()
+        surfacedStepRetryID = retryID
         // Iris owns the step again for the duration of the retry, so the watch
         // loop stands down and cannot also advance it.
         autopilotHandedTheCurrentStepToTheReader = false
@@ -1606,11 +2285,30 @@ final class GuideSessionController: ObservableObject {
         let step = branch.steps[currentStepIndex]
         let stepIndex = currentStepIndex
         let totalSteps = branch.steps.count
-        Task {
-            await runner.reloadTheReadersEnvironmentIntoTheShell()
+        runner.prepareToRetrySurfacedStep(stepIndex: stepIndex)
+        surfacedStepRetryTask = Task {
+            if step.workspace != nil,
+               !(await self.revalidateSelectedWorkspaceForCurrentGuide()) {
+                guard self.ownsSurfacedStepRetry(
+                    retryID, runner: runner, branch: branch, step: step, stepIndex: stepIndex
+                ) else { return }
+                self.finishSurfacedStepRetry(retryID)
+                self.handTheCurrentStepBackToTheReader()
+                return
+            }
+            let environmentReloaded = await runner.reloadTheReadersEnvironmentIntoTheShell()
+            guard ownsSurfacedStepRetry(retryID, runner: runner, branch: branch, step: step, stepIndex: stepIndex) else { return }
+            guard environmentReloaded else {
+                finishSurfacedStepRetry(retryID)
+                runner.surfaceEnvironmentReloadFailure(command: step.command ?? "")
+                handTheCurrentStepBackToTheReader()
+                return
+            }
             let result = await runner.executeStepCommand(
                 step: step, stepIndex: stepIndex, totalSteps: totalSteps
             )
+            guard ownsSurfacedStepRetry(retryID, runner: runner, branch: branch, step: step, stepIndex: stepIndex) else { return }
+            finishSurfacedStepRetry(retryID)
             numberOfCommandsAutopilotHasExecuted += 1
             switch result {
             case .succeeded:
@@ -1623,10 +2321,28 @@ final class GuideSessionController: ObservableObject {
         }
     }
 
+    private func ownsSurfacedStepRetry(
+        _ retryID: UUID,
+        runner: GuideAutopilotRunner,
+        branch: IrisGuideBranch,
+        step: IrisGuideStep,
+        stepIndex: Int
+    ) -> Bool {
+        !Task.isCancelled && surfacedStepRetryID == retryID && autopilotIsRunning
+            && autopilotRunner === runner && selectedBranch?.branchKey == branch.branchKey
+            && currentStepIndex == stepIndex && currentStep?.id == step.id
+    }
+
+    private func finishSurfacedStepRetry(_ retryID: UUID) {
+        guard surfacedStepRetryID == retryID else { return }
+        surfacedStepRetryID = nil
+        surfacedStepRetryTask = nil
+    }
+
     /// The reader tapped "Continue" on a step Iris surfaced — they are choosing
     /// to move past it. Skip it and let Iris run the remaining steps.
     func skipTheSurfacedStepAndContinue() {
-        guard autopilotIsRunning else { return }
+        guard autopilotIsRunning, surfacedStepRetryID == nil else { return }
         autopilotHandedTheCurrentStepToTheReader = false
         advanceToTheNextStep()
     }
@@ -1858,14 +2574,29 @@ final class GuideSessionController: ObservableObject {
         runner: GuideAutopilotRunner,
         branch: IrisGuideBranch
     ) async {
-        guard !autopilotIsDriving else { return }
-        autopilotIsDriving = true
-        defer { autopilotIsDriving = false }
+        guard !autopilotIsDriving, surfacedStepRetryID == nil,
+              autopilotIsRunning, autopilotRunner === runner,
+              selectedBranch?.branchKey == branch.branchKey else { return }
+        let driveID = UUID()
+        autopilotDriveID = driveID
+        defer {
+            if autopilotDriveID == driveID { autopilotDriveID = nil }
+        }
+        func stillOwnsDrive() -> Bool {
+            autopilotDriveID == driveID && autopilotIsRunning
+                && autopilotRunner === runner
+                && selectedBranch?.branchKey == branch.branchKey
+        }
+        func stillOwnsStep(_ index: Int, having step: IrisGuideStep) -> Bool {
+            stillOwnsDrive() && theGuideIsStillOn(index, having: step)
+        }
 
         irisTrace("drive: entered, sessionStarted=\(self.runnerSessionHasStarted)")
         if !runnerSessionHasStarted {
             irisTrace("drive: awaiting startSession…")
-            guard await runner.startSession() else {
+            let sessionStarted = await runner.startSession()
+            guard stillOwnsDrive() else { return }
+            guard sessionStarted else {
                 irisTrace("drive: startSession FAILED → stopAutopilot")
                 stopAutopilot()
                 return
@@ -1874,7 +2605,7 @@ final class GuideSessionController: ObservableObject {
             runnerSessionHasStarted = true
         }
 
-        while autopilotIsRunning,
+        while stillOwnsDrive(),
               !readerHasFinishedTheGuide,
               currentStepIndex < branch.steps.count {
             // A fresh step is Iris's again until proven otherwise, so ownership
@@ -1920,12 +2651,12 @@ final class GuideSessionController: ObservableObject {
                 // second.
                 let everyWatchedToolIsPresent =
                     await everyToolThisStepWatchesForIsAlreadyPresent(step)
-                guard theGuideIsStillOn(stepIndexBeingDriven, having: step) else { continue }
+                guard stillOwnsStep(stepIndexBeingDriven, having: step) else { continue }
                 if everyWatchedToolIsPresent {
                     irisTrace("drive: \(step.id) already satisfied — advancing without opening anything")
                     await holdBetweenAutoAdvancedSteps()
                     guard autopilotIsRunning else { return }
-                    guard theGuideIsStillOn(stepIndexBeingDriven, having: step) else { continue }
+                    guard stillOwnsStep(stepIndexBeingDriven, having: step) else { continue }
                     advanceFromWithinAutopilot()
                     continue
                 }
@@ -1948,7 +2679,7 @@ final class GuideSessionController: ObservableObject {
                     await bringTheInstalledAppAStepWaitsForToTheFront?(bundleIdOfTheAppTheStepWaitsFor)
                     await holdBetweenAutoAdvancedSteps()
                     guard autopilotIsRunning else { return }
-                    guard theGuideIsStillOn(stepIndexBeingDriven, having: step) else { continue }
+                    guard stillOwnsStep(stepIndexBeingDriven, having: step) else { continue }
                     advanceFromWithinAutopilot()
                     continue
                 }
@@ -1966,7 +2697,7 @@ final class GuideSessionController: ObservableObject {
                     // on a blank terminal. Advance it ourselves after a beat.
                     await holdBetweenAutoAdvancedSteps()
                     guard autopilotIsRunning else { return }
-                    guard theGuideIsStillOn(stepIndexBeingDriven, having: step) else { continue }
+                    guard stillOwnsStep(stepIndexBeingDriven, having: step) else { continue }
                     advanceFromWithinAutopilot()
                     continue
                 }
@@ -1996,11 +2727,12 @@ final class GuideSessionController: ObservableObject {
                 step: step, stepIndex: stepIndexBeingDriven, totalSteps: branch.steps.count
             )
             irisTrace("drive: \(step.id) result=\(String(describing: result))")
+            guard stillOwnsDrive() else { return }
             numberOfCommandsAutopilotHasExecuted += 1
             // A command takes real time, and the watch loop can advance the
             // guide during it. Advancing again from the NEW index would skip a
             // step nobody ran, which is the same defect the gate hit.
-            guard theGuideIsStillOn(stepIndexBeingDriven, having: step) else { continue }
+            guard stillOwnsStep(stepIndexBeingDriven, having: step) else { continue }
             switch result {
             case .succeeded:
                 advanceFromWithinAutopilot()
@@ -2014,7 +2746,7 @@ final class GuideSessionController: ObservableObject {
                     // and stalling the whole install here.
                     await holdBetweenAutoAdvancedSteps()
                     guard autopilotIsRunning else { return }
-                    guard theGuideIsStillOn(stepIndexBeingDriven, having: step) else { continue }
+                    guard stillOwnsStep(stepIndexBeingDriven, having: step) else { continue }
                     advanceFromWithinAutopilot()
                     continue
                 }
@@ -2208,7 +2940,7 @@ final class GuideSessionController: ObservableObject {
     /// The driving guard makes this a no-op if the drive loop is already
     /// running (an executed-step advance), so it never double-drives.
     func resumeAutopilotAfterAdvance() {
-        guard autopilotIsRunning, !autopilotIsDriving,
+        guard autopilotIsRunning, !autopilotIsDriving, surfacedStepRetryID == nil,
               let runner = autopilotRunner, let branch = selectedBranch else { return }
         Task { await self.driveAutopilotFromTheCurrentStep(runner: runner, branch: branch) }
     }
@@ -2227,7 +2959,7 @@ final class GuideSessionController: ObservableObject {
     }
 
     /// For each tool this branch installs, the command the guide itself
-    /// publishes for installing it — what the autopilot runs when a later step
+    /// publishes for installing it, what the autopilot runs when a later step
     /// dies because that tool is missing, instead of asking a model for a fix it
     /// would then have to refuse (see
     /// `GuideAutopilotRunner.installTheMissingToolTheGuideInstallsItself`).
@@ -2236,24 +2968,99 @@ final class GuideSessionController: ObservableObject {
     /// which is as true of the step that INSTALLS the tool as of one that merely
     /// needs it: kneecap watches `git` on a `git --version` check and again on
     /// its `git clone`. A command that begins by running the tool cannot be what
-    /// installs it — it would fail the same way the step just did — so those are
-    /// left out, and what remains is the shape of kneecap's own "Install Bun"
-    /// step, `npm install -g bun`.
-    private static func commandsThisGuidePublishesToInstallEachToolItWatchesFor(
+    /// installs it, so those are left out. Some older published guides, such as
+    /// Simplicity, carry the install command without a `toolVersion` watch. The
+    /// package-manager command shape supplies that missing declaration for the
+    /// small set of package-manager binaries the runner can recover.
+    static func commandsThisGuidePublishesToInstallEachToolForAutopilot(
         branch: IrisGuideBranch
     ) -> [String: String] {
         var installCommandForEachTool: [String: String] = [:]
         for step in branch.setupSteps + branch.steps {
-            guard let command = step.command, let watch = step.watch else { continue }
-            let programsThisCommandRuns = GuideAutopilotCommandShape.programsEachLineWouldRun(command)
-            for expectation in watch.expect {
-                guard case .toolVersion(let tool) = expectation,
-                      installCommandForEachTool[tool] == nil,
-                      !programsThisCommandRuns.contains(tool) else { continue }
+            guard let command = step.command else { continue }
+            if let watch = step.watch {
+                let programsThisCommandRuns = GuideAutopilotCommandShape
+                    .programsEachLineWouldRun(command)
+                for expectation in watch.expect {
+                    guard case .toolVersion(let tool) = expectation,
+                          installCommandForEachTool[tool] == nil,
+                          !programsThisCommandRuns.contains(tool) else { continue }
+                    installCommandForEachTool[tool] = command
+                }
+            }
+
+            // The `tool` field is reserved for Git and Node prerequisites, so
+            // it cannot name the Yarn binary installed by `npm install -g yarn`.
+            // Recover only explicit package-manager targets from the command's
+            // executable position. This avoids treating prose such as
+            // `echo npm install -g yarn` as an installer.
+            for tool in packageManagerBinariesInstalledByGuideCommand(command)
+            where installCommandForEachTool[tool] == nil {
                 installCommandForEachTool[tool] = command
             }
         }
         return installCommandForEachTool
+    }
+
+    private static let packageManagerExecutablesForGuideRecovery: Set<String> = [
+        "npm", "pnpm", "yarn", "bun"
+    ]
+
+    /// Finds package-manager binaries explicitly installed by a guide command.
+    /// This is deliberately narrower than parsing arbitrary package names: the
+    /// recovery path only needs to replay a guide's own Yarn, pnpm, Bun, or npm
+    /// install command when a later command returns 127.
+    private static func packageManagerBinariesInstalledByGuideCommand(
+        _ command: String
+    ) -> [String] {
+        let separator: Character = "\u{1F}"
+        let separatorString = String(separator)
+        let segments = command
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .flatMap { line in
+                String(line)
+                    .replacingOccurrences(of: "&&", with: separatorString)
+                    .replacingOccurrences(of: "||", with: separatorString)
+                    .replacingOccurrences(of: ";", with: separatorString)
+                    .replacingOccurrences(of: "|", with: separatorString)
+                    .split(separator: separator)
+                    .map(String.init)
+            }
+
+        var installedBinaries: [String] = []
+        for segment in segments {
+            guard let executable = GuideAutopilotCommandShape
+                .programsEachLineWouldRun(segment).first?.lowercased(),
+                  packageManagerExecutablesForGuideRecovery.contains(executable) else {
+                continue
+            }
+
+            let words = segment
+                .split(whereSeparator: { $0 == " " || $0 == "\t" })
+                .map {
+                    $0.trimmingCharacters(in: CharacterSet(charactersIn: "(){}'\""))
+                        .lowercased()
+                }
+            guard let executableIndex = words.firstIndex(of: executable) else { continue }
+            let arguments = words.dropFirst(executableIndex + 1)
+            let hasInstallVerb = arguments.contains {
+                ["install", "i", "add"].contains($0)
+            }
+            let hasGlobalFlag = arguments.contains {
+                $0 == "-g" || $0 == "--global" || $0 == "--location=global"
+            }
+            guard hasInstallVerb, hasGlobalFlag else { continue }
+
+            for argument in arguments {
+                guard !argument.hasPrefix("-") else { continue }
+                let packageName = argument.split(separator: "@", maxSplits: 1).first
+                    .map(String.init) ?? argument
+                guard packageManagerExecutablesForGuideRecovery.contains(packageName),
+                      !installedBinaries.contains(packageName) else { continue }
+                installedBinaries.append(packageName)
+            }
+        }
+        return installedBinaries
     }
 
     // MARK: - Copying and opening
@@ -2358,6 +3165,9 @@ final class GuideSessionController: ObservableObject {
         guard !toolNamesToCheck.isEmpty else {
             return
         }
+        let generationAtStart = guideSessionGeneration
+        let branchKeyAtStart = selectedBranch?.branchKey
+        let stepIDAtStart = currentStep?.id
         toolCheckTask?.cancel()
         toolChecksHaveBeenRunForThisStep = true
         toolCheckRows = toolNamesToCheck.map { toolName in
@@ -2366,7 +3176,10 @@ final class GuideSessionController: ObservableObject {
         toolCheckTask = Task { [weak self] in
             guard let self else { return }
             let rowsAfterChecking = await self.checkEveryTool(named: toolNamesToCheck)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  self.guideSessionGeneration == generationAtStart,
+                  self.selectedBranch?.branchKey == branchKeyAtStart,
+                  self.currentStep?.id == stepIDAtStart else { return }
             self.toolCheckRows = rowsAfterChecking
         }
     }
@@ -2425,7 +3238,11 @@ final class GuideSessionController: ObservableObject {
 
     /// Runs the branch's prerequisite checks once, on the way in, and diverts
     /// the reader into the setup steps if anything they need is missing.
-    private func enterSetupRecoveryIfAPrerequisiteIsMissing(forBranch branch: IrisGuideBranch) async {
+    private func enterSetupRecoveryIfAPrerequisiteIsMissing(
+        forBranch branch: IrisGuideBranch,
+        sessionGeneration: Int
+    ) async {
+        guard guideSessionGeneration == sessionGeneration else { return }
         guard branch.unsupported == nil, !branch.setupSteps.isEmpty else {
             return
         }
@@ -2435,6 +3252,7 @@ final class GuideSessionController: ObservableObject {
         }
 
         let prerequisiteCheckRows = await checkEveryTool(named: prerequisiteToolNames)
+        guard guideSessionGeneration == sessionGeneration, !Task.isCancelled else { return }
         // A tool that could not be checked is not a tool that is missing. Iris
         // has no idea what is on the machine in that case, and marching the
         // reader through an install they may not need is the wrong guess.
@@ -2485,6 +3303,7 @@ final class GuideSessionController: ObservableObject {
         }
 
         setupRecheckTask?.cancel()
+        let generationForThisRecheck = guideSessionGeneration
         mutableSetupRecoveryState.aRecheckIsRunning = true
         mutableSetupRecoveryState.messageFromTheMostRecentRecheck = nil
         mutableSetupRecoveryState.prerequisiteCheckRows = toolNamesToCheckAgain.map { toolName in
@@ -2495,7 +3314,9 @@ final class GuideSessionController: ObservableObject {
         setupRecheckTask = Task { [weak self] in
             guard let self else { return }
             let rowsAfterChecking = await self.checkEveryTool(named: toolNamesToCheckAgain)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  self.guideSessionGeneration == generationForThisRecheck,
+                  self.selectedBranch?.branchKey == branch.branchKey else { return }
             self.applyTheResultOfASetupRecheck(rowsAfterChecking, forBranch: branch)
         }
     }
@@ -2510,7 +3331,8 @@ final class GuideSessionController: ObservableObject {
         _ rowsAfterChecking: [GuideToolCheckRow],
         forBranch branch: IrisGuideBranch
     ) {
-        guard var mutableSetupRecoveryState = setupRecoveryState else { return }
+        guard selectedBranch?.branchKey == branch.branchKey,
+              var mutableSetupRecoveryState = setupRecoveryState else { return }
 
         let toolNamesStillMissing = rowsAfterChecking
             .filter { row in row.state == .notInstalled }
@@ -2838,18 +3660,29 @@ final class GuideSessionController: ObservableObject {
     /// tool check still running for the step being left behind — otherwise its
     /// result would land in the next step's rows.
     private func cancelAnyWorkFromThePreviousStep() {
+        if surfacedStepRetryID != nil {
+            // Navigating away cancels this retry, not another step's work.
+            // The reader can resume explicitly from the newly selected step.
+            stopAutopilot()
+        }
         copyConfirmationDismissalTask?.cancel()
         copyConfirmationDismissalTask = nil
         toolCheckTask?.cancel()
         toolCheckTask = nil
+        setupRecheckTask?.cancel()
+        setupRecheckTask = nil
         transientCopyConfirmationText = nil
         readerHasTakenThisStepsAction = false
     }
 
     // MARK: - Progress
 
-    private func restoreSavedProgress(forBranch branch: IrisGuideBranch) async {
-        guard let guide = guideBeingFollowed else { return }
+    private func restoreSavedProgress(
+        forBranch branch: IrisGuideBranch,
+        sessionGeneration: Int
+    ) async -> Bool {
+        guard guideSessionGeneration == sessionGeneration,
+              let guide = guideBeingFollowed else { return false }
         // The version is no longer in the storage key — that is what made every
         // republish throw a reader back to step one. `GuideService.loadProgress`
         // re-derives the resume from the ID of the step they stopped on, and
@@ -2859,6 +3692,7 @@ final class GuideSessionController: ObservableObject {
             version: guide.version,
             branchKey: branch.branchKey
         )
+        guard guideSessionGeneration == sessionGeneration else { return false }
         let lastStepIndex = max(0, branch.steps.count - 1)
         var resumeIndex = min(max(0, savedProgress.stepIndex), lastStepIndex)
 
@@ -2897,7 +3731,8 @@ final class GuideSessionController: ObservableObject {
                 await self?.correctTheResumePositionIfTheMachineDisagrees(
                     branch: branchForTheCheck,
                     rememberedIndex: indexAtOpen,
-                    guideName: nameForTheCheck
+                    guideName: nameForTheCheck,
+                    sessionGeneration: sessionGeneration
                 )
             }
         }
@@ -2906,6 +3741,7 @@ final class GuideSessionController: ObservableObject {
         // a reader who opens a guide and quits without pressing anything still
         // expects Iris to know which guide they were in.
         rememberThisAsTheGuideTheReaderIsFollowing()
+        return true
     }
 
     /// The reality check behind a resume: every `git clone` step BEFORE the
@@ -3051,9 +3887,12 @@ final class GuideSessionController: ObservableObject {
     private func correctTheResumePositionIfTheMachineDisagrees(
         branch: IrisGuideBranch,
         rememberedIndex: Int,
-        guideName: String
+        guideName: String,
+        sessionGeneration: Int
     ) async {
-        guard rememberedIndex > 0, let askTheModelWhereTheReaderIs else { return }
+        guard guideSessionGeneration == sessionGeneration,
+              rememberedIndex > 0,
+              let askTheModelWhereTheReaderIs else { return }
         // An install that is already RUNNING owns its position, and there is no
         // point spending the reader's own model call on an opinion that will be
         // thrown away. Checked here and again after the reply lands, because
@@ -3064,6 +3903,7 @@ final class GuideSessionController: ObservableObject {
             return
         }
         let evidence = await gatherPositionEvidence(forBranch: branch)
+        guard guideSessionGeneration == sessionGeneration else { return }
         guard evidence.isWorthInterpreting else {
             irisTrace("position: nothing checkable for \(guideName) — leaving resume at \(rememberedIndex)")
             return
@@ -3080,6 +3920,7 @@ final class GuideSessionController: ObservableObject {
             irisTrace("position: no reply for \(guideName) — leaving resume at \(rememberedIndex)")
             return
         }
+        guard guideSessionGeneration == sessionGeneration else { return }
         guard let verdict = GuideActualPositionFinder.verdict(
             fromReply: reply, numberOfSteps: branch.steps.count
         ) else {

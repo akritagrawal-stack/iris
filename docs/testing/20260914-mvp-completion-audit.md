@@ -89,3 +89,9 @@ headless, browser, or package tests.
   `kTCCServiceScreenCapture|com.publikhq.iris.test|auth_value=2|auth_reason=4`.
 - The signed v23 bundle was quit and relaunched after consent; the live process was observed as PID 46779. The post-consent desktop capture is `/tmp/iris-v23-after-tcc.png` (SHA-256 `d78e41dea2f6cb7b1b99d4f1c798a6d1328ec3af30b54e197c57845b63ab0f07`).
 - This closes the macOS consent gate for the test bundle. A fresh live click-through and provider-backed edit are still separate acceptance checks; the earlier `false` startup line predates this consent change.
+
+## Fresh live Ask and saved-login check (2026-09-14)
+
+- Through the real Iris overlay, the visible Chrome workspace was asked, “What is visible on my screen right now?” The submitted message and rendered response were captured at `/tmp/iris-ax-screen-result.png` (SHA-256 `af60a6b02f0311935a81814509f95d9024a151308cd2b970b4cb82f9e9e09d37`).
+- The response correctly followed the capability boundary: `I can’t see your screen. Connect screen help so Iris can inspect what’s visible.` The composer showed `Codex general help`, and settings showed `Answers only — editing apps runs on Codex (your ChatGPT login)`. This is a provider/account gate, not evidence that TCC consent is missing.
+- The real `Reconnect saved login` action opened the native Keychain authorization prompt for `com.publikhq.iris.test`; no password was entered during this run. Iris subsequently reported that macOS did not finish reconnecting and kept the saved login. A publik/Anthropic screen-help credential is still required before provider-backed screen capture and edit delivery can be accepted.

@@ -578,3 +578,12 @@ focused harness regression fills the archive and confirms the active
 review-held candidate remains on disk when the cap is reached. This protects failed-candidate
 continuity across restart; it does not establish installed-app or physical
 device behavior.
+
+The standalone `SavedEditDeliveryChecks` executable was then compiled against
+the same `IrisHarnessNative` module and ran to completion. It passed all eight
+focused checks, including failed/unavailable/truncated repository status,
+dirty-source retention across reload, the 256-record/8 MiB archive cap with
+the active candidate preserved, runtime-image retirement, clean-source retry
+gates, branch/newer-commit invalidation, and queue-save durability. This is
+direct executable evidence for the retention path; live provider delivery and
+physical-device acceptance remain open.

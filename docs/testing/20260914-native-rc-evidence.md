@@ -588,6 +588,15 @@ gates, branch/newer-commit invalidation, and queue-save durability. This is
 direct executable evidence for the retention path; live provider delivery and
 physical-device acceptance remain open.
 
+### 2026-09-14 installed-delivery and Undo regression rerun
+
+The native scheme reran `AppRelaunchInstalledDeliveryTests`; all `12/12`
+tests passed. Coverage includes in-place bundle replacement, backup path
+identity, startup reconciliation after interrupted swaps, retry-record
+restoration, clone-copy exclusion, and injected Undo recovery. This confirms
+the delivery/recovery state machine at native test level; installed-app live
+continuity remains an acceptance gate.
+
 ### 2026-09-14 Kneecap installation regression rerun
 
 The native Xcode scheme reran `Bug7MissingToolSelfInstallEndToEndTests` and

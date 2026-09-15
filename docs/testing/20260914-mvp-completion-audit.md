@@ -16,3 +16,9 @@ The unverified gates require actual provider-backed execution, Screen Recording
 and Accessibility consent for the test bundle, and a connected trusted iPhone
 with a verified distribution route. None of those states are inferred from
 headless, browser, or package tests.
+
+## Fresh automated rerun (2026-09-14)
+
+- `swift test --package-path iris-macos/tools/harness-tests --parallel`: **161/161** tests passed across 7 suites.
+- `node --test iris-mobile/test/*.test.mjs`: **20/20** tests passed.
+- The rerun changes automated evidence only; it does not close the live provider, macOS permission, screen-capture, or physical-device gates above.

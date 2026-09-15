@@ -42,7 +42,7 @@
 			);
 			target = 28F22CBE2F56440300A0FC59 /* leanring-buddy */;
 		};
-		AA00BB052F6500050039DA55 /* Package-only test sources */ = {
+		AA00BB052F6500050039DA55 /* Exceptions for "leanring-buddyTests" folder in "leanring-buddyTests" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				AssistantRequestDiagnosticsTests.swift,
@@ -51,7 +51,6 @@
 				ChatActionCancellationTests.swift,
 				ChatTranscriptResetTests.swift,
 				CodexEditModelSelectionTests.swift,
-				ComposerConnectionPresentationTests.swift,
 				EditVerificationReceiptTests.swift,
 				GuidePresentationRegressionTests.swift,
 				KeychainReadPolicyTests.swift,
@@ -75,7 +74,7 @@
 		28F22CCF2F56440300A0FC59 /* leanring-buddyTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				AA00BB052F6500050039DA55 /* Package-only test sources */,
+				AA00BB052F6500050039DA55 /* Exceptions for "leanring-buddyTests" folder in "leanring-buddyTests" target */,
 			);
 			path = "leanring-buddyTests";
 			sourceTree = "<group>";

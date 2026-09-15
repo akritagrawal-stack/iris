@@ -410,6 +410,11 @@ original `/Users/akrit/kneecap` tree remains unchanged.
   `946db8751918e8ce31d0acd9b8cd85b0945455a8ada47ebe2563605e6c784b50`.
 - This names a current integrated candidate. It does not substitute for the
   live Ask/Edit interaction rerun, provider-backed transfer, or device gates.
+- The first Xcode-only focused invocation ran zero tests because the project
+  excluded `ComposerConnectionPresentationTests.swift`. Removing that single
+  exclusion restored discovery: the same scheme then ran all `13/13` focused
+  tests successfully. This closes the test-target wiring gap; it does not
+  close the native permission, provider, or device gates.
 - Computer-use launch of v13 reached Iris's native permissions panel and
   reported Accessibility and Screen Recording as revoked. The disposable RC
   was quit after observation; no permission state was changed. This is a live

@@ -723,3 +723,9 @@ artifact is `/Users/Shared/Iris-RC-20260914-v19/Iris Test.app` with executable
 SHA-256 `712dcf81f18c7bc024fa77fc9c5374a9d3ab3d88a6cae5239b5671e83db23a65`.
 This is an unsigned test candidate, so it is not evidence that macOS TCC or
 installed-app acceptance is complete.
+
+The post-fix regression pass also completed the Swift harness package at
+`161/161` tests across 7 suites and the mobile hub Node suite at `20/20`.
+These checks cover the retained routing, lifecycle, review, storage, and hub
+contracts; they do not close native permission, live-provider, or physical
+phone acceptance.
